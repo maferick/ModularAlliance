@@ -1,0 +1,26 @@
+cat > .gitignore <<'EOF'
+# Server-only config
+/var/www/config.php
+config.php
+.env
+
+# Runtime / writable
+/storage/
+/tmp/
+/cache/
+/logs/
+
+# Vendor / node
+/vendor/
+/node_modules/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+
+# Secrets
+*.key
+*.pem
+EOF
+
