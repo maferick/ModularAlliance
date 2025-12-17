@@ -62,7 +62,9 @@ final class Layout
     </aside>
 
     <main class="col-12 col-md-9 col-lg-10 p-4">
-      ' . $bodyHtml . '
+      <div class="page-card">
+        ' . $bodyHtml . '
+      </div>
     </main>
   </div>
 </div>
