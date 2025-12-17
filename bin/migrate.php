@@ -1,29 +1,17 @@
-#!/usr/bin/env php
 <?php
 declare(strict_types=1);
 
-use App\Core\Db;
-use App\Core\Migrator;
-use App\Core\ModuleManager;
+define('APP_ROOT', dirname(__DIR__));
+require APP_ROOT . '/core/bootstrap.php';
 
-require __DIR__ . '/../core/bootstrap.php';
+use App\Core\App;
 
-$config = (array)($GLOBALS['APP_CONFIG'] ?? []);
-$db = Db::fromConfig($config['db'] ?? []);
+$app = App::boot();
 
-$migrator = new Migrator($db);
-$migrator->ensureLogTable();
+$m = $app->migrator;
+$m->ensureLogTable();
 
-$mm = new ModuleManager(APP_ROOT . '/modules', $db);
+echo "[MIGRATE] core: " . APP_ROOT . "/core/migrations\n";
+$m->applyDir('core', APP_ROOT . '/core/migrations');
 
-// Apply core then modules
-$dirs = $mm->migrationDirs();
-
-foreach ($dirs as $slug => $dir) {
-    fwrite(STDOUT, "[MIGRATE] {$slug}: {$dir}
-");
-    $migrator->applyDir($slug, $dir);
-}
-
-fwrite(STDOUT, "[OK] Migrations complete.
-");
+echo "[OK] Migrations complete.\n";

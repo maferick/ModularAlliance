@@ -5,28 +5,27 @@ namespace App\Http;
 
 final class Response
 {
-    private function __construct(
-        private readonly string $body,
-        private readonly int $status = 200,
-        private readonly array $headers = []
+    public function __construct(
+        public readonly int $status,
+        public readonly string $body,
+        public readonly array $headers = []
     ) {}
 
-    public static function html(string $html, int $status = 200, array $headers = []): self
+    public static function text(string $body, int $status = 200, array $headers = []): self
     {
-        return new self($html, $status, array_merge(['Content-Type' => 'text/html; charset=utf-8'], $headers));
+        $headers = array_merge(['Content-Type' => 'text/plain; charset=utf-8'], $headers);
+        return new self($status, $body, $headers);
     }
 
-    public static function json(array $data, int $status = 200, array $headers = []): self
+    public static function html(string $body, int $status = 200, array $headers = []): self
     {
-        return new self(json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '{}',
-            $status,
-            array_merge(['Content-Type' => 'application/json; charset=utf-8'], $headers)
-        );
+        $headers = array_merge(['Content-Type' => 'text/html; charset=utf-8'], $headers);
+        return new self($status, $body, $headers);
     }
 
     public static function redirect(string $to, int $status = 302): self
     {
-        return new self('', $status, ['Location' => $to]);
+        return new self($status, '', ['Location' => $to]);
     }
 
     public function send(): void

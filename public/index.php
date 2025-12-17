@@ -1,16 +1,12 @@
 <?php
 declare(strict_types=1);
 
-use App\Core\App;
-use App\Http\Response;
+define('APP_ROOT', dirname(__DIR__));
 
-require __DIR__ . '/../core/bootstrap.php';
+require APP_ROOT . '/core/bootstrap.php';
+
+use App\Core\App;
 
 $app = App::boot();
 $response = $app->handleHttp();
-
-if (!$response instanceof Response) {
-    $response = Response::html('Internal error: invalid response', 500);
-}
-
 $response->send();

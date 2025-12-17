@@ -3,38 +3,40 @@ declare(strict_types=1);
 
 namespace App\Core;
 
-use App\Http\Router;
 use App\Http\Request;
 use App\Http\Response;
+use App\Http\Router;
 
 final class App
 {
     public readonly array $config;
     public readonly Db $db;
+    public readonly Migrator $migrator;
     public readonly Router $router;
     public readonly ModuleManager $modules;
 
-    private function __construct(array $config, Db $db, Router $router, ModuleManager $modules)
+    private function __construct(array $config)
     {
-        $this->config  = $config;
-        $this->db      = $db;
-        $this->router  = $router;
-        $this->modules = $modules;
+        $this->config = $config;
+        $this->db = Db::fromConfig($config['db'] ?? []);
+        $this->migrator = new Migrator($this->db);
+        $this->router = new Router();
+        $this->modules = new ModuleManager();
     }
 
     public static function boot(): self
     {
-        $config = (array)($GLOBALS['APP_CONFIG'] ?? []);
-        $db     = Db::fromConfig($config['db'] ?? []);
-        $router = new Router();
+        $cfg = \app_config();
+        $app = new self($cfg);
 
-        $modules = new ModuleManager(APP_ROOT . '/modules', $db);
-        $modules->registerAll($router);
+        // Core routes that MUST always exist
+        $app->router->get('/', fn() => Response::html("<h1>ModularAlliance is up</h1>", 200));
+        $app->router->get('/health', fn() => Response::text("OK\n", 200));
 
-        // Core health endpoint
-        $router->get('/health', static fn(Request $r) => Response::json(['ok' => true, 'ts' => time()]));
+        // Load modules (auth, etc.)
+        $app->modules->loadAll($app);
 
-        return new self($config, $db, $router, $modules);
+        return $app;
     }
 
     public function handleHttp(): Response

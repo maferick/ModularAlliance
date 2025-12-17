@@ -1,7 +1,9 @@
 <?php
 declare(strict_types=1);
 
-define('APP_ROOT', realpath(__DIR__ . '/..') ?: __DIR__ . '/..');
+if (!defined('APP_ROOT')) {
+    define('APP_ROOT', dirname(__DIR__));
+}
 
 ini_set('display_errors', '0');
 error_reporting(E_ALL);
@@ -9,23 +11,27 @@ error_reporting(E_ALL);
 session_name('ma_session');
 session_start();
 
-spl_autoload_register(static function (string $class): void {
+spl_autoload_register(function (string $class): void {
     $prefix = 'App\\';
-    if (strncmp($class, $prefix, strlen($prefix)) !== 0) {
-        return;
-    }
-    $rel = substr($class, strlen($prefix));
-    $file = APP_ROOT . '/src/App/' . str_replace('\\', '/', $rel) . '.php';
-    if (is_file($file)) {
-        require $file;
+    if (str_starts_with($class, $prefix)) {
+        $rel = substr($class, strlen($prefix));
+        $path = APP_ROOT . '/src/App/' . str_replace('\\', '/', $rel) . '.php';
+        if (is_file($path)) require $path;
     }
 });
 
-$CONFIG_PATH = '/var/www/config.php';
-if (!is_file($CONFIG_PATH)) {
-    http_response_code(500);
-    echo "Missing server config at {$CONFIG_PATH}";
-    exit;
+function app_config(): array {
+    $cfgFile = '/var/www/config.php';
+    if (!is_file($cfgFile)) {
+        http_response_code(500);
+        echo "Missing server config: /var/www/config.php\n";
+        exit;
+    }
+    $cfg = require $cfgFile;
+    if (!is_array($cfg)) {
+        http_response_code(500);
+        echo "Invalid config format in /var/www/config.php\n";
+        exit;
+    }
+    return $cfg;
 }
-$GLOBALS['APP_CONFIG'] = require $CONFIG_PATH;
-

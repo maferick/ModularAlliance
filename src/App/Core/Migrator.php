@@ -9,10 +9,6 @@ final class Migrator
 {
     public function __construct(private readonly Db $db) {}
 
-    /**
-     * Canonical migration log contract.
-     * Status values are intentionally: applied / failed
-     */
     public function ensureLogTable(): void
     {
         $this->db->exec(<<<SQL
@@ -33,25 +29,19 @@ SQL);
     public function applyDir(string $moduleSlug, string $dir): void
     {
         if (!is_dir($dir)) return;
-
         $files = glob(rtrim($dir, '/') . '/*.sql') ?: [];
         sort($files, SORT_STRING);
-
-        foreach ($files as $file) {
-            $this->applySqlFile($moduleSlug, $file);
-        }
+        foreach ($files as $f) $this->applySqlFile($moduleSlug, $f);
     }
 
     public function applySqlFile(string $moduleSlug, string $filePath): void
     {
-        $sql = (string)file_get_contents($filePath);
-        $sql = trim($sql);
+        $sql = trim((string)file_get_contents($filePath));
         if ($sql === '') return;
 
         $checksum = hash('sha256', $sql);
-        $path     = $this->relPath($filePath);
+        $path = $this->relPath($filePath);
 
-        // already applied?
         $existing = $this->db->one(
             "SELECT id FROM migration_log
              WHERE module_slug=? AND file_path=? AND checksum=? AND status='applied'
@@ -66,19 +56,15 @@ SQL);
         $pdo = $this->db->pdo();
         $driver = (string)$pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
 
-        // MySQL/MariaDB DDL is not transaction-safe (implicit commits).
+        // MySQL/MariaDB DDL is not transaction-safe due to implicit commits.
         $useTx = ($driver !== 'mysql');
 
         try {
-            if ($useTx) {
-                $pdo->beginTransaction();
-            }
+            if ($useTx) $pdo->beginTransaction();
 
-            $this->execSqlFile($pdo, $sql);
+            $pdo->exec($sql);
 
-            if ($useTx && $pdo->inTransaction()) {
-                $pdo->commit();
-            }
+            if ($useTx && $pdo->inTransaction()) $pdo->commit();
 
             $this->db->run(
                 "INSERT INTO migration_log (module_slug, file_path, checksum, status, message, ran_at)
@@ -88,11 +74,8 @@ SQL);
 
             echo "[OK] {$moduleSlug}: {$path}\n";
         } catch (\Throwable $e) {
-            if ($useTx && $pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
+            if ($useTx && $pdo->inTransaction()) $pdo->rollBack();
 
-            // best-effort failure log (truncate to column size)
             try {
                 $this->db->run(
                     "INSERT INTO migration_log (module_slug, file_path, checksum, status, message, ran_at)
@@ -105,20 +88,8 @@ SQL);
         }
     }
 
-    /**
-     * Executes a SQL file content.
-     * Baseline: runs as one string; suitable for typical CREATE/ALTER/INSERT migrations.
-     * If you later add DELIMITER/procedures, we’ll upgrade this to a safe splitter.
-     */
-    private function execSqlFile(PDO $pdo, string $sql): void
-    {
-        $pdo->exec($sql);
-    }
-
     private function relPath(string $path): string
     {
-        if (!defined('APP_ROOT')) return $path;
-
         $root = rtrim((string)APP_ROOT, '/') . '/';
         return str_starts_with($path, $root) ? substr($path, strlen($root)) : $path;
     }

@@ -15,15 +15,17 @@ final class Request
 
     public static function fromGlobals(): self
     {
-        $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-        $uri = $_SERVER['REQUEST_URI'] ?? '/';
+        $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
+        $uri  = $_SERVER['REQUEST_URI'] ?? '/';
         $path = parse_url($uri, PHP_URL_PATH) ?: '/';
+        if ($path === '') $path = '/';
 
-        // Also support legacy ?route= style
-        if (!empty($_GET['route'])) {
-            $route = (string)$_GET['route'];
-            if ($route[0] !== '/') $route = '/' . $route;
-            $path = $route;
+        // normalize /index.php => /
+        if ($path === '/index.php') $path = '/';
+
+        // legacy ?route= override
+        if (!empty($_GET['route']) && is_string($_GET['route'])) {
+            $path = '/' . ltrim($_GET['route'], '/');
         }
 
         return new self($method, $path, $_GET, $_POST, $_SERVER);
