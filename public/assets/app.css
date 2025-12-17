@@ -1,0 +1,6 @@
+:root{
+  --bs-primary:#1f3c88;
+  --bs-warning:#f4b400;
+}
+.nav-link{color:#111}
+.nav-link:hover{background:#f1f3f5}
