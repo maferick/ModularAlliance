@@ -1,263 +1,101 @@
 # ModularAlliance
-*A modular EVE Online portal framework — built for corporations, alliances, and long-term sanity.*
 
-![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
-![PHP](https://img.shields.io/badge/PHP-8.3%2B-777BB4.svg)
-![MariaDB](https://img.shields.io/badge/MariaDB-10.11%2B-003545.svg)
-![ESI](https://img.shields.io/badge/EVE%20ESI-SSO%20%2B%20Cache-00AEEF.svg)
-![Theme](https://img.shields.io/badge/Theme-Dark%20by%20default-111827.svg)
+A modular, cache-first EVE Online portal built for long-term maintainability: **SSO → Users/Rights → Menu → ESI Cache → Cron → Modules**.
 
-> “There is no endgame — only maintenance.”
+This repo is intentionally designed as a platform, not a one-off website. Every module plugs into stable core contracts, migrations are tracked, and UI never leaks raw IDs—**everything resolves to names**.
 
----
+## Stack Snapshot
 
-## 🚀 What is this?
+**PHP 8.3** · **Nginx** · **MariaDB 10.11** · **EVE SSO** · **ESI Cache** · **Dark Mode (Bootstrap 5.3)**
 
-ModularAlliance is a **self-hosted, modular web portal** for **EVE Online corporations and alliances**.
-It is designed to be *boring in the best possible way*: predictable, traceable, and maintainable over years.
+## Key Capabilities
 
----
+- **EVE SSO login** with token storage (refresh-capable)
+- **Rights + Groups** with a hard Admin override (cannot lock yourself out)
+- **Menu system** with:
+  - registry defaults (module-owned)
+  - override layer in DB (admin-owned)
+  - multiple areas (left / user_top / admin_top)
+- **ESI caching contract** for all remote calls (TTL-based, DB-backed)
+- **Universe Resolver** (name-first)
+  - systems, constellations, regions
+  - types, groups, categories (fittings/items)
+  - stations
+  - structures (token-gated, graceful fallback)
+- **Cron runner** for heavy lifting (pages read rollups; cron does work)
 
-## 🧠 Design Philosophy
+## Non-Negotiable Project Rules
 
-- Contracts over convenience
-- Modular by default
-- No global functions
-- ESI is always cached
-- Admin can never lock themselves out
+- **No raw IDs in the UI.** IDs exist only as internal keys; pages must display names via the Universe Resolver.
+- **No global functions in modules.** Modules register routes/menus/rights via core APIs only.
+- **Migrations are the source of truth.** No “schema.php patches”; everything is tracked with checksums.
+- **Cache-first for ESI.** ESI requests must go through the cache layer to prevent rate-limit chaos.
+- **Cron does the heavy work.** HTTP requests are not allowed to do expensive processing on request.
 
-If you've ever thought *“this should have been designed properly from day one”* — this project exists for you.
+## Repository Layout
 
----
+- `public/` – front controller (`index.php`)
+- `core/` – bootstrap + migrations
+- `src/` – namespaced application code
+- `modules/` – modular features (`/modules/<slug>/module.php`)
+- `bin/` – CLI tools (migrate, cron)
+- `docs/` – technical documentation and AI continuity files
 
-## 🧱 Architecture Overview
+## Getting Started
 
-```
-/public        → Web root (index.php only)
-/src           → Namespaced application code
-/core          → Bootstrap, DB, auth, rights, menu, cron, migrator
-/modules       → Feature modules
-/bin           → CLI tools
-/docs          → Documentation
-```
+### 1) Requirements
 
-### Core Contracts (Stable)
-- core/bootstrap.php
-- core/db.php
-- core/auth.php
-- core/rights.php
-- core/menu.php
-- core/esi.php
-- core/esi_cache.php
-- core/cron.php
-- core/migrator.php
-
----
-
-## 🗄️ Database & Migrations
-
-- Core migrations: `core/migrations/*.sql`
-- Module migrations: `modules/<slug>/migrations/*.sql`
-- Tracking table: `migration_log`
-
-Every migration is checksummed and tracked. No silent schema drift.
-
----
-
-## 🔐 Authentication & ESI
-
-- EVE Online SSO
-- Character, corp, alliance resolution
-- Portraits and icons cached
-- Tokens stored securely
-- IDs never shown in UI (names only)
-
----
-
-## 🧭 Menus & Rights
-
-Menu areas:
-- `left` (main navigation)
-- `user_top` (profile, alts, logout)
-- `admin_top` (admin tools)
-
-Menus are:
-- module-registered
-- DB-overridable
-- rights-gated
-- nestable
-
-Admin override is absolute.
-
----
-
-## 🕒 Cron Model
-
-Heavy work never runs during page loads.
-
-```
-php bin/cron.php
-```
-
-Designed to run every 5 minutes via system cron.
-
----
-
-## 🎨 UI
-
-- Bootstrap 5.3
-- Dark mode by default
-- Modern control-panel aesthetic
-- No JS frameworks
-
----
-
-## 🧰 Getting Started
-
-### Requirements
-
-- Ubuntu 24.04
-- PHP 8.3 + FPM
+- Ubuntu 24.04+
+- PHP 8.3-FPM + extensions commonly required for PDO/cURL/JSON
 - Nginx
 - MariaDB 10.11+
-- EVE Online developer application (SSO)
+- A database user with permissions to create/alter tables in the app DB
 
-### 1) Clone the repository
+### 2) Install
 
-```
-git clone https://github.com/maferick/ModularAlliance.git
-cd ModularAlliance
-```
+1. Check out the repo into your desired path (example):
+   - `/var/www/ModularAlliance`
+2. Create writable directories:
+   - `storage/` and `tmp/` (owned by your web user, e.g. `www-data`)
+3. Create your `config.php` **outside** the docroot (not committed to git).
+4. Run migrations:
+   - `php bin/migrate.php`
 
-### 2) Create configuration
+### 3) Configure Nginx
 
-Create `/var/www/ModularAlliance/config.php` (not tracked by git):
+Use the example in `docs/nginx-site.conf.example` (or your own). The docroot is:
 
-```php
-<?php
-return [
-  'db' => [
-    'host' => '127.0.0.1',
-    'database' => 'eve_portal',
-    'user' => 'eve_user',
-    'password' => 'changeme',
-    'charset' => 'utf8mb4',
-  ],
-  'eve' => [
-    'client_id' => 'YOUR_CLIENT_ID',
-    'client_secret' => 'YOUR_SECRET',
-    'callback_url' => 'https://yourdomain/auth/callback',
-    'metadata_url' => 'https://login.eveonline.com/.well-known/oauth-authorization-server',
-  ],
-];
-```
+- `root /var/www/ModularAlliance/public;`
 
-### 3) Run migrations
+### 4) First Login (SSO)
 
-```
-php bin/migrate.php
-```
+- Log in via the SSO route in the UI.
+- Confirm that:
+  - user exists in `eve_users`
+  - token is stored in `eve_tokens`
+  - `esi_cache` starts filling (character/corp/alliance + icons)
 
-### 4) Configure nginx
+## Screenshots
 
-Point your document root to:
+> Screenshots are intentionally deferred until the UI is finalized.  
+> Add images to `docs/screenshots/` and reference them using relative paths.
 
-```
-/var/www/ModularAlliance/public
-```
+Planned:
+- Dashboard (dark theme)
+- Profile (character/corp/alliance panels)
+- Admin menu editor
+- ESI cache admin view
+- Users & Groups admin view
 
-Ensure PHP-FPM is enabled.
+## Roadmap
 
-### 5) Run cron
+See `docs/ROADMAP.md`.
 
-```
-*/5 * * * * www-data php /var/www/ModularAlliance/bin/cron.php
-```
+## Contributing
 
-### 6) Login
+See `CONTRIBUTING.md`.
 
-Visit `/auth/login` and authenticate with EVE SSO.
-The first user automatically becomes admin.
+## Legal / IP
 
----
-
-## 🖼️ Screenshots
-
-> Add screenshots to `docs/screenshots/` and reference them here.
-
-- Dashboard (placeholder): `docs/screenshots/dashboard.png`
-- Profile / Identity (placeholder): `docs/screenshots/profile.png`
-- Admin → ESI Cache (placeholder): `docs/screenshots/admin-cache.png`
-
-Example markdown once screenshots exist:
-
-```md
-![Dashboard](docs/screenshots/dashboard.png)
-```
-
----
-
-## 🧩 Modules
-
-Current baseline modules and core features (subject to change as the project stabilizes):
-
-- **auth** — EVE SSO login, token storage, identity bootstrap
-- **user** — linked characters (alts) management (WIP)
-- **admin** — ESI cache inspection, users/groups/rights, menu editor (incremental)
-
-Planned modules (see Roadmap):
-- killboard & killfeed ingestion
-- industry / blueprints / jobs
-- corp/alliance dashboards
-- fleet tooling & pings
-- audits / activity / reporting
-
----
-
-## 🗺️ Roadmap
-
-**Phase 1 — Foundation (Now)**
-- [x] Bootstrap + routing
-- [x] Tracked migrations (checksums)
-- [x] EVE SSO login flow
-- [x] ESI cache contract (TTL + scope_key)
-- [x] Rights + groups + admin override
-- [x] Menu registry/overrides (left, user_top, admin_top)
-- [x] Dark UI baseline
-
-**Phase 2 — Identity & Operations**
-- [ ] Multi-character (alts) linking UX + constraints
-- [ ] Settings: corp/alliance mode + branding
-- [ ] Admin: menu editor UX + safety rails
-- [ ] Admin: cache tooling (flush by scope, refresh stale)
-
-**Phase 3 — Gameplay Value**
-- [ ] Killboard module (cron-driven ingestion + rollups)
-- [ ] Industry/Blueprints module
-- [ ] Fleet doctrine library + fittings
-- [ ] Corp metrics dashboards
-
----
-
-## ✅ Contributing
-
-Please read **CONTRIBUTING.md** before opening a PR.
-We use a lightweight CLA process (see `CLA.md`) and require sign-offs (DCO-style).
-
----
-
-## ™ CCP / EVE Online Disclaimer
-
-EVE Online and related trademarks are the property of **CCP hf**.
-This project is an **independent, fan-made tool** and is **not affiliated with or endorsed by CCP**.
-Any EVE Online imagery or data used should comply with CCP’s applicable third‑party / fan site policies.
-
----
-
-## 📜 License
-
-MIT
-
----
-
-*From ore to fleets, from fleets to forges — everything circles back to creation.*
+EVE Online and all related trademarks, logos, and intellectual property are the property of CCP hf.  
+This project is community-made and is not endorsed by CCP hf.
