@@ -28,7 +28,7 @@ final class Layout
         }
 
         return '<!doctype html>
-<html>
+<html data-bs-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -38,7 +38,7 @@ final class Layout
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
   <link href="/assets/app.css" rel="stylesheet">
 </head>
-<body class="bg-light">
+<body class="app-bg">
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-primary px-3">
   <span class="navbar-brand fw-bold">killsineve.online</span>
@@ -57,7 +57,7 @@ final class Layout
 
 <div class="container-fluid">
   <div class="row">
-    <aside class="col-12 col-md-3 col-lg-2 bg-white border-end min-vh-100 p-3">
+    <aside class="col-12 col-md-3 col-lg-2 border-end min-vh-100 p-3">
       <ul class="nav nav-pills flex-column gap-1">' . $sideHtml . '</ul>
     </aside>
 
