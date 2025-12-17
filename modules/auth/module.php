@@ -40,8 +40,24 @@ return function (App $app): void {
         }
     });
 
-    $app->router->get('/auth/logout', function (): Response {
-        session_destroy();
-        return Response::redirect('/');
+        $app->router->get('/auth/logout', function (): Response {
+            session_destroy();
+            return Response::redirect('/');
+        });
+
+        $app->router->get('/me', function () use ($app): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        if ($cid <= 0) return Response::redirect('/auth/login');
+
+        $rows = $app->db->one(
+            "SELECT payload_json FROM esi_cache WHERE scope_key=? AND url LIKE 'GET /latest/characters/%/' ORDER BY fetched_at DESC LIMIT 1",
+            ["char:{$cid}"]
+        );
+
+        return Response::html(
+            "<h1>/me</h1><pre>" . htmlspecialchars($rows['payload_json'] ?? '{}') . "</pre>",
+            200
+        );
     });
+
 };

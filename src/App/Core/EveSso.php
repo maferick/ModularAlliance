@@ -95,6 +95,7 @@ final class EveSso
 
         $userId = $this->upsertUser($characterId, $characterName, $owner, $jwtPayload);
         $this->upsertToken($userId, $characterId, $token, $jwtPayload);
+        $this->warmIdentity($characterId, (string)$token['access_token']);
 
         $_SESSION['user_id'] = $userId;
         $_SESSION['character_id'] = $characterId;
@@ -208,6 +209,72 @@ final class EveSso
             ]
         );
     }
+
+    private function warmIdentity(int $characterId, string $accessToken): void
+    {
+        $http = new HttpClient();
+        $esi  = new EsiClient($http);
+        $cache = new EsiCache($this->db, $esi);
+
+        // Character (public) – corp_id
+        $char = $cache->getCached(
+            "char:{$characterId}",
+            "GET /latest/characters/{$characterId}/",
+            3600,
+            fn() => $esi->get("/latest/characters/{$characterId}/")
+        );
+
+        $corpId = (int)($char['corporation_id'] ?? 0);
+
+        // Character portrait
+        $cache->getCached(
+            "char:{$characterId}",
+            "GET /latest/characters/{$characterId}/portrait/",
+            86400,
+            fn() => $esi->get("/latest/characters/{$characterId}/portrait/")
+        );
+
+        if ($corpId > 0) {
+            // Corporation (public) – alliance_id (optional)
+            $corp = $cache->getCached(
+                "corp:{$corpId}",
+                "GET /latest/corporations/{$corpId}/",
+                3600,
+                fn() => $esi->get("/latest/corporations/{$corpId}/")
+            );
+
+            $cache->getCached(
+                "corp:{$corpId}",
+                "GET /latest/corporations/{$corpId}/icons/",
+                86400,
+                fn() => $esi->get("/latest/corporations/{$corpId}/icons/")
+            );
+
+            $allianceId = (int)($corp['alliance_id'] ?? 0);
+
+            if ($allianceId > 0) {
+                $cache->getCached(
+                    "alliance:{$allianceId}",
+                    "GET /latest/alliances/{$allianceId}/",
+                    3600,
+                    fn() => $esi->get("/latest/alliances/{$allianceId}/")
+                );
+
+                $cache->getCached(
+                    "alliance:{$allianceId}",
+                    "GET /latest/alliances/{$allianceId}/icons/",
+                    86400,
+                    fn() => $esi->get("/latest/alliances/{$allianceId}/icons/")
+                );
+            }
+        }
+
+        $this->audit('esi.warm_identity', [
+            'character_id' => $characterId,
+            'corp_id' => $corpId,
+        ]);
+    }
+
 
     private function audit(string $event, array $payload): void
     {
