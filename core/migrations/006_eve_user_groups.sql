@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS eve_user_groups (
+  user_id BIGINT UNSIGNED NOT NULL,
+  group_id BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, group_id),
+  KEY idx_group (group_id),
+  CONSTRAINT fk_eug_user FOREIGN KEY (user_id) REFERENCES eve_users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_eug_group FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
