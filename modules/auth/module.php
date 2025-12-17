@@ -45,47 +45,66 @@ return function (App $app): void {
             return Response::redirect('/');
         });
         
-        $app->router->get('/me', function () use ($app): Response {
-            $cid = (int)($_SESSION['character_id'] ?? 0);
-            if ($cid <= 0) return Response::redirect('/auth/login');
+$app->router->get('/me', function () use ($app): Response {
+    $cid = (int)($_SESSION['character_id'] ?? 0);
+    if ($cid <= 0) return Response::redirect('/auth/login');
 
-            $u = new \App\Core\Universe($app->db);
-            $p = $u->characterProfile($cid);
+    $u = new \App\Core\Universe($app->db);
+    $p = $u->characterProfile($cid);
 
-            $charName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
-            $portrait = $p['character']['portrait']['px256x256'] ?? $p['character']['portrait']['px128x128'] ?? null;
+    $charName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
+    $portrait = $p['character']['portrait']['px256x256'] ?? $p['character']['portrait']['px128x128'] ?? null;
 
-            $corpName = htmlspecialchars($p['corporation']['name'] ?? '—');
-            $corpTicker = htmlspecialchars($p['corporation']['ticker'] ?? '');
-            $corpIcon = $p['corporation']['icons']['px128x128'] ?? $p['corporation']['icons']['px64x64'] ?? null;
+    $corpName = htmlspecialchars($p['corporation']['name'] ?? '—');
+    $corpTicker = htmlspecialchars($p['corporation']['ticker'] ?? '');
+    $corpIcon = $p['corporation']['icons']['px128x128'] ?? $p['corporation']['icons']['px64x64'] ?? null;
 
-            $allName = htmlspecialchars($p['alliance']['name'] ?? '—');
-            $allTicker = htmlspecialchars($p['alliance']['ticker'] ?? '');
-            $allIcon = $p['alliance']['icons']['px128x128'] ?? $p['alliance']['icons']['px64x64'] ?? null;
+    $allName = htmlspecialchars($p['alliance']['name'] ?? '—');
+    $allTicker = htmlspecialchars($p['alliance']['ticker'] ?? '');
+    $allIcon = $p['alliance']['icons']['px128x128'] ?? $p['alliance']['icons']['px64x64'] ?? null;
 
-            $html = "<h1>Profile</h1>";
+    $html = "<h1>Profile</h1>";
 
-            $html .= "<div style='display:flex;gap:16px;align-items:center;margin:12px 0;'>";
-            if ($portrait) $html .= "<img src='".htmlspecialchars($portrait)."' width='96' height='96' style='border-radius:10px;'>";
-            $html .= "<div><div style='font-size:22px;font-weight:700;'>{$charName}</div></div>";
-            $html .= "</div>";
+    $html .= "<div style='display:flex;gap:16px;align-items:center;margin:12px 0;'>";
+    if ($portrait) $html .= "<img src='".htmlspecialchars($portrait)."' width='96' height='96' style='border-radius:10px;'>";
+    $html .= "<div><div style='font-size:22px;font-weight:700;'>{$charName}</div></div>";
+    $html .= "</div>";
 
-            $html .= "<h2>Corporation</h2>";
-            $html .= "<div style='display:flex;gap:12px;align-items:center;margin:8px 0;'>";
-            if ($corpIcon) $html .= "<img src='".htmlspecialchars($corpIcon)."' width='64' height='64' style='border-radius:10px;'>";
-            $html .= "<div><div style='font-size:18px;font-weight:700;'>{$corpName}</div>";
-            if ($corpTicker !== '') $html .= "<div style='color:#666;'>[{$corpTicker}]</div>";
-            $html .= "</div></div>";
+    $html .= "<h2>Corporation</h2>";
+    $html .= "<div style='display:flex;gap:12px;align-items:center;margin:8px 0;'>";
+    if ($corpIcon) $html .= "<img src='".htmlspecialchars($corpIcon)."' width='64' height='64' style='border-radius:10px;'>";
+    $html .= "<div><div style='font-size:18px;font-weight:700;'>{$corpName}</div>";
+    if ($corpTicker !== '') $html .= "<div style='color:#666;'>[{$corpTicker}]</div>";
+    $html .= "</div></div>";
 
-            $html .= "<h2>Alliance</h2>";
-            $html .= "<div style='display:flex;gap:12px;align-items:center;margin:8px 0;'>";
-            if ($allIcon) $html .= "<img src='".htmlspecialchars($allIcon)."' width='64' height='64' style='border-radius:10px;'>";
-            $html .= "<div><div style='font-size:18px;font-weight:700;'>{$allName}</div>";
-            if ($allTicker !== '') $html .= "<div style='color:#666;'>[{$allTicker}]</div>";
-            $html .= "</div></div>";
+    $html .= "<h2>Alliance</h2>";
+    $html .= "<div style='display:flex;gap:12px;align-items:center;margin:8px 0;'>";
+    if ($allIcon) $html .= "<img src='".htmlspecialchars($allIcon)."' width='64' height='64' style='border-radius:10px;'>";
+    $html .= "<div><div style='font-size:18px;font-weight:700;'>{$allName}</div>";
+    if ($allTicker !== '') $html .= "<div style='color:#666;'>[{$allTicker}]</div>";
+    $html .= "</div></div>";
 
-            return Response::html($html, 200);
-        });
+    // Rights gate (admin hard override is inside Rights)
+    $rights = new \App\Core\Rights($app->db);
+    $hasRight = function (string $right) use ($rights): bool {
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($uid <= 0) return false;
+        return $rights->userHasRight($uid, $right);
+    };
+
+    // Menus
+    $leftTree  = $app->menu->tree('left', $hasRight);
+    $adminTree = $app->menu->tree('admin_top', $hasRight);
+    $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
+
+    // Logged in => hide "Login"
+    $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
+
+    return Response::html(
+        \App\Core\Layout::page('Profile', $html, $leftTree, $adminTree, $userTree),
+        200
+    );
+});
 
 
 };
