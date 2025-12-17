@@ -1,6 +1,12 @@
 # ModularAlliance
 *A modular EVE Online portal framework — built for corporations, alliances, and long-term sanity.*
 
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+![PHP](https://img.shields.io/badge/PHP-8.3%2B-777BB4.svg)
+![MariaDB](https://img.shields.io/badge/MariaDB-10.11%2B-003545.svg)
+![ESI](https://img.shields.io/badge/EVE%20ESI-SSO%20%2B%20Cache-00AEEF.svg)
+![Theme](https://img.shields.io/badge/Theme-Dark%20by%20default-111827.svg)
+
 > “There is no endgame — only maintenance.”
 
 ---
@@ -71,9 +77,9 @@ Every migration is checksummed and tracked. No silent schema drift.
 ## 🧭 Menus & Rights
 
 Menu areas:
-- left (main navigation)
-- user_top (profile, alts, logout)
-- admin_top (admin tools)
+- `left` (main navigation)
+- `user_top` (profile, alts, logout)
+- `admin_top` (admin tools)
 
 Menus are:
 - module-registered
@@ -100,30 +106,9 @@ Designed to run every 5 minutes via system cron.
 ## 🎨 UI
 
 - Bootstrap 5.3
-- Dark mode default
+- Dark mode by default
 - Modern control-panel aesthetic
 - No JS frameworks
-
----
-
-## 🟢 Status
-
-Core foundation is complete:
-- Bootstrap
-- Migrations
-- EVE SSO
-- ESI cache
-- Rights
-- Menus
-- Dark UI
-
----
-
-## 🧑‍🚀 Intended Audience
-
-- Corp / alliance leadership
-- Developers tired of spaghetti portals
-- Anyone planning to maintain a tool long-term
 
 ---
 
@@ -137,14 +122,14 @@ Core foundation is complete:
 - MariaDB 10.11+
 - EVE Online developer application (SSO)
 
-### 1. Clone the repository
+### 1) Clone the repository
 
 ```
 git clone https://github.com/maferick/ModularAlliance.git
 cd ModularAlliance
 ```
 
-### 2. Create configuration
+### 2) Create configuration
 
 Create `/var/www/ModularAlliance/config.php` (not tracked by git):
 
@@ -167,13 +152,13 @@ return [
 ];
 ```
 
-### 3. Install database schema
+### 3) Run migrations
 
 ```
 php bin/migrate.php
 ```
 
-### 4. Configure nginx
+### 4) Configure nginx
 
 Point your document root to:
 
@@ -183,16 +168,89 @@ Point your document root to:
 
 Ensure PHP-FPM is enabled.
 
-### 5. Run cron
+### 5) Run cron
 
 ```
 */5 * * * * www-data php /var/www/ModularAlliance/bin/cron.php
 ```
 
-### 6. Login
+### 6) Login
 
 Visit `/auth/login` and authenticate with EVE SSO.
 The first user automatically becomes admin.
+
+---
+
+## 🖼️ Screenshots
+
+> Add screenshots to `docs/screenshots/` and reference them here.
+
+- Dashboard (placeholder): `docs/screenshots/dashboard.png`
+- Profile / Identity (placeholder): `docs/screenshots/profile.png`
+- Admin → ESI Cache (placeholder): `docs/screenshots/admin-cache.png`
+
+Example markdown once screenshots exist:
+
+```md
+![Dashboard](docs/screenshots/dashboard.png)
+```
+
+---
+
+## 🧩 Modules
+
+Current baseline modules and core features (subject to change as the project stabilizes):
+
+- **auth** — EVE SSO login, token storage, identity bootstrap
+- **user** — linked characters (alts) management (WIP)
+- **admin** — ESI cache inspection, users/groups/rights, menu editor (incremental)
+
+Planned modules (see Roadmap):
+- killboard & killfeed ingestion
+- industry / blueprints / jobs
+- corp/alliance dashboards
+- fleet tooling & pings
+- audits / activity / reporting
+
+---
+
+## 🗺️ Roadmap
+
+**Phase 1 — Foundation (Now)**
+- [x] Bootstrap + routing
+- [x] Tracked migrations (checksums)
+- [x] EVE SSO login flow
+- [x] ESI cache contract (TTL + scope_key)
+- [x] Rights + groups + admin override
+- [x] Menu registry/overrides (left, user_top, admin_top)
+- [x] Dark UI baseline
+
+**Phase 2 — Identity & Operations**
+- [ ] Multi-character (alts) linking UX + constraints
+- [ ] Settings: corp/alliance mode + branding
+- [ ] Admin: menu editor UX + safety rails
+- [ ] Admin: cache tooling (flush by scope, refresh stale)
+
+**Phase 3 — Gameplay Value**
+- [ ] Killboard module (cron-driven ingestion + rollups)
+- [ ] Industry/Blueprints module
+- [ ] Fleet doctrine library + fittings
+- [ ] Corp metrics dashboards
+
+---
+
+## ✅ Contributing
+
+Please read **CONTRIBUTING.md** before opening a PR.
+We use a lightweight CLA process (see `CLA.md`) and require sign-offs (DCO-style).
+
+---
+
+## ™ CCP / EVE Online Disclaimer
+
+EVE Online and related trademarks are the property of **CCP hf**.
+This project is an **independent, fan-made tool** and is **not affiliated with or endorsed by CCP**.
+Any EVE Online imagery or data used should comply with CCP’s applicable third‑party / fan site policies.
 
 ---
 
