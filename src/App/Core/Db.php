@@ -60,4 +60,12 @@ final class Db
         $row = $stmt->fetch();
         return $row !== false ? $row : null;
     }
+
+        public function all(string $sql, array $params = []): array
+    {
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll();
+    }
+
 }
