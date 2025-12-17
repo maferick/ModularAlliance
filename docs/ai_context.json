@@ -1,0 +1,142 @@
+cat > /var/www/ModularAlliance/docs/ai_context.json <<'JSON'
+{
+  "project": {
+    "name": "ModularAlliance",
+    "domain": "killsineve.online",
+    "docroot": "/var/www/ModularAlliance/public",
+    "server": "Ubuntu 24.04",
+    "php": "8.3-fpm",
+    "web": "nginx (shows openresty header externally)"
+  },
+  "non_negotiables": {
+    "no_ids_in_ui": "Never display numeric IDs on web pages. IDs are internal keys only. Always resolve to names/tickers/icons via cached resolvers.",
+    "modules_no_global_functions": true,
+    "namespacing_autoloading": "App\\\\* autoloads from /src/App/*; avoid require_once chains",
+    "migrations_tracked": "migration_log tracks module_slug + file_path + checksum + applied/failed",
+    "cache_everything": "Any ESI (or external) fetch must be stored in DB with TTL and served from cache by default",
+    "admin_safety": "Admin override must exist; admin cannot be locked out by menu-rights (to be implemented)"
+  },
+  "config": {
+    "location": "/var/www/config.php",
+    "in_git": false,
+    "contains": [
+      "db credentials",
+      "eve_sso metadata_url/client_id/client_secret/callback_url/scopes"
+    ],
+    "security_note": "Never store GitHub tokens in config.php or anywhere in repo."
+  },
+  "database": {
+    "mariadb_version": "10.11.13",
+    "database_name_in_use": "eve_portal",
+    "tables_present": [
+      "esi_cache",
+      "eve_users",
+      "eve_tokens",
+      "oauth_provider_cache",
+      "sso_login_state",
+      "sso_audit",
+      "users",
+      "tokens",
+      "groups",
+      "rights",
+      "group_rights",
+      "user_groups",
+      "menu_items",
+      "modules",
+      "settings",
+      "cron_jobs",
+      "migration_log"
+    ],
+    "esi_cache_scopes_seen": [
+      "char:<character_id>",
+      "corp:<corp_id>",
+      "alliance:<alliance_id>"
+    ]
+  },
+  "routing": {
+    "front_controller": "/public/index.php",
+    "request_adapter": "Request::fromGlobals normalizes /index.php => / and supports legacy ?route=",
+    "router": "Router dispatches exact path matches, returns Response"
+  },
+  "auth_sso": {
+    "status": "WORKING",
+    "flow": [
+      "/auth/login redirects to CCP using metadata discovery + PKCE",
+      "/auth/callback exchanges code for token (Basic auth client_id:client_secret)",
+      "JWT payload is decoded (signature validation not yet implemented)",
+      "User and tokens stored in eve_users/eve_tokens",
+      "Session sets ma_session + user_id + character_id"
+    ],
+    "sso_example": {
+      "character_name": "lellebel",
+      "character_id": 386834424,
+      "corp_id": 98746727,
+      "alliance_id": 99008905
+    }
+  },
+  "esi_warmup": {
+    "status": "WORKING",
+    "endpoints_cached": [
+      "GET /latest/characters/{character_id}/",
+      "GET /latest/characters/{character_id}/portrait/",
+      "GET /latest/corporations/{corp_id}/",
+      "GET /latest/corporations/{corp_id}/icons/",
+      "GET /latest/alliances/{alliance_id}/",
+      "GET /latest/alliances/{alliance_id}/icons/"
+    ],
+    "ttls": {
+      "profile": 3600,
+      "images": 86400
+    }
+  },
+  "ui": {
+    "homepage": "Dashboard uses Layout (left menu + Admin dropdown) and Universe resolver for names/tickers",
+    "profile_page": "/me renders human-friendly profile; no IDs"
+  },
+  "menu": {
+    "status": "WORKING (basic)",
+    "implementation": "Menu service: menu_registry + menu_overrides, nested tree render, rights filter placeholder returns true",
+    "areas": [
+      "left",
+      "admin_top"
+    ],
+    "wishes": [
+      "Left menu: only dashboard + non-admin modules the user has rights for",
+      "Admin: top button only; admin pages not duplicated in left menu",
+      "Nested menus (>=4 levels), drag/drop ordering later",
+      "Menu access rights editor later",
+      "Admin override to prevent lockout later"
+    ]
+  },
+  "core_files": {
+    "current_style": "Most logic in /src/App/Core/*.php; /core/bootstrap.php exists; facades core/db.php etc not yet created",
+    "important_files": [
+      "core/bootstrap.php",
+      "src/App/Core/App.php",
+      "src/App/Core/Db.php",
+      "src/App/Core/Migrator.php",
+      "src/App/Core/Menu.php",
+      "src/App/Core/Layout.php",
+      "src/App/Core/Universe.php",
+      "src/App/Core/EveSso.php",
+      "modules/auth/module.php"
+    ]
+  },
+  "next_steps": [
+    "Implement real Rights system + admin override (group admin => always pass)",
+    "Add core facades under /core/ (db.php/auth.php/rights.php/menu.php/esi.php/esi_cache.php/cron.php/migrator.php) mapping to namespaced classes",
+    "Add a universal resolver table for type_id/system_id/etc (universe_cache entity_type/entity_id/name/icon_url/extra_json) + resolver methods; enforce no-IDs UI globally",
+    "Build admin pages: cache console (scope counts/flush/force refresh), menu editor (DB overrides), users/groups/rights editor",
+    "Add cron registry + runner and move heavy jobs there",
+    "Add JWT signature validation using JWKS (recommended hardening)"
+  ],
+  "how_to_resume": {
+    "instructions_for_new_chat": [
+      "Open repo root and paste docs/ai_context.json into the chat",
+      "State current goal (e.g., implement Rights/Admin override, or add universe_cache for ship/system/type names)",
+      "Mention 'NO IDs in UI' rule"
+    ]
+  }
+}
+JSON
+
