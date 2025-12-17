@@ -182,6 +182,90 @@ final class Universe
         ) ?? [];
     }
 
+    public function characterProfile(int $characterId): array
+{
+    $client = new EsiClient(new HttpClient(), 'https://esi.evetech.net');
+    $cache  = new EsiCache($this->db, $client);
+
+    // Character basics (public)
+    $character = $cache->getCached(
+        "char:{$characterId}",
+        "GET /latest/characters/{$characterId}/",
+        3600,
+        fn () => $client->get("/latest/characters/{$characterId}/")
+    );
+
+    // Character portrait (public)
+    $portrait = $cache->getCached(
+        "char:{$characterId}",
+        "GET /latest/characters/{$characterId}/portrait/",
+        86400,
+        fn () => $client->get("/latest/characters/{$characterId}/portrait/")
+    );
+
+    $corp = [];
+    $corpIcons = [];
+    $alliance = [];
+    $allianceIcons = [];
+
+    $corpId = (int)($character['corporation_id'] ?? 0);
+    if ($corpId > 0) {
+        $corp = $cache->getCached(
+            "corp:{$corpId}",
+            "GET /latest/corporations/{$corpId}/",
+            3600,
+            fn () => $client->get("/latest/corporations/{$corpId}/")
+        );
+
+        $corpIcons = $cache->getCached(
+            "corp:{$corpId}",
+            "GET /latest/corporations/{$corpId}/icons/",
+            86400,
+            fn () => $client->get("/latest/corporations/{$corpId}/icons/")
+        );
+    }
+
+    $allianceId = (int)($character['alliance_id'] ?? 0);
+    if ($allianceId > 0) {
+        $alliance = $cache->getCached(
+            "alliance:{$allianceId}",
+            "GET /latest/alliances/{$allianceId}/",
+            3600,
+            fn () => $client->get("/latest/alliances/{$allianceId}/")
+        );
+
+        $allianceIcons = $cache->getCached(
+            "alliance:{$allianceId}",
+            "GET /latest/alliances/{$allianceId}/icons/",
+            86400,
+            fn () => $client->get("/latest/alliances/{$allianceId}/icons/")
+        );
+    }
+
+    return [
+        'character' => [
+            'id' => $characterId,               // internal only; do not display in UI
+            'name' => $character['name'] ?? null,
+            'data' => $character,
+            'portrait' => $portrait,
+        ],
+        'corporation' => [
+            'id' => $corpId,                    // internal only; do not display in UI
+            'name' => $corp['name'] ?? null,
+            'ticker' => $corp['ticker'] ?? null,
+            'data' => $corp,
+            'icons' => $corpIcons,
+        ],
+        'alliance' => [
+            'id' => $allianceId,                // internal only; do not display in UI
+            'name' => $alliance['name'] ?? null,
+            'ticker' => $alliance['ticker'] ?? null,
+            'data' => $alliance,
+            'icons' => $allianceIcons,
+        ],
+    ];
+}
+
     private function bestEffortAccessToken(): ?string
     {
         $candidates = [

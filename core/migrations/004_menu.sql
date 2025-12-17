@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS menu_registry (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  slug VARCHAR(128) NOT NULL UNIQUE,
+  title VARCHAR(128) NOT NULL,
+  url VARCHAR(255) NOT NULL,
+  parent_slug VARCHAR(128) NULL,
+  sort_order INT NOT NULL DEFAULT 10,
+  area ENUM('left','admin_top') NOT NULL DEFAULT 'left',
+  right_slug VARCHAR(128) NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 1
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS menu_overrides (
+  slug VARCHAR(128) NOT NULL PRIMARY KEY,
+  title VARCHAR(128) NULL,
+  url VARCHAR(255) NULL,
+  parent_slug VARCHAR(128) NULL,
+  sort_order INT NULL,
+  area ENUM('left','admin_top') NULL,
+  right_slug VARCHAR(128) NULL,
+  enabled TINYINT(1) NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
