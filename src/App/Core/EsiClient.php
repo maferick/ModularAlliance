@@ -9,30 +9,43 @@ final class EsiClient
 
     public function get(string $path, ?string $accessToken = null, array $query = []): array
     {
+        [$status, $data] = $this->getWithStatus($path, $accessToken, $query);
+
+        if ($status < 200 || $status >= 300) {
+            $preview = is_string($data) ? substr($data, 0, 300) : json_encode($data);
+            throw new \RuntimeException("ESI HTTP {$status}: " . (string)$preview);
+        }
+        if (!is_array($data)) {
+            throw new \RuntimeException("ESI invalid JSON for {$path}");
+        }
+        return $data;
+    }
+
+    /** @return array{0:int,1:array|string|null} */
+    public function getWithStatus(string $path, ?string $accessToken = null, array $query = []): array
+    {
         $url = rtrim($this->baseUrl, '/') . '/' . ltrim($path, '/');
         if ($query) $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($query);
 
-        $headers = [];
-        if ($accessToken) {
-            $headers[] = 'Authorization: Bearer ' . $accessToken;
-        }
-        $headers[] = 'Accept: application/json';
+        $headers = ['Accept: application/json'];
+        if ($accessToken) $headers[] = 'Authorization: Bearer ' . $accessToken;
 
-        return $this->httpGetJson($url, $headers);
+        return $this->httpGetJsonWithStatus($url, $headers);
     }
 
-    private function httpGetJson(string $url, array $headers): array
+    /** @return array{0:int,1:array|string|null} */
+    private function httpGetJsonWithStatus(string $url, array $headers): array
     {
-        // reuse your HttpClient style, but allow headers
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CUSTOMREQUEST  => 'GET',
             CURLOPT_HTTPHEADER     => $headers,
-            CURLOPT_TIMEOUT        => 15,
+            CURLOPT_TIMEOUT        => 20,
         ]);
         $resp = curl_exec($ch);
         $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+
         if ($resp === false) {
             $err = curl_error($ch);
             curl_close($ch);
@@ -40,15 +53,8 @@ final class EsiClient
         }
         curl_close($ch);
 
-        if ($status < 200 || $status >= 300) {
-            throw new \RuntimeException("ESI HTTP {$status}: " . substr((string)$resp, 0, 300));
-        }
-
-        $data = json_decode((string)$resp, true);
-        if (!is_array($data)) {
-            throw new \RuntimeException("ESI invalid JSON from {$url}");
-        }
-        return $data;
+        $decoded = json_decode((string)$resp, true);
+        if (is_array($decoded)) return [$status, $decoded];
+        return [$status, (string)$resp];
     }
 }
-
