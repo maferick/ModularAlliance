@@ -44,6 +44,12 @@ final class Db
 
     public function pdo(): PDO { return $this->pdo; }
 
+    // Transaction helpers (Option B: keep PDO encapsulated for callers)
+    public function begin(): void { $this->pdo->beginTransaction(); }
+    public function commit(): void { $this->pdo->commit(); }
+    public function rollback(): void { if ($this->pdo->inTransaction()) $this->pdo->rollBack(); }
+    public function inTx(): bool { return $this->pdo->inTransaction(); }
+
     public function exec(string $sql): void { $this->pdo->exec($sql); }
 
     public function run(string $sql, array $params = []): int
