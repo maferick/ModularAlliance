@@ -56,6 +56,7 @@ final class App
         $app->menu->register(['slug'=>'profile','title'=>'Profile','url'=>'/me','sort_order'=>20,'area'=>'left']);
 
         $app->menu->register(['slug'=>'admin.root','title'=>'Admin Home','url'=>'/admin','sort_order'=>10,'area'=>'admin_top','right_slug'=>'admin.access']);
+        $app->menu->register(['slug'=>'admin.settings','title'=>'Settings','url'=>'/admin/settings','sort_order'=>15,'area'=>'admin_top','right_slug'=>'admin.settings']);
         $app->menu->register(['slug'=>'admin.cache','title'=>'ESI Cache','url'=>'/admin/cache','sort_order'=>20,'area'=>'admin_top','right_slug'=>'admin.cache']);
         $app->menu->register(['slug'=>'admin.rights','title'=>'Rights','url'=>'/admin/rights','sort_order'=>25,'area'=>'admin_top','right_slug'=>'admin.rights']);
         $app->menu->register(['slug'=>'admin.users','title'=>'Users & Groups','url'=>'/admin/users','sort_order'=>30,'area'=>'admin_top','right_slug'=>'admin.users']);
@@ -123,13 +124,45 @@ final class App
             $adminTree = $app->menu->tree('admin_top', $hasRight);
             $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
             $userTree  = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
-            return Response::html(Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree), 200);
+
+            // Brand (settings-driven, safe fallbacks)
+            $settings = new Settings($app->db);
+
+            $brandName = $settings->get('site.brand.name', 'killsineve.online') ?? 'killsineve.online';
+            $type = $settings->get('site.identity.type', 'corporation') ?? 'corporation'; // corporation|alliance
+            $id = (int)($settings->get('site.identity.id', '0') ?? '0');
+
+            // If not configured, infer from logged-in character (best-effort)
+            if ($id <= 0) {
+                $cid = (int)($_SESSION['character_id'] ?? 0);
+                if ($cid > 0) {
+                    $u = new Universe($app->db);
+                    $p = $u->characterProfile($cid);
+                    if ($type === 'alliance' && !empty($p['alliance']['id'])) {
+                        $id = (int)$p['alliance']['id'];
+                        if ($brandName === 'killsineve.online' && !empty($p['alliance']['name'])) $brandName = (string)$p['alliance']['name'];
+                    } elseif (!empty($p['corporation']['id'])) {
+                        $id = (int)$p['corporation']['id'];
+                        if ($brandName === 'killsineve.online' && !empty($p['corporation']['name'])) $brandName = (string)$p['corporation']['name'];
+                    }
+                }
+            }
+
+            $brandLogoUrl = null;
+            if ($id > 0) {
+                $brandLogoUrl = ($type === 'alliance')
+                    ? "https://images.evetech.net/alliances/{$id}/logo?size=64"
+                    : "https://images.evetech.net/corporations/{$id}/logo?size=64";
+            }
+
+            return Response::html(Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree, $brandName, $brandLogoUrl), 200);
         };
 
         $app->router->get('/admin', function () use ($render): Response {
             $body = "<h1>Admin</h1>
                      <p class='text-muted'>Control plane for platform configuration and governance.</p>
                      <ul>
+                       <li><a href='/admin/settings'>Settings</a> – site identity & branding</li>
                        <li><a href='/admin/rights'>Rights</a> – groups & permission grants</li>
                        <li><a href='/admin/users'>Users</a> – assign groups to users</li>
                        <li><a href='/admin/menu'>Menu Editor</a></li>
@@ -138,7 +171,260 @@ final class App
             return $render('Admin', $body);
         }, ['right' => 'admin.access']);
 
-        $app->router->get('/admin/cache', fn() => Response::text("Cache console (next)\n", 200), ['right' => 'admin.cache']);
+        $app->router->get('/admin/cache', function () use ($app, $render): Response {
+            $db = $app->db;
+
+            // Stats
+            $esiCount = (int)($db->one("SELECT COUNT(*) AS c FROM esi_cache")['c'] ?? 0);
+            $esiNewest = $db->one("SELECT fetched_at FROM esi_cache ORDER BY fetched_at DESC LIMIT 1")['fetched_at'] ?? null;
+            $esiOldest = $db->one("SELECT fetched_at FROM esi_cache ORDER BY fetched_at ASC LIMIT 1")['fetched_at'] ?? null;
+
+            $uniCount = (int)($db->one("SELECT COUNT(*) AS c FROM universe_entities")['c'] ?? 0);
+
+            $msg = isset($_GET['msg']) ? (string)$_GET['msg'] : '';
+            $msgHtml = '';
+            if ($msg !== '') {
+                $msgHtml = "<div class='alert alert-info mb-3'>" . htmlspecialchars($msg) . "</div>";
+            }
+
+            $body = "
+                <h1>ESI Cache</h1>
+                <p class='text-muted'>Operational controls for cache hygiene, warm-up, and rapid recovery. (Right: <code>admin.cache</code>)</p>
+                {$msgHtml}
+
+                <div class='row g-3'>
+                  <div class='col-12 col-lg-6'>
+                    <div class='card'>
+                      <div class='card-body'>
+                        <h5 class='card-title'>Current footprint</h5>
+                        <table class='table table-sm mb-0'>
+                          <tbody>
+                            <tr><th scope='row'>esi_cache rows</th><td>{$esiCount}</td></tr>
+                            <tr><th scope='row'>esi_cache oldest</th><td>" . htmlspecialchars((string)($esiOldest ?? '-')) . "</td></tr>
+                            <tr><th scope='row'>esi_cache newest</th><td>" . htmlspecialchars((string)($esiNewest ?? '-')) . "</td></tr>
+                            <tr><th scope='row'>universe_entities rows</th><td>{$uniCount}</td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class='col-12 col-lg-6'>
+                    <div class='card'>
+                      <div class='card-body'>
+                        <h5 class='card-title'>Actions</h5>
+
+                        <form method='post' action='/admin/cache' class='d-grid gap-2'>
+                          <input type='hidden' name='action' value='purge_expired'>
+                          <button class='btn btn-outline-secondary' type='submit'>Remove expired ESI entries</button>
+                        </form>
+
+                        <hr>
+
+                        <form method='post' action='/admin/cache' class='d-grid gap-2' onsubmit=\"return confirm('Purge ALL ESI cache entries?');\">
+                          <input type='hidden' name='action' value='purge_esi_all'>
+                          <button class='btn btn-outline-danger' type='submit'>Purge ALL ESI cache (esi_cache)</button>
+                        </form>
+
+                        <form method='post' action='/admin/cache' class='d-grid gap-2 mt-2' onsubmit=\"return confirm('Purge ALL Universe entities cache?');\">
+                          <input type='hidden' name='action' value='purge_universe_all'>
+                          <button class='btn btn-outline-danger' type='submit'>Purge ALL Universe cache (universe_entities)</button>
+                        </form>
+
+                        <form method='post' action='/admin/cache' class='d-grid gap-2 mt-2' onsubmit=\"return confirm('Purge ALL caches (ESI + Universe)?');\">
+                          <input type='hidden' name='action' value='purge_all'>
+                          <button class='btn btn-danger' type='submit'>Purge ALL caches</button>
+                        </form>
+
+                        <hr>
+
+                        <form method='post' action='/admin/cache' class='d-grid gap-2'>
+                          <input type='hidden' name='action' value='renew_identity'>
+                          <button class='btn btn-primary' type='submit'>Renew (force refresh) identity cache now</button>
+                          <div class='form-text'>Warms core identity endpoints for the currently logged-in character (and corp/alliance) using <em>force refresh</em>.</div>
+                        </form>
+
+                        <form method='post' action='/admin/cache' class='d-grid gap-2 mt-2'>
+                          <input type='hidden' name='action' value='restart'>
+                          <button class='btn btn-warning' type='submit'>Restart cache console workflow</button>
+                          <div class='form-text'>Runs: remove expired → renew identity warm-up (best-effort).</div>
+                        </form>
+
+                      </div>
+                    </div>
+                  </div>
+                </div>
+            ";
+
+            return $render('ESI Cache', $body);
+        }, ['right' => 'admin.cache']);
+
+        $app->router->post('/admin/cache', function () use ($app): Response {
+            $db = $app->db;
+            $action = $_POST['action'] ?? '';
+            $msg = 'No action executed.';
+
+            $warmIdentity = function (bool $force = true) use ($db): string {
+                $characterId = (int)($_SESSION['character_id'] ?? 0);
+                if ($characterId <= 0) {
+                    return 'No logged-in character in session; cannot warm identity cache.';
+                }
+
+                $client = new \App\Core\EsiClient(new \App\Core\HttpClient(), 'https://esi.evetech.net');
+                $cache  = new \App\Core\EsiCache($db, $client);
+
+                // Force refresh core identity endpoints
+                $char = $cache->getCached("char:{$characterId}", "GET /latest/characters/{$characterId}/", 3600, $force);
+
+                $cache->getCached("char:{$characterId}", "GET /latest/characters/{$characterId}/portrait/", 86400, $force);
+
+                $corpId = (int)($char['corporation_id'] ?? 0);
+                $allianceId = 0;
+
+                if ($corpId > 0) {
+                    $corp = $cache->getCached("corp:{$corpId}", "GET /latest/corporations/{$corpId}/", 3600, $force);
+                    $allianceId = (int)($corp['alliance_id'] ?? 0);
+                }
+
+                if ($allianceId > 0) {
+                    $cache->getCached("alliance:{$allianceId}", "GET /latest/alliances/{$allianceId}/", 3600, $force);
+                }
+
+                return 'Identity cache warmed (character, portrait, corporation, alliance) with force refresh.';
+            };
+
+            try {
+                if ($action === 'purge_expired') {
+                    $rows = $db->run("DELETE FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()");
+                    $msg = "Removed {$rows} expired ESI cache entries.";
+                } elseif ($action === 'purge_esi_all') {
+                    $db->exec("TRUNCATE TABLE esi_cache");
+                    $msg = "Purged all ESI cache entries (esi_cache).";
+                } elseif ($action === 'purge_universe_all') {
+                    $db->exec("TRUNCATE TABLE universe_entities");
+                    $msg = "Purged all Universe cache entries (universe_entities).";
+                } elseif ($action === 'purge_all') {
+                    $db->exec("TRUNCATE TABLE esi_cache");
+                    $db->exec("TRUNCATE TABLE universe_entities");
+                    $msg = "Purged all caches (esi_cache + universe_entities).";
+                } elseif ($action === 'renew_identity') {
+                    $msg = $warmIdentity(true);
+                } elseif ($action === 'restart') {
+                    $rows = $db->run("DELETE FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()");
+                    $warm = $warmIdentity(true);
+                    $msg = "Restart workflow complete. {$rows} expired removed. {$warm}";
+                } else {
+                    $msg = "Unknown action: " . (string)$action;
+                }
+            } catch (\Throwable $e) {
+                $msg = "Action failed: " . $e->getMessage();
+            }
+
+            return Response::redirect('/admin/cache?msg=' . rawurlencode($msg));
+        }, ['right' => 'admin.cache']);
+
+        // Settings (branding / identity)
+        $app->router->get('/admin/settings', function () use ($app, $render): Response {
+            $settings = new Settings($app->db);
+
+            $brandName = $settings->get('site.brand.name', 'killsineve.online') ?? 'killsineve.online';
+            $type = $settings->get('site.identity.type', 'corporation') ?? 'corporation';
+            $id = (int)($settings->get('site.identity.id', '0') ?? '0');
+
+            // Build quick-pick options from logged-in character profile
+            $options = [];
+            $cid = (int)($_SESSION['character_id'] ?? 0);
+            if ($cid > 0) {
+                $u = new Universe($app->db);
+                $p = $u->characterProfile($cid);
+
+                if (!empty($p['corporation']['id'])) {
+                    $label = (string)($p['corporation']['name'] ?? 'Corporation');
+                    if (!empty($p['corporation']['ticker'])) $label .= " [" . (string)$p['corporation']['ticker'] . "]";
+                    $options[] = ['type' => 'corporation', 'id' => (int)$p['corporation']['id'], 'label' => $label];
+                }
+                if (!empty($p['alliance']['id'])) {
+                    $label = (string)($p['alliance']['name'] ?? 'Alliance');
+                    if (!empty($p['alliance']['ticker'])) $label .= " [" . (string)$p['alliance']['ticker'] . "]";
+                    $options[] = ['type' => 'alliance', 'id' => (int)$p['alliance']['id'], 'label' => $label];
+                }
+            }
+
+            $h = "<h1>Settings</h1>
+                  <p class='text-muted'>Control plane for site identity, branding and platform defaults.</p>
+
+                  <div class='card'><div class='card-body'>
+                    <form method='post' action='/admin/settings/save' class='row g-3'>
+
+                      <div class='col-12 col-lg-6'>
+                        <label class='form-label'>Site name</label>
+                        <input class='form-control' name='site_brand_name' value='" . htmlspecialchars($brandName) . "'>
+                        <div class='form-text'>Shown top-left and used as the platform brand label.</div>
+                      </div>
+
+                      <div class='col-12 col-lg-3'>
+                        <label class='form-label'>Website type</label>
+                        <select class='form-select' name='site_identity_type'>
+                          <option value='corporation'" . ($type==='corporation'?' selected':'') . ">Corporation</option>
+                          <option value='alliance'" . ($type==='alliance'?' selected':'') . ">Alliance</option>
+                        </select>
+                      </div>
+
+                      <div class='col-12 col-lg-3'>
+                        <label class='form-label'>Identity ID</label>
+                        <input class='form-control' name='site_identity_id' value='" . htmlspecialchars((string)$id) . "'>
+                        <div class='form-text'>Used for logo + favicon. Paste an EVE corp/alliance ID, or use quick pick.</div>
+                      </div>";
+
+            if (!empty($options)) {
+                $h .= "<div class='col-12'>
+                         <label class='form-label'>Quick pick (from your logged-in character)</label>
+                         <div class='d-flex flex-wrap gap-2'>";
+                foreach ($options as $o) {
+                    $oid = (int)$o['id'];
+                    $logo = ($o['type'] === 'alliance')
+                        ? "https://images.evetech.net/alliances/{$oid}/logo?size=32"
+                        : "https://images.evetech.net/corporations/{$oid}/logo?size=32";
+
+                    $h .= "<button type='button' class='btn btn-outline-light btn-sm'
+                                  onclick=\"document.querySelector('[name=site_identity_type]').value='" . htmlspecialchars($o['type']) . "';
+                                           document.querySelector('[name=site_identity_id]').value='" . $oid . "';\">
+                              <img src='" . htmlspecialchars($logo) . "' style='width:18px;height:18px;border-radius:5px;margin-right:6px;'>
+                              " . htmlspecialchars((string)$o['label']) . "
+                           </button>";
+                }
+                $h .= "   </div>
+                       </div>";
+            }
+
+            $h .= "      <div class='col-12'>
+                        <button class='btn btn-primary'>Save settings</button>
+                      </div>
+
+                    </form>
+                  </div></div>";
+
+            return $render('Settings', $h);
+        }, ['right' => 'admin.settings']);
+
+        $app->router->post('/admin/settings/save', function () use ($app): Response {
+            $settings = new Settings($app->db);
+
+            $name = trim((string)($_POST['site_brand_name'] ?? 'killsineve.online'));
+            $type = trim((string)($_POST['site_identity_type'] ?? 'corporation'));
+            $id = trim((string)($_POST['site_identity_id'] ?? '0'));
+
+            if ($name === '') $name = 'killsineve.online';
+            if ($type !== 'corporation' && $type !== 'alliance') $type = 'corporation';
+            if (!ctype_digit($id)) $id = '0';
+
+            $settings->set('site.brand.name', $name);
+            $settings->set('site.identity.type', $type);
+            $settings->set('site.identity.id', $id);
+
+            return Response::redirect('/admin/settings');
+        }, ['right' => 'admin.settings']);
+
 
         // Rights (Groups + Permissions) — scalable UI
         $app->router->get('/admin/rights', function () use ($app, $render): Response {

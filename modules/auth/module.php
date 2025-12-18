@@ -27,14 +27,10 @@ return function (App $app): void {
         try {
             $cfg = $app->config['eve_sso'] ?? [];
             $sso = new EveSso($app->db, $cfg);
-            $result = $sso->handleCallback($code, $state);
+            $sso->handleCallback($code, $state);
 
-            return Response::html(
-                "<h1>SSO OK</h1>" .
-                "<p>Character: " . htmlspecialchars($result['character_name']) . " (" . (int)$result['character_id'] . ")</p>" .
-                "<p><a href='/'>Continue</a></p>",
-                200
-            );
+            // ✅ Directly land on dashboard
+            return Response::redirect('/');
         } catch (\Throwable $e) {
             return Response::text("SSO failed: " . $e->getMessage() . "\n", 500);
         }
@@ -100,8 +96,38 @@ $app->router->get('/me', function () use ($app): Response {
     // Logged in => hide "Login"
     $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
 
+    // Brand (keep head consistent with admin)
+$settings = new \App\Core\Settings($app->db);
+
+$brandName = $settings->get('site.brand.name', 'killsineve.online') ?? 'killsineve.online';
+$type = $settings->get('site.identity.type', 'corporation') ?? 'corporation'; // corporation|alliance
+$id = (int)($settings->get('site.identity.id', '0') ?? '0');
+
+// If not configured, infer from logged-in character (best-effort)
+if ($id <= 0) {
+    $cid = (int)($_SESSION['character_id'] ?? 0);
+    if ($cid > 0) {
+        $u = new \App\Core\Universe($app->db);
+        $p2 = $u->characterProfile($cid);
+        if ($type === 'alliance' && !empty($p2['alliance']['id'])) {
+            $id = (int)$p2['alliance']['id'];
+            if ($brandName === 'killsineve.online' && !empty($p2['alliance']['name'])) $brandName = (string)$p2['alliance']['name'];
+        } elseif (!empty($p2['corporation']['id'])) {
+            $id = (int)$p2['corporation']['id'];
+            if ($brandName === 'killsineve.online' && !empty($p2['corporation']['name'])) $brandName = (string)$p2['corporation']['name'];
+        }
+    }
+}
+
+$brandLogoUrl = null;
+if ($id > 0) {
+    $brandLogoUrl = ($type === 'alliance')
+        ? "https://images.evetech.net/alliances/{$id}/logo?size=64"
+        : "https://images.evetech.net/corporations/{$id}/logo?size=64";
+}
+
     return Response::html(
-        \App\Core\Layout::page('Profile', $html, $leftTree, $adminTree, $userTree),
+        \App\Core\Layout::page('Profile', $html, $leftTree, $adminTree, $userTree, $brandName, $brandLogoUrl),
         200
     );
 });

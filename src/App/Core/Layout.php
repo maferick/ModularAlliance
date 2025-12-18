@@ -10,21 +10,44 @@ final class Layout
         string $bodyHtml,
         array $leftMenuTree,
         array $adminMenuTree,
-        array $userMenuTree
+        array $userMenuTree,
+        ?string $brandName = null,
+        ?string $brandLogoUrl = null
     ): string {
         $adminHtml = self::renderMenuBootstrap($adminMenuTree);
         $userHtml  = self::renderMenuBootstrap($userMenuTree);
         $sideHtml  = self::renderSideMenuBootstrap($leftMenuTree);
 
+        // Resolve branding centrally (future-proof: callers don't need to remember passing it)
+        [$brandName, $brandLogoUrl] = self::resolveBranding($brandName, $brandLogoUrl);
+
         $adminBlock = '';
         if (trim($adminHtml) !== '') {
             $adminBlock = '
             <div class="dropdown">
-              <button class="btn btn-sm btn-warning dropdown-toggle" data-bs-toggle="dropdown">
+              <button class="btn btn-sm btn-warning dropdown-toggle" data-bs-toggle="dropdown" data-bs-display="static">
                 <i class="bi bi-shield-lock"></i> Admin
               </button>
               <ul class="dropdown-menu dropdown-menu-end">' . $adminHtml . '</ul>
             </div>';
+        }
+
+        $siteLabel = $brandName ?: 'killsineve.online';
+
+        $brandHtml = '<span class="navbar-brand fw-bold">' . htmlspecialchars($siteLabel) . '</span>';
+        if (!empty($brandLogoUrl)) {
+            $brandHtml = '
+            <a class="navbar-brand fw-bold d-flex align-items-center gap-2 text-decoration-none" href="/">
+              <img src="' . htmlspecialchars($brandLogoUrl) . '" alt="Logo" style="width:28px;height:28px;border-radius:8px;">
+              <span>' . htmlspecialchars($siteLabel) . '</span>
+            </a>';
+        }
+
+        $faviconHtml = '';
+        if (!empty($brandLogoUrl)) {
+            $faviconHtml = '
+  <link rel="icon" type="image/png" href="' . htmlspecialchars($brandLogoUrl) . '">
+  <link rel="apple-touch-icon" href="' . htmlspecialchars($brandLogoUrl) . '">';
         }
 
         return '<!doctype html>
@@ -32,7 +55,7 @@ final class Layout
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>' . htmlspecialchars($title) . '</title>
+  <title>' . htmlspecialchars($title) . '</title>' . $faviconHtml . '
 
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
@@ -41,13 +64,13 @@ final class Layout
 <body class="app-bg">
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-primary px-3">
-  <span class="navbar-brand fw-bold">killsineve.online</span>
+  ' . $brandHtml . '
 
   <div class="ms-auto d-flex gap-2">
     ' . $adminBlock . '
 
     <div class="dropdown">
-      <button class="btn btn-sm btn-outline-light dropdown-toggle" data-bs-toggle="dropdown">
+      <button class="btn btn-sm btn-outline-light dropdown-toggle" data-bs-toggle="dropdown" data-bs-display="static">
         <i class="bi bi-person-circle"></i> User
       </button>
       <ul class="dropdown-menu dropdown-menu-end">' . $userHtml . '</ul>
@@ -72,6 +95,111 @@ final class Layout
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>';
+    }
+
+    /**
+     * Centralized branding resolution so all pages (admin + public) render consistently.
+     * Priority:
+     *  1) Explicit parameters passed by caller
+     *  2) Settings table values (multiple key fallbacks)
+     *  3) SERVER_NAME (for name) / corp_id -> EVE Tech logo (for logo)
+     */
+    private static function resolveBranding(?string $brandName, ?string $brandLogoUrl): array
+    {
+        // Brand name
+        if ($brandName === null || trim($brandName) === '') {
+            $brandName =
+                self::getSettingFirst([
+                    'site.name',
+                    'brand.name',
+                    'site_label',
+                    'site.title',
+                ]) ?: ($_SERVER['SERVER_NAME'] ?? 'killsineve.online');
+        }
+
+        // Brand logo URL
+        if ($brandLogoUrl === null || trim($brandLogoUrl) === '') {
+            $brandLogoUrl = self::getSettingFirst([
+                'site.logo_url',
+                'brand.logo_url',
+                'site.logo',
+            ]);
+
+            // If no explicit logo URL is set, derive from corp_id if present
+            if ($brandLogoUrl === null || trim($brandLogoUrl) === '') {
+                $corpId = self::getSettingFirst([
+                    'corp_id',
+                    'corporation_id',
+                    'eve.corp_id',
+                ]);
+
+                if ($corpId !== null && preg_match('/^\d+$/', $corpId)) {
+                    $brandLogoUrl = 'https://images.evetech.net/corporations/' . rawurlencode($corpId) . '/logo?size=64';
+                }
+            }
+        }
+
+        return [$brandName, $brandLogoUrl];
+    }
+
+    private static function getSettingFirst(array $keys): ?string
+    {
+        foreach ($keys as $k) {
+            $v = self::getSetting($k);
+            if ($v !== null && trim($v) !== '') {
+                return $v;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Attempts to read a setting via whichever helper exists in the codebase.
+     * Supports several common helpers without hard-coupling Layout to DB internals.
+     */
+    private static function getSetting(string $key): ?string
+    {
+        try {
+            // Namespaced helper (if you later add App\Core\settings_get)
+            $nsFn = __NAMESPACE__ . '\\settings_get';
+            if (function_exists($nsFn)) {
+                $v = $nsFn($key);
+                return is_scalar($v) ? (string)$v : null;
+            }
+
+            // Global helpers commonly used in this project style
+            foreach (['settings_get', 'setting', 'settings'] as $fn) {
+                if (function_exists($fn)) {
+                    $v = $fn($key);
+                    return is_scalar($v) ? (string)$v : null;
+                }
+            }
+
+            // DB helper fallback: db_one("SELECT value FROM settings WHERE `key`=?", [$key])
+            if (function_exists('db_one')) {
+                $row = null;
+
+                // try parameterized signature if supported
+                try {
+                    $row = \db_one("SELECT value FROM settings WHERE `key` = ?", [$key]);
+                } catch (\Throwable $e) {
+                    // try non-parameterized (last resort)
+                    $safe = str_replace("'", "''", $key);
+                    $row = \db_one("SELECT value FROM settings WHERE `key` = '{$safe}'");
+                }
+
+                if (is_array($row) && array_key_exists('value', $row)) {
+                    return is_scalar($row['value']) ? (string)$row['value'] : null;
+                }
+                if (is_scalar($row)) {
+                    return (string)$row;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Never break page render due to branding resolution
+        }
+
+        return null;
     }
 
     private static function renderMenuBootstrap(array $tree): string
