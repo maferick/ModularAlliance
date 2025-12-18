@@ -172,155 +172,161 @@ final class App
         }, ['right' => 'admin.access']);
 
         $app->router->get('/admin/cache', function () use ($app, $render): Response {
-            $db = $app->db;
+            $pdo = $app->db->pdo();
 
-            // Stats
-            $esiCount = (int)($db->one("SELECT COUNT(*) AS c FROM esi_cache")['c'] ?? 0);
-            $esiNewest = $db->one("SELECT fetched_at FROM esi_cache ORDER BY fetched_at DESC LIMIT 1")['fetched_at'] ?? null;
-            $esiOldest = $db->one("SELECT fetched_at FROM esi_cache ORDER BY fetched_at ASC LIMIT 1")['fetched_at'] ?? null;
+            // ESI cache uses fetched_at + ttl_seconds (canonical schema)
+            $esiTotal = (int)($pdo->query("SELECT COUNT(*) FROM esi_cache")->fetchColumn() ?: 0);
+            $esiExpired = (int)($pdo->query("SELECT COUNT(*) FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()")->fetchColumn() ?: 0);
 
-            $uniCount = (int)($db->one("SELECT COUNT(*) AS c FROM universe_entities")['c'] ?? 0);
-
-            $msg = isset($_GET['msg']) ? (string)$_GET['msg'] : '';
-            $msgHtml = '';
-            if ($msg !== '') {
-                $msgHtml = "<div class='alert alert-info mb-3'>" . htmlspecialchars($msg) . "</div>";
+            $uniTotal = 0;
+            try {
+                $uniTotal = (int)($pdo->query("SELECT COUNT(*) FROM universe_entities")->fetchColumn() ?: 0);
+            } catch (\Throwable $e) {
+                $uniTotal = 0;
             }
 
-            $body = "
-                <h1>ESI Cache</h1>
-                <p class='text-muted'>Operational controls for cache hygiene, warm-up, and rapid recovery. (Right: <code>admin.cache</code>)</p>
-                {$msgHtml}
+            // Redis (optional L1)
+            $redis = RedisCache::fromConfig($app->config['redis'] ?? []);
+            $redisEnabled = $redis->enabled();
+            $redisPrefix = $redis->prefix();
+            $redisStatus = $redisEnabled ? 'Connected' : 'Disabled';
+            $redisKeys = null;
+            if ($redisEnabled) {
+                try { $redisKeys = $redis->countByPrefix(2000); } catch (\Throwable $e) { $redisKeys = null; }
+            }
 
-                <div class='row g-3'>
-                  <div class='col-12 col-lg-6'>
-                    <div class='card'>
-                      <div class='card-body'>
-                        <h5 class='card-title'>Current footprint</h5>
-                        <table class='table table-sm mb-0'>
-                          <tbody>
-                            <tr><th scope='row'>esi_cache rows</th><td>{$esiCount}</td></tr>
-                            <tr><th scope='row'>esi_cache oldest</th><td>" . htmlspecialchars((string)($esiOldest ?? '-')) . "</td></tr>
-                            <tr><th scope='row'>esi_cache newest</th><td>" . htmlspecialchars((string)($esiNewest ?? '-')) . "</td></tr>
-                            <tr><th scope='row'>universe_entities rows</th><td>{$uniCount}</td></tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
+            $msg = isset($_GET['msg']) ? (string)$_GET['msg'] : '';
+            $msgHtml = $msg !== '' ? "<div class='alert alert-info mb-3'>" . htmlspecialchars($msg) . "</div>" : "";
 
-                  <div class='col-12 col-lg-6'>
-                    <div class='card'>
-                      <div class='card-body'>
-                        <h5 class='card-title'>Actions</h5>
+            $h = $msgHtml . <<<HTML
+<h1>ESI Cache</h1>
+<p class="text-muted">Operational controls for ESI cache storage (MariaDB) and optional Redis L1 acceleration.</p>
 
-                        <form method='post' action='/admin/cache' class='d-grid gap-2'>
-                          <input type='hidden' name='action' value='purge_expired'>
-                          <button class='btn btn-outline-secondary' type='submit'>Remove expired ESI entries</button>
-                        </form>
+<div class="row g-3">
+  <div class="col-12 col-lg-6">
+    <div class="card">
+      <div class="card-body">
+        <h5 class="card-title">MariaDB cache tables</h5>
+        <ul class="mb-3">
+          <li><strong>esi_cache</strong>: {$esiTotal} rows ({$esiExpired} expired)</li>
+          <li><strong>universe_entities</strong>: {$uniTotal} rows</li>
+        </ul>
 
-                        <hr>
+        <div class="d-flex flex-wrap gap-2">
+          <form method="post" action="/admin/cache">
+            <input type="hidden" name="action" value="remove_expired">
+            <button class="btn btn-outline-warning btn-sm" type="submit">Remove expired (ESI)</button>
+          </form>
 
-                        <form method='post' action='/admin/cache' class='d-grid gap-2' onsubmit=\"return confirm('Purge ALL ESI cache entries?');\">
-                          <input type='hidden' name='action' value='purge_esi_all'>
-                          <button class='btn btn-outline-danger' type='submit'>Purge ALL ESI cache (esi_cache)</button>
-                        </form>
+          <form method="post" action="/admin/cache">
+            <input type="hidden" name="action" value="purge_esi">
+            <button class="btn btn-outline-danger btn-sm" type="submit"
+              onclick="return confirm('Purge ALL esi_cache rows?')">Purge ESI cache</button>
+          </form>
 
-                        <form method='post' action='/admin/cache' class='d-grid gap-2 mt-2' onsubmit=\"return confirm('Purge ALL Universe entities cache?');\">
-                          <input type='hidden' name='action' value='purge_universe_all'>
-                          <button class='btn btn-outline-danger' type='submit'>Purge ALL Universe cache (universe_entities)</button>
-                        </form>
+          <form method="post" action="/admin/cache">
+            <input type="hidden" name="action" value="purge_universe">
+            <button class="btn btn-outline-danger btn-sm" type="submit"
+              onclick="return confirm('Purge ALL universe_entities rows?')">Purge Universe cache</button>
+          </form>
 
-                        <form method='post' action='/admin/cache' class='d-grid gap-2 mt-2' onsubmit=\"return confirm('Purge ALL caches (ESI + Universe)?');\">
-                          <input type='hidden' name='action' value='purge_all'>
-                          <button class='btn btn-danger' type='submit'>Purge ALL caches</button>
-                        </form>
+          <form method="post" action="/admin/cache">
+            <input type="hidden" name="action" value="purge_all">
+            <button class="btn btn-danger btn-sm" type="submit"
+              onclick="return confirm('Purge ALL caches (ESI + Universe)?')">Purge ALL</button>
+          </form>
+        </div>
 
-                        <hr>
+        <div class="form-text mt-2">
+          Expired is computed as <code>DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) &lt; NOW()</code>.
+        </div>
+      </div>
+    </div>
+  </div>
 
-                        <form method='post' action='/admin/cache' class='d-grid gap-2'>
-                          <input type='hidden' name='action' value='renew_identity'>
-                          <button class='btn btn-primary' type='submit'>Renew (force refresh) identity cache now</button>
-                          <div class='form-text'>Warms core identity endpoints for the currently logged-in character (and corp/alliance) using <em>force refresh</em>.</div>
-                        </form>
+  <div class="col-12 col-lg-6">
+    <div class="card">
+      <div class="card-body">
+        <h5 class="card-title">Redis (optional)</h5>
+        <p class="mb-2"><strong>Status:</strong> {$redisStatus}</p>
+        <p class="mb-2"><strong>Prefix:</strong> <code>{$redisPrefix}</code></p>
+HTML;
 
-                        <form method='post' action='/admin/cache' class='d-grid gap-2 mt-2'>
-                          <input type='hidden' name='action' value='restart'>
-                          <button class='btn btn-warning' type='submit'>Restart cache console workflow</button>
-                          <div class='form-text'>Runs: remove expired → renew identity warm-up (best-effort).</div>
-                        </form>
+            if ($redisEnabled) {
+                $h .= "<p class='mb-3'><strong>Keys (sampled):</strong> " . htmlspecialchars((string)($redisKeys ?? 'n/a')) . "</p>
+        <form method='post' action='/admin/cache'>
+          <input type='hidden' name='action' value='redis_flush'>
+          <button class='btn btn-outline-danger btn-sm' type='submit'
+            onclick=\"return confirm('Flush Redis keys with prefix {$redisPrefix}?')\">Flush Redis namespace</button>
+        </form>";
+            } else {
+                $h .= "<p class='text-muted'>Redis is disabled or unreachable. Configure <code>/var/www/config.php</code> (redis.*) or env vars.</p>";
+            }
 
-                      </div>
-                    </div>
-                  </div>
-                </div>
-            ";
+            $h .= <<<HTML
+      </div>
+    </div>
+  </div>
+</div>
+HTML;
 
-            return $render('ESI Cache', $body);
+            return $render('Cache', $h);
         }, ['right' => 'admin.cache']);
 
         $app->router->post('/admin/cache', function () use ($app): Response {
-            $db = $app->db;
-            $action = $_POST['action'] ?? '';
-            $msg = 'No action executed.';
+            $pdo = $app->db->pdo();
+            $action = (string)($_POST['action'] ?? '');
 
-            $warmIdentity = function (bool $force = true) use ($db): string {
-                $characterId = (int)($_SESSION['character_id'] ?? 0);
-                if ($characterId <= 0) {
-                    return 'No logged-in character in session; cannot warm identity cache.';
-                }
+            $redis = RedisCache::fromConfig($app->config['redis'] ?? []);
 
-                $client = new \App\Core\EsiClient(new \App\Core\HttpClient(), 'https://esi.evetech.net');
-                $cache  = new \App\Core\EsiCache($db, $client);
-
-                // Force refresh core identity endpoints
-                $char = $cache->getCached("char:{$characterId}", "GET /latest/characters/{$characterId}/", 3600, $force);
-
-                $cache->getCached("char:{$characterId}", "GET /latest/characters/{$characterId}/portrait/", 86400, $force);
-
-                $corpId = (int)($char['corporation_id'] ?? 0);
-                $allianceId = 0;
-
-                if ($corpId > 0) {
-                    $corp = $cache->getCached("corp:{$corpId}", "GET /latest/corporations/{$corpId}/", 3600, $force);
-                    $allianceId = (int)($corp['alliance_id'] ?? 0);
-                }
-
-                if ($allianceId > 0) {
-                    $cache->getCached("alliance:{$allianceId}", "GET /latest/alliances/{$allianceId}/", 3600, $force);
-                }
-
-                return 'Identity cache warmed (character, portrait, corporation, alliance) with force refresh.';
-            };
+            $msg = 'OK';
 
             try {
-                if ($action === 'purge_expired') {
-                    $rows = $db->run("DELETE FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()");
-                    $msg = "Removed {$rows} expired ESI cache entries.";
-                } elseif ($action === 'purge_esi_all') {
-                    $db->exec("TRUNCATE TABLE esi_cache");
-                    $msg = "Purged all ESI cache entries (esi_cache).";
-                } elseif ($action === 'purge_universe_all') {
-                    $db->exec("TRUNCATE TABLE universe_entities");
-                    $msg = "Purged all Universe cache entries (universe_entities).";
-                } elseif ($action === 'purge_all') {
-                    $db->exec("TRUNCATE TABLE esi_cache");
-                    $db->exec("TRUNCATE TABLE universe_entities");
-                    $msg = "Purged all caches (esi_cache + universe_entities).";
-                } elseif ($action === 'renew_identity') {
-                    $msg = $warmIdentity(true);
-                } elseif ($action === 'restart') {
-                    $rows = $db->run("DELETE FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()");
-                    $warm = $warmIdentity(true);
-                    $msg = "Restart workflow complete. {$rows} expired removed. {$warm}";
-                } else {
-                    $msg = "Unknown action: " . (string)$action;
+                switch ($action) {
+                    case 'remove_expired':
+                        $pdo->exec("DELETE FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()");
+                        $msg = "Removed expired ESI rows";
+                        break;
+
+                    case 'purge_esi':
+                        $pdo->exec("DELETE FROM esi_cache");
+                        $msg = "Purged ESI cache";
+                        break;
+
+                    case 'purge_universe':
+                        $pdo->exec("DELETE FROM universe_entities");
+                        $msg = "Purged Universe cache";
+                        break;
+
+                    case 'purge_all':
+                        $pdo->exec("DELETE FROM esi_cache");
+                        $pdo->exec("DELETE FROM universe_entities");
+                        $msg = "Purged ALL caches";
+                        break;
+
+                    case 'redis_flush':
+                        if ($redis->enabled()) {
+                            $n = $redis->flushPrefix(5000);
+                            $msg = "Flushed Redis namespace ({$n} keys)";
+                        } else {
+                            $msg = "Redis not enabled";
+                        }
+                        break;
+
+                    default:
+                        $msg = "Unknown action";
+                        break;
                 }
             } catch (\Throwable $e) {
-                $msg = "Action failed: " . $e->getMessage();
+                $msg = "Error: " . $e->getMessage();
             }
 
-            return Response::redirect('/admin/cache?msg=' . rawurlencode($msg));
+            // Best-effort keep L1/L2 consistent
+            if (in_array($action, ['remove_expired','purge_esi','purge_universe','purge_all'], true) && $redis->enabled()) {
+                try { $redis->flushPrefix(5000); } catch (\Throwable $e) {}
+            }
+
+            return Response::redirect('/admin/cache?msg=' . rawurlencode($msg), 302);
         }, ['right' => 'admin.cache']);
 
         // Settings (branding / identity)
