@@ -32,6 +32,9 @@
 
 /* Navbar: premium dark gradient */
 .navbar{
+  position: relative;
+  z-index: 1100;
+
   background: linear-gradient(135deg, rgba(18,27,38,.92), rgba(15,22,32,.92)) !important;
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(10px);
@@ -81,6 +84,8 @@ p{color: var(--fg-1);}
 
 /* Dropdown polish */
 .dropdown-menu{
+  z-index: 1200;
+
   background: rgba(15,22,32,.96);
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -107,3 +112,20 @@ p{color: var(--fg-1);}
 .btn-outline-light{
   border-color: rgba(255,255,255,.28);
 }
+
+/* Ensure dropdowns/tooltips are not clipped by content cards */
+main > .page-card{ overflow: visible; }
+
+/* ==========================================================
+   Hard guarantee: dropdowns always render above page content
+   (prevents future regressions from stacking contexts / blur)
+   ========================================================== */
+
+/* Make topbar a dedicated "chrome" layer above the app */
+.navbar { z-index: 2000; }
+
+/* Ensure dropdown overlays everything beneath the navbar */
+.navbar .dropdown-menu { z-index: 2100; }
+
+/* Prevent any accidental clipping within navbar descendants */
+.navbar, .navbar * { overflow: visible; }
