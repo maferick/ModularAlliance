@@ -58,3 +58,8 @@ php -d opcache.enable_cli=0 -r 'require "core/bootstrap.php"; $u=new \App\Core\U
 ## Failure Modes
 
 - If ESI returns invalid payload or access is denied (structures), the resolver uses a safe fallback name and caches appropriately to avoid repeated calls.
+
+
+## Notes
+
+Universe Resolver uses MariaDB (`universe_entities`) as its cache of record. Optional Redis is intended for ESI response acceleration and does not replace universe persistence.

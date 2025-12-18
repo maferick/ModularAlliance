@@ -2,90 +2,65 @@
 
 A modular, cache-first EVE Online portal built for long-term maintainability: **SSO → Users/Rights → Menu → ESI Cache → Cron → Modules**.
 
-This repo is intentionally designed as a platform, not a one-off website. Every module plugs into stable core contracts, migrations are tracked, and UI never leaks raw IDs—**everything resolves to names**.
+This repo is intentionally designed as a platform, not a one-off site:
+- Modules are filesystem plugins under `modules/<slug>/`
+- Core stays small and stable (contracts + primitives)
+- UI never leaks raw IDs — everything is resolved to names/tickers/icons via cached resolvers
 
 ## Stack Snapshot
 
-**PHP 8.3** · **Nginx** · **MariaDB 10.11** · **EVE SSO** · **ESI Cache** · **Dark Mode (Bootstrap 5.3)**
+**PHP 8.3** · **Nginx** · **MariaDB 10.11** · **(Optional) Redis** · **EVE SSO** · **ESI Cache** · **Bootstrap 5.3 (dark)**
 
 ## Key Capabilities
 
 - **EVE SSO login** with token storage (refresh-capable)
 - **Rights + Groups** with a hard Admin override (cannot lock yourself out)
-- **Menu system** with:
-  - registry defaults (module-owned)
-  - override layer in DB (admin-owned)
-  - multiple areas (left / user_top / admin_top)
-- **ESI caching contract** for all remote calls (TTL-based, DB-backed)
-- **Universe Resolver** (name-first)
-  - systems, constellations, regions
-  - types, groups, categories (fittings/items)
-  - stations
-  - structures (token-gated, graceful fallback)
-- **Cron runner** for heavy lifting (pages read rollups; cron does work)
+- **Menu system**:
+  - module-owned default registry entries
+  - DB overrides (order, visibility, right gating)
+  - multiple areas: `left`, `user_top`, `admin_top`
+- **ESI cache** in MariaDB (`esi_cache`) using:
+  - `fetched_at` + `ttl_seconds` as the expiry contract
+  - payload stored in `payload_json` (longtext)
+- **Universe Resolver** cache in MariaDB (`universe_entities`) to translate IDs → names/icons
 
-## Non-Negotiable Project Rules
+## Configuration
 
-- **No raw IDs in the UI.** IDs exist only as internal keys; pages must display names via the Universe Resolver.
-- **No global functions in modules.** Modules register routes/menus/rights via core APIs only.
-- **Migrations are the source of truth.** No “schema.php patches”; everything is tracked with checksums.
-- **Cache-first for ESI.** ESI requests must go through the cache layer to prevent rate-limit chaos.
-- **Cron does the heavy work.** HTTP requests are not allowed to do expensive processing on request.
+The live site reads a server-only config file (not in git):
 
-## Repository Layout
+- `/var/www/config.php`
 
-- `public/` – front controller (`index.php`)
-- `core/` – bootstrap + migrations
-- `src/` – namespaced application code
-- `modules/` – modular features (`/modules/<slug>/module.php`)
-- `bin/` – CLI tools (migrate, cron)
-- `docs/` – technical documentation and AI continuity files
+Key sections commonly used:
 
-## Getting Started
+- `db.*` – MariaDB connection
+- `eve_sso.*` – client id/secret, callback URL, scopes
+- `redis.*` – optional L1 cache (see below)
 
-### 1) Requirements
+## Caching Model
 
-- Ubuntu 24.04+
-- PHP 8.3-FPM + extensions commonly required for PDO/cURL/JSON
-- Nginx
-- MariaDB 10.11+
-- A database user with permissions to create/alter tables in the app DB
+### L2: MariaDB (authoritative cache)
+MariaDB is the durable cache layer. All ESI cache entries live in `esi_cache` and expire via:
 
-### 2) Install
+```
+expiry = DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND)
+```
 
-1. Check out the repo into your desired path (example):
-   - `/var/www/ModularAlliance`
-2. Create writable directories:
-   - `storage/` and `tmp/` (owned by your web user, e.g. `www-data`)
-3. Create your `config.php` **outside** the docroot (not committed to git).
-4. Run migrations:
-   - `php bin/migrate.php`
+### L1: Redis (optional accelerator)
+Redis can be enabled as an **L1** (cache-aside) layer in front of MariaDB:
+- If Redis is available, reads check Redis first, then fall back to MariaDB.
+- Writes always persist to MariaDB; Redis is populated/updated as a best-effort.
+- If Redis is down, the site continues to run on MariaDB-only.
 
-### 3) Configure Nginx
+Namespace safety:
+- All keys use a prefix (default: `portal:`)
+- ESI keys are stored under `portal:esi:*`
 
-Use the example in `docs/nginx-site.conf.example` (or your own). The docroot is:
+## Admin Operations reminder
 
-- `root /var/www/ModularAlliance/public;`
-
-### 4) First Login (SSO)
-
-- Log in via the SSO route in the UI.
-- Confirm that:
-  - user exists in `eve_users`
-  - token is stored in `eve_tokens`
-  - `esi_cache` starts filling (character/corp/alliance + icons)
-
-## Screenshots
-
-> Screenshots are intentionally deferred until the UI is finalized.  
-> Add images to `docs/screenshots/` and reference them using relative paths.
-
-Planned:
-- Dashboard (dark theme)
-- Profile (character/corp/alliance panels)
-- Admin menu editor
-- ESI cache admin view
-- Users & Groups admin view
+- **Admin → Cache** (`/admin/cache`, right `admin.cache`):
+  - remove expired ESI rows (based on `fetched_at + ttl_seconds`)
+  - purge ESI cache / Universe cache / all caches
+  - show Redis status and flush Redis prefix namespace
 
 ## Roadmap
 

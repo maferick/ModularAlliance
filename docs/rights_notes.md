@@ -1,6 +1,11 @@
+# Rights Notes
 
-# Rights System Notes
-
-- Admin group has a hard override: admin users always pass rights checks.
-- Rights are resolved via Db joins; no IDs exposed to UI.
-- Menu gating must call Rights::userHasRight().
+- Rights are deny-by-default; routes declare required rights and the guard enforces them.
+- Administrator override exists (do not allow lock-out).
+- Typical admin rights:
+  - `admin.access`
+  - `admin.settings`
+  - `admin.cache` (Admin → Cache console)
+  - `admin.rights`
+  - `admin.users`
+  - `admin.menu`

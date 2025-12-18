@@ -26,3 +26,8 @@ php bin/migrate.php
 ```bash
 php -d opcache.enable_cli=0 -r 'require "core/bootstrap.php"; $u=new \App\Core\Universe(\App\Core\App::boot()->db); echo $u->name("system",30000142), PHP_EOL; echo $u->name("type",34), PHP_EOL;'
 ```
+
+
+## Notes
+
+Universe Resolver uses MariaDB (`universe_entities`) as its cache of record. Optional Redis is intended for ESI response acceleration and does not replace universe persistence.

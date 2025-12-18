@@ -2,18 +2,19 @@
 
 This directory contains the canonical operational and architectural documentation.
 
-## Key Documents
+## Start here
 
-- `ARCHITECTURE.md` – contracts, request lifecycle, module rules
-- `UNIVERSE_RESOLVER.md` – entity types, endpoints, TTL strategy, examples
-- `AI_CONTEXT.md` – continuity file to resume development in new AI sessions
-- `ROADMAP.md` – planned phases and deliverables
+- `ARCHITECTURE.md` – overall system model (routing, core contracts, caching layers)
+- `ROADMAP.md` – milestone-driven roadmap
+- `AI_CONTEXT.md` – continuity notes for resuming development safely
 
-## Why this exists
+## Ops notes
 
-This project’s biggest risks are:
-- schema drift
-- “mystery patches”
-- undocumented core contracts
+- `rights_notes.md` – RBAC rules of engagement and admin override expectations
+- `user_menu_notes.md` – menu areas and visibility rules
+- `UNIVERSE_RESOLVER.md` – resolver cache contract and resolver behavior
 
-These documents exist to keep the platform stable as modules grow.
+## Naming note
+
+You may see duplicate docs with different casing (e.g. `AI_CONTEXT.md` and `ai_context.md`).
+Uppercase variants are treated as canonical; lowercase variants are kept for compatibility.
