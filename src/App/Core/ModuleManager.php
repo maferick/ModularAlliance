@@ -5,6 +5,8 @@ namespace App\Core;
 
 final class ModuleManager
 {
+    private array $manifests = [];
+
     public function loadAll(App $app): void
     {
         $dir = APP_ROOT . '/modules';
@@ -16,6 +18,9 @@ final class ModuleManager
             // Backwards compatibility: module.php can return a callable($app)
             if (is_callable($mod)) {
                 $mod($app);
+                $this->manifests[] = [
+                    'slug' => (string)basename(dirname($file)),
+                ];
                 continue;
             }
 
@@ -23,6 +28,8 @@ final class ModuleManager
             if (!is_array($mod)) continue;
 
             $slug = (string)($mod['slug'] ?? basename(dirname($file)));
+            $mod['slug'] = $slug;
+            $this->manifests[] = $mod;
 
             // 1) Register rights declared by the module (idempotent)
             if (!empty($mod['rights']) && is_array($mod['rights'])) {
@@ -69,5 +76,10 @@ final class ModuleManager
                 ($mod['boot'])($app);
             }
         }
+    }
+
+    public function getManifests(): array
+    {
+        return $this->manifests;
     }
 }
