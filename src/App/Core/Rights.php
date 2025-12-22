@@ -28,12 +28,12 @@ final class Rights
         $su = $this->db->one("SELECT 1 FROM eve_users WHERE id=? AND is_superadmin=1 LIMIT 1", [$userId]);
         if ($su) return true;
 
-        // Hard override: admin group (never lock out)
+        // Hard override: any admin-marked group (never lock out)
         $admin = $this->db->one(
             "SELECT 1
              FROM eve_user_groups ug
              JOIN groups g ON g.id = ug.group_id
-             WHERE ug.user_id=? AND g.slug='admin'
+             WHERE ug.user_id=? AND g.is_admin=1
              LIMIT 1",
             [$userId]
         );
@@ -152,7 +152,7 @@ final class Rights
         );
         foreach ($groups as $g) {
             $out['groups'][] = $g;
-            if ((string)$g['slug'] === 'admin') $out['admin_group'] = true;
+            if ((int)($g['is_admin'] ?? 0) === 1) $out['admin_group'] = true;
         }
         if ($out['admin_group']) {
             $out['decision'] = 'allow';
