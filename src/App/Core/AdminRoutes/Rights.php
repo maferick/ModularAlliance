@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
-use App\Core\Rights;
+use App\Core\Rights as CoreRights;
 use App\Http\Response;
 
 final class Rights
@@ -311,7 +311,7 @@ final class Rights
                  ON DUPLICATE KEY UPDATE name=VALUES(name), is_admin=VALUES(is_admin)",
                 [$slug, $name, $isAdmin]
             );
-            (new Rights($app->db))->bumpGlobalVersion();
+            (new CoreRights($app->db))->bumpGlobalVersion();
 
             return Response::redirect('/admin/rights?group=' . urlencode($slug));
         }, ['right' => 'admin.rights']);
@@ -347,7 +347,7 @@ final class Rights
                 $app->db->rollback();
                 throw $e;
             }
-            (new Rights($app->db))->bumpGlobalVersion();
+            (new CoreRights($app->db))->bumpGlobalVersion();
 
             return Response::redirect('/admin/rights?group=' . urlencode($groupSlug));
         }, ['right' => 'admin.rights']);
@@ -374,7 +374,7 @@ final class Rights
                 $app->db->rollback();
                 throw $e;
             }
-            (new Rights($app->db))->bumpGlobalVersion();
+            (new CoreRights($app->db))->bumpGlobalVersion();
 
             return Response::redirect('/admin/rights');
         }, ['right' => 'admin.rights']);
