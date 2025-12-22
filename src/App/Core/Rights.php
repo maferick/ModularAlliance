@@ -51,7 +51,9 @@ final class Rights
             && (int)($cache['ts'] ?? 0) + self::CACHE_TTL_SECONDS > $now
             && is_array($cache['rights'] ?? null)
         ) {
-            return isset($cache['rights'][$right]);
+            if (isset($cache['rights'][$right])) return true;
+            if (str_starts_with($right, 'admin.') && isset($cache['rights']['admin.access'])) return true;
+            return false;
         }
 
         // Recompute effective rights for this user
@@ -77,7 +79,9 @@ final class Rights
             'rights' => $set,
         ];
 
-        return isset($set[$right]);
+        if (isset($set[$right])) return true;
+        if (str_starts_with($right, 'admin.') && isset($set['admin.access'])) return true;
+        return false;
     }
 
     public function requireRight(int $userId, string $right): void
