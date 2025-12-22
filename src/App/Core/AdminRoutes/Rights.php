@@ -7,6 +7,10 @@ use App\Core\App;
 use App\Core\Rights as CoreRights;
 use App\Http\Response;
 
+if (class_exists(__NAMESPACE__ . '\\Rights', false)) {
+    return;
+}
+
 final class Rights
 {
     public static function register(App $app, callable $render): void
