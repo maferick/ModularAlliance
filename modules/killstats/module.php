@@ -1,376 +1,292 @@
 <?php
 declare(strict_types=1);
 
+use App\Core\App;
 use App\Core\EsiCache;
 use App\Core\EsiClient;
 use App\Core\HttpClient;
 use App\Core\Layout;
+use App\Core\ModuleInterface;
+use App\Core\ModuleManifest;
 use App\Core\Rights;
 use App\Core\Settings;
 use App\Core\Universe;
 use App\Http\Response;
 
-return [
-    'slug' => 'killstats',
-    'menu' => [
-        [
-            'slug' => 'killstats',
-            'title' => 'Kill Stats',
-            'url' => '/killstats',
-            'sort_order' => 30,
-            'area' => 'left',
-        ],
-    ],
-    'rights' => [
-        [
-            'slug' => 'killstats.view_all',
-            'description' => 'View kill stats outside the configured identity scope.',
-        ],
-    ],
-    'cron' => [
-        [
-            'name' => 'refresh_stats',
-            'every' => 300,
-            'handler' => function ($app): void {
-                $settings = new Settings($app->db);
-                $identityType = $settings->get('site.identity.type', 'corporation');
-                if ($identityType === null) {
-                    $identityType = 'corporation';
-                }
-                $identityType = $identityType === 'alliance' ? 'alliance' : 'corporation';
-                $identityIdValue = $settings->get('site.identity.id', '0');
-                if ($identityIdValue === null) {
-                    $identityIdValue = '0';
-                }
-                $identityId = (int)$identityIdValue;
+final class KillstatsModule implements ModuleInterface
+{
+    public function manifest(): ModuleManifest
+    {
+        return new ModuleManifest(
+            slug: 'killstats',
+            name: 'Kill Stats',
+            description: 'Killboard stats for the configured alliance or corporation.',
+            version: '1.0.0',
+            rights: [
+                [
+                    'slug' => 'killstats.view_all',
+                    'description' => 'View kill stats outside the configured identity scope.',
+                ],
+            ],
+            menu: [
+                [
+                    'slug' => 'killstats',
+                    'title' => 'Kill Stats',
+                    'url' => '/killstats',
+                    'sort_order' => 30,
+                    'area' => 'left',
+                ],
+            ],
+            routes: [
+                ['method' => 'GET', 'path' => '/killstats'],
+            ]
+        );
+    }
 
-                if ($identityId <= 0) return;
+    public function register(App $app): void
+    {
+        $app->router->get('/killstats', function () use ($app): Response {
+            $cid = (int)($_SESSION['character_id'] ?? 0);
+            if ($cid <= 0) return Response::redirect('/auth/login');
 
+            $u = new Universe($app->db);
+            $profile = $u->characterProfile($cid);
+
+            $settings = new Settings($app->db);
+            $identityType = $settings->get('site.identity.type', 'corporation');
+            if ($identityType === null) {
+                $identityType = 'corporation';
+            }
+            $identityType = $identityType === 'alliance' ? 'alliance' : 'corporation';
+            $identityIdValue = $settings->get('site.identity.id', '0');
+            if ($identityIdValue === null) {
+                $identityIdValue = '0';
+            }
+            $identityId = (int)$identityIdValue;
+
+            $memberId = $identityType === 'alliance'
+                ? (int)($profile['alliance']['id'] ?? 0)
+                : (int)($profile['corporation']['id'] ?? 0);
+
+            $scopeId = $identityId > 0 ? $identityId : $memberId;
+
+            $scopeName = $identityType === 'alliance'
+                ? (string)($profile['alliance']['name'] ?? 'Alliance')
+                : (string)($profile['corporation']['name'] ?? 'Corporation');
+
+            $renderPage = function (string $title, string $bodyHtml) use ($app): string {
+                $rights = new Rights($app->db);
+                $hasRight = function (string $right) use ($rights): bool {
+                    $uid = (int)($_SESSION['user_id'] ?? 0);
+                    if ($uid <= 0) return false;
+                    return $rights->userHasRight($uid, $right);
+                };
+
+                $leftTree = $app->menu->tree('left', $hasRight);
+                $adminTree = $app->menu->tree('admin_top', $hasRight);
+                $userTree = $app->menu->tree('user_top', fn(string $r) => true);
+
+                $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
+                if ($loggedIn) {
+                    $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
+                } else {
+                    $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] === 'user.login'));
+                }
+
+                return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
+            };
+
+            $uid = (int)($_SESSION['user_id'] ?? 0);
+            $rights = new Rights($app->db);
+            $canBypassScope = $uid > 0 && $rights->userHasRight($uid, 'killstats.view_all');
+
+            if ($identityId > 0 && $memberId !== $identityId && !$canBypassScope) {
+                $body = "<div class='card'>
+                            <div class='card-body'>
+                              <div class='d-flex flex-wrap justify-content-between align-items-start gap-3'>
+                                <div>
+                                  <h1 class='mb-2'>Kill Stats</h1>
+                                  <div class='text-muted'>Access restricted to active members of the configured {$identityType}.</div>
+                                </div>
+                                <span class='badge bg-warning text-dark'>Access required</span>
+                              </div>
+                              <hr>
+                              <p class='mb-2'>If you should have access, ask an admin to do one of the following:</p>
+                              <ul class='mb-0'>
+                                <li>Grant the <code>killstats.view_all</code> right in <strong>Admin → Rights &amp; Groups</strong>.</li>
+                                <li>Update the configured {$identityType} in <strong>Admin → Settings</strong> so it matches your membership.</li>
+                              </ul>
+                            </div>
+                          </div>";
+
+                return Response::html($renderPage('Kill Stats', $body), 200);
+            }
+
+            if ($scopeId <= 0) {
+                $body = "<h1>Kill Stats</h1>
+                         <div class='alert alert-warning mt-3'>Unable to determine the {$identityType} scope for kill statistics.</div>";
+
+                return Response::html($renderPage('Kill Stats', $body), 200);
+            }
+
+            $stats = null;
+            $statsError = null;
+            try {
                 $client = new EsiClient(new HttpClient());
                 $cache = new EsiCache($app->db, $client);
-                $url = 'https://zkillboard.com/api/stats/' . $identityType . 'ID/' . $identityId . '/';
-                $cache->getCached(
-                    'zkillstats:' . $identityType . ':' . $identityId,
+                $url = 'https://zkillboard.com/api/stats/' . $identityType . 'ID/' . $scopeId . '/';
+                $stats = $cache->getCached(
+                    'zkillstats:' . $identityType . ':' . $scopeId,
                     $url,
                     900,
                     fn() => HttpClient::getJson($url, 12)
                 );
-            },
-        ],
-    ],
-    'routes' => [
-        [
-            'method' => 'GET',
-            'path' => '/killstats',
-            'handler' => function () use ($app): Response {
-                $cid = (int)(isset($_SESSION['character_id']) ? $_SESSION['character_id'] : 0);
-                if ($cid <= 0) return Response::redirect('/auth/login');
+            } catch (\Throwable $e) {
+                $statsError = $e->getMessage();
+            }
 
-                $u = new Universe($app->db);
-                $profile = $u->characterProfile($cid);
+            $stats = is_array($stats) ? $stats : [];
 
-                $settings = new Settings($app->db);
-                $identityType = $settings->get('site.identity.type', 'corporation');
-                if ($identityType === null) {
-                    $identityType = 'corporation';
-                }
-                $identityType = $identityType === 'alliance' ? 'alliance' : 'corporation';
-                $identityIdValue = $settings->get('site.identity.id', '0');
-                if ($identityIdValue === null) {
-                    $identityIdValue = '0';
-                }
-                $identityId = (int)$identityIdValue;
+            $formatCompact = function (?float $value): string {
+                if ($value === null) return '—';
+                $abs = abs($value);
+                if ($abs >= 1_000_000_000_000) return number_format($value / 1_000_000_000_000, 1) . 'T';
+                if ($abs >= 1_000_000_000) return number_format($value / 1_000_000_000, 1) . 'B';
+                if ($abs >= 1_000_000) return number_format($value / 1_000_000, 1) . 'M';
+                if ($abs >= 1_000) return number_format($value / 1_000, 1) . 'K';
+                return number_format($value, 0);
+            };
 
-                $memberId = $identityType === 'alliance'
-                    ? (int)(isset($profile['alliance']['id']) ? $profile['alliance']['id'] : 0)
-                    : (int)(isset($profile['corporation']['id']) ? $profile['corporation']['id'] : 0);
+            $formatPercent = function (?float $value): string {
+                if ($value === null) return '—';
+                return number_format($value, 1) . '%';
+            };
 
-                $scopeId = $identityId > 0 ? $identityId : $memberId;
-
-                $scopeName = $identityType === 'alliance'
-                    ? (string)(isset($profile['alliance']['name']) ? $profile['alliance']['name'] : 'Alliance')
-                    : (string)(isset($profile['corporation']['name']) ? $profile['corporation']['name'] : 'Corporation');
-
-                $renderPage = function (string $title, string $bodyHtml) use ($app): string {
-                    $rights = new Rights($app->db);
-                    $hasRight = function (string $right) use ($rights): bool {
-                        $uid = (int)(isset($_SESSION['user_id']) ? $_SESSION['user_id'] : 0);
-                        if ($uid <= 0) return false;
-                        return $rights->userHasRight($uid, $right);
-                    };
-
-                    $leftTree = $app->menu->tree('left', $hasRight);
-                    $adminTree = $app->menu->tree('admin_top', $hasRight);
-                    $userTree = $app->menu->tree('user_top', fn(string $r) => true);
-
-                    $loggedIn = ((int)(isset($_SESSION['character_id']) ? $_SESSION['character_id'] : 0) > 0);
-                    if ($loggedIn) {
-                        $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
-                    } else {
-                        $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] === 'user.login'));
-                    }
-
-                    return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
-                };
-
-                $uid = (int)($_SESSION['user_id'] ?? 0);
-                $rights = new Rights($app->db);
-                $canBypassScope = $uid > 0 && $rights->userHasRight($uid, 'killstats.view_all');
-
-                if ($identityId > 0 && $memberId !== $identityId && !$canBypassScope) {
-                    $body = "<div class='card'>
-                                <div class='card-body'>
-                                  <div class='d-flex flex-wrap justify-content-between align-items-start gap-3'>
-                                    <div>
-                                      <h1 class='mb-2'>Kill Stats</h1>
-                                      <div class='text-muted'>Access restricted to active members of the configured {$identityType}.</div>
-                                    </div>
-                                    <span class='badge bg-warning text-dark'>Access required</span>
-                                  </div>
-                                  <hr>
-                                  <p class='mb-2'>If you should have access, ask an admin to do one of the following:</p>
-                                  <ul class='mb-0'>
-                                    <li>Grant the <code>killstats.view_all</code> right in <strong>Admin → Rights &amp; Groups</strong>.</li>
-                                    <li>Update the configured {$identityType} in <strong>Admin → Settings</strong> so it matches your membership.</li>
-                                  </ul>
-                                </div>
-                              </div>";
-
-                    return Response::html($renderPage('Kill Stats', $body), 200);
-                }
-
-                if ($scopeId <= 0) {
-                    $body = "<h1>Kill Stats</h1>
-                             <div class='alert alert-warning mt-3'>Unable to determine the {$identityType} scope for kill statistics.</div>";
-
-                    return Response::html($renderPage('Kill Stats', $body), 200);
-                }
-
-                $stats = null;
-                $statsError = null;
-                try {
-                    $client = new EsiClient(new HttpClient());
-                    $cache = new EsiCache($app->db, $client);
-                    $url = 'https://zkillboard.com/api/stats/' . $identityType . 'ID/' . $scopeId . '/';
-                    $stats = $cache->getCached(
-                        'zkillstats:' . $identityType . ':' . $scopeId,
-                        $url,
-                        900,
-                        fn() => HttpClient::getJson($url, 12)
-                    );
-                } catch (\Throwable $e) {
-                    $statsError = $e->getMessage();
-                }
-
-                $stats = is_array($stats) ? $stats : [];
-
-                $formatCompact = function (?float $value): string {
-                    if ($value === null) return '—';
-                    $abs = abs($value);
-                    if ($abs >= 1_000_000_000_000) return number_format($value / 1_000_000_000_000, 1) . 'T';
-                    if ($abs >= 1_000_000_000) return number_format($value / 1_000_000_000, 1) . 'B';
-                    if ($abs >= 1_000_000) return number_format($value / 1_000_000, 1) . 'M';
-                    if ($abs >= 1_000) return number_format($value / 1_000, 1) . 'K';
-                    return number_format($value, 0);
-                };
-
-                $formatPercent = function (?float $value): string {
-                    if ($value === null) return '—';
-                    return number_format($value, 1) . '%';
-                };
-
-                $getListLabel = function (array $entry): string {
-                    $labelKeys = ['name', 'characterName', 'corporationName', 'allianceName', 'shipName', 'groupName'];
-                    foreach ($labelKeys as $key) {
-                        if (!empty($entry[$key]) && is_string($entry[$key])) {
-                            $label = trim($entry[$key]);
-                            if ($label !== '' && !preg_match('/^\d+$/', $label)) return $label;
-                        }
-                    }
-                    return 'Unknown';
-                };
-
-                $getListValue = function (array $entry): string {
-                    $valueKeys = ['kills', 'shipsDestroyed', 'shipsLost', 'points', 'isk', 'value', 'count'];
-                    foreach ($valueKeys as $key) {
-                        if (isset($entry[$key]) && is_numeric($entry[$key])) {
-                            return number_format((float)$entry[$key], 0);
-                        }
-                    }
-                    return '—';
-                };
-
-                $killerBoards = [];
-                $lossBoards = [];
-                $otherBoards = [];
-                $topLists = isset($stats['topLists']) ? $stats['topLists'] : null;
-                if (is_array($topLists)) {
-                    foreach ($topLists as $listName => $entries) {
-                        if (!is_array($entries)) continue;
-                        $rows = [];
-                        foreach (array_slice($entries, 0, 6) as $entry) {
-                            if (!is_array($entry)) continue;
-                            $rows[] = [
-                                'label' => $getListLabel($entry),
-                                'value' => $getListValue($entry),
-                            ];
-                        }
-                        if (!$rows) continue;
-
-                        $title = ucwords(str_replace('_', ' ', (string)$listName));
-                        $normalized = strtolower((string)$listName);
-                        $payload = [
-                            'title' => $title,
-                            'rows' => $rows,
-                        ];
-
-                        if (str_contains($normalized, 'kill')) {
-                            $killerBoards[] = $payload;
-                        } elseif (str_contains($normalized, 'loss')) {
-                            $lossBoards[] = $payload;
-                        } else {
-                            $otherBoards[] = $payload;
-                        }
+            $getListLabel = function (array $entry): string {
+                $labelKeys = ['name', 'characterName', 'corporationName', 'allianceName', 'shipName', 'groupName'];
+                foreach ($labelKeys as $key) {
+                    if (!empty($entry[$key]) && is_string($entry[$key])) {
+                        $label = trim($entry[$key]);
+                        if ($label !== '' && !preg_match('/^\d+$/', $label)) return $label;
                     }
                 }
+                return 'Unknown';
+            };
 
-                $shipsDestroyed = isset($stats['shipsDestroyed']) ? (float)$stats['shipsDestroyed'] : null;
-                $shipsLost = isset($stats['shipsLost']) ? (float)$stats['shipsLost'] : null;
-                $iskDestroyed = isset($stats['iskDestroyed']) ? (float)$stats['iskDestroyed'] : null;
-                $iskLost = isset($stats['iskLost']) ? (float)$stats['iskLost'] : null;
-                $pointsDestroyed = isset($stats['pointsDestroyed']) ? (float)$stats['pointsDestroyed'] : null;
-                $pointsLost = isset($stats['pointsLost']) ? (float)$stats['pointsLost'] : null;
-                $soloKills = isset($stats['soloKills']) ? (float)$stats['soloKills'] : null;
-                $soloLosses = isset($stats['soloLosses']) ? (float)$stats['soloLosses'] : null;
-
-                $efficiency = null;
-                if ($iskDestroyed !== null || $iskLost !== null) {
-                    $totalIsk = ($iskDestroyed !== null ? $iskDestroyed : 0.0) + ($iskLost !== null ? $iskLost : 0.0);
-                    if ($totalIsk > 0) {
-                        $efficiency = (($iskDestroyed !== null ? $iskDestroyed : 0.0) / $totalIsk) * 100.0;
+            $getListValue = function (array $entry): string {
+                $valueKeys = ['kills', 'shipsDestroyed', 'shipsLost', 'points', 'isk', 'value', 'count'];
+                foreach ($valueKeys as $key) {
+                    if (isset($entry[$key]) && is_numeric($entry[$key])) {
+                        return number_format((float)$entry[$key], 0);
                     }
                 }
+                return '—';
+            };
 
-                $scopeLabel = $identityType === 'alliance' ? 'Alliance' : 'Corporation';
-                $scopeTicker = $identityType === 'alliance'
-                    ? (string)(isset($profile['alliance']['ticker']) ? $profile['alliance']['ticker'] : '')
-                    : (string)(isset($profile['corporation']['ticker']) ? $profile['corporation']['ticker'] : '');
-                $scopeText = htmlspecialchars($scopeName) . ($scopeTicker !== '' ? ' [' . htmlspecialchars($scopeTicker) . ']' : '');
+            $summary = $stats['summary'] ?? [];
+            $summaryRows = [
+                ['label' => 'Ships Destroyed', 'value' => $formatCompact(isset($summary['shipsDestroyed']) ? (float)$summary['shipsDestroyed'] : null)],
+                ['label' => 'Ships Lost', 'value' => $formatCompact(isset($summary['shipsLost']) ? (float)$summary['shipsLost'] : null)],
+                ['label' => 'ISK Destroyed', 'value' => $formatCompact(isset($summary['iskDestroyed']) ? (float)$summary['iskDestroyed'] : null)],
+                ['label' => 'ISK Lost', 'value' => $formatCompact(isset($summary['iskLost']) ? (float)$summary['iskLost'] : null)],
+                ['label' => 'Efficiency', 'value' => $formatPercent(isset($summary['iskEfficiency']) ? (float)$summary['iskEfficiency'] : null)],
+                ['label' => 'Points Destroyed', 'value' => $formatCompact(isset($summary['pointsDestroyed']) ? (float)$summary['pointsDestroyed'] : null)],
+                ['label' => 'Points Lost', 'value' => $formatCompact(isset($summary['pointsLost']) ? (float)$summary['pointsLost'] : null)],
+            ];
 
-                $body = "<div class='d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3'>
-                            <div>
-                              <h1 class='mb-1'>Kill Stats</h1>
-                              <div class='text-muted'>Scope: {$scopeLabel} – {$scopeText}</div>
-                            </div>
-                            <div class='text-muted small'>Source: zKillboard (cached)</div>
-                         </div>";
-
-                if ($statsError) {
-                    $body .= "<div class='alert alert-warning'>Unable to load kill stats right now. Please try again later.</div>";
+            $topRows = function (?array $items, string $emptyText) use ($getListLabel, $getListValue): string {
+                if (!is_array($items) || $items === []) {
+                    return "<tr><td colspan='2' class='text-muted'>{$emptyText}</td></tr>";
                 }
-
-                $cards = [
-                    ['Ships Destroyed', $formatCompact($shipsDestroyed)],
-                    ['Ships Lost', $formatCompact($shipsLost)],
-                    ['ISK Destroyed', $formatCompact($iskDestroyed)],
-                    ['ISK Lost', $formatCompact($iskLost)],
-                    ['Points Destroyed', $formatCompact($pointsDestroyed)],
-                    ['Points Lost', $formatCompact($pointsLost)],
-                    ['Solo Kills', $formatCompact($soloKills)],
-                    ['Solo Losses', $formatCompact($soloLosses)],
-                    ['Efficiency', $formatPercent($efficiency)],
-                ];
-
-                $body .= "<div class='row g-3 mb-4'>";
-                foreach ($cards as [$label, $value]) {
-                    $body .= "<div class='col-12 col-md-6 col-xl-3'>
-                                <div class='card h-100'>
-                                  <div class='card-body'>
-                                    <div class='text-muted small mb-1'>" . htmlspecialchars($label) . "</div>
-                                    <div class='fs-4 fw-semibold'>" . htmlspecialchars($value) . "</div>
-                                  </div>
-                                </div>
-                              </div>";
+                $rows = '';
+                foreach ($items as $entry) {
+                    if (!is_array($entry)) continue;
+                    $label = htmlspecialchars($getListLabel($entry));
+                    $value = htmlspecialchars($getListValue($entry));
+                    $rows .= "<tr><td>{$label}</td><td class='text-end'>{$value}</td></tr>";
                 }
-                $body .= "</div>";
+                return $rows;
+            };
 
-                if ($killerBoards || $lossBoards) {
-                    $body .= "<div class='row g-3 mb-3'>";
-                    $renderBoard = function (string $heading, array $boards): string {
-                        if (!$boards) {
-                            return "<div class='col-12 col-lg-6'>
-                                      <div class='card h-100'>
-                                        <div class='card-body'>
-                                          <h5 class='card-title'>{$heading}</h5>
-                                          <p class='text-muted mb-0'>No data available yet.</p>
-                                        </div>
-                                      </div>
-                                    </div>";
-                        }
-
-                        $html = '';
-                        foreach ($boards as $board) {
-                            $html .= "<div class='card h-100 mb-3'>
-                                        <div class='card-body'>
-                                          <h5 class='card-title'>" . htmlspecialchars($board['title']) . "</h5>
-                                          <ul class='list-group list-group-flush'>";
-                            foreach ($board['rows'] as $row) {
-                                $html .= "<li class='list-group-item d-flex justify-content-between align-items-center'>
-                                            <span>" . htmlspecialchars($row['label']) . "</span>
-                                            <span class='text-muted'>" . htmlspecialchars($row['value']) . "</span>
-                                          </li>";
-                            }
-                            $html .= "</ul>
-                                        </div>
-                                      </div>";
-                        }
-
-                        return "<div class='col-12 col-lg-6'>
+            $summaryHtml = "<div class='row g-3'>";
+            foreach ($summaryRows as $row) {
+                $summaryHtml .= "<div class='col-sm-6 col-lg-3'>
                                   <div class='card h-100'>
                                     <div class='card-body'>
-                                      <h4 class='card-title mb-3'>{$heading}</h4>
-                                      {$html}
+                                      <div class='text-muted small'>{$row['label']}</div>
+                                      <div class='fs-4 fw-semibold'>{$row['value']}</div>
                                     </div>
                                   </div>
                                 </div>";
-                    };
+            }
+            $summaryHtml .= "</div>";
 
-                    $body .= $renderBoard('Top Killers', $killerBoards);
-                    $body .= $renderBoard('Top Losses', $lossBoards);
-                    $body .= "</div>";
-                }
+            $topShips = $topRows($stats['shipsDestroyed'] ?? null, 'No ship data found.');
+            $topSystems = $topRows($stats['systems'] ?? null, 'No system data found.');
+            $topAllies = $topRows($stats['allies'] ?? null, 'No ally data found.');
+            $topEnemies = $topRows($stats['enemies'] ?? null, 'No enemy data found.');
 
-                if ($otherBoards) {
-                    $body .= "<div class='row g-3'>";
-                    foreach ($otherBoards as $board) {
-                        $body .= "<div class='col-12 col-lg-6 col-xl-4'>
-                                    <div class='card h-100'>
-                                      <div class='card-body'>
-                                        <h5 class='card-title'>" . htmlspecialchars($board['title']) . "</h5>
-                                        <ul class='list-group list-group-flush'>";
-                        foreach ($board['rows'] as $row) {
-                            $body .= "<li class='list-group-item d-flex justify-content-between align-items-center'>
-                                        <span>" . htmlspecialchars($row['label']) . "</span>
-                                        <span class='text-muted'>" . htmlspecialchars($row['value']) . "</span>
-                                      </li>";
-                        }
-                        $body .= "</ul>
-                                      </div>
-                                    </div>
-                                  </div>";
-                    }
-                    $body .= "</div>";
-                } elseif (!$killerBoards && !$lossBoards) {
-                    $body .= "<div class='card'>
-                                <div class='card-body'>
-                                  <h5 class='card-title'>Leaderboards</h5>
-                                  <p class='text-muted mb-0'>Leaderboards will appear here once zKillboard provides ranking data for this scope.</p>
+            $listsHtml = "<div class='row g-3 mt-1'>
+                            <div class='col-lg-6'>
+                              <div class='card h-100'>
+                                <div class='card-header'>Top Ships</div>
+                                <div class='table-responsive'>
+                                  <table class='table table-sm mb-0'>
+                                    <tbody>{$topShips}</tbody>
+                                  </table>
                                 </div>
-                              </div>";
-                }
+                              </div>
+                            </div>
+                            <div class='col-lg-6'>
+                              <div class='card h-100'>
+                                <div class='card-header'>Top Systems</div>
+                                <div class='table-responsive'>
+                                  <table class='table table-sm mb-0'>
+                                    <tbody>{$topSystems}</tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </div>
+                            <div class='col-lg-6'>
+                              <div class='card h-100'>
+                                <div class='card-header'>Top Allies</div>
+                                <div class='table-responsive'>
+                                  <table class='table table-sm mb-0'>
+                                    <tbody>{$topAllies}</tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </div>
+                            <div class='col-lg-6'>
+                              <div class='card h-100'>
+                                <div class='card-header'>Top Enemies</div>
+                                <div class='table-responsive'>
+                                  <table class='table table-sm mb-0'>
+                                    <tbody>{$topEnemies}</tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </div>
+                          </div>";
 
-                return Response::html($renderPage('Kill Stats', $body), 200);
-            },
-        ],
-    ],
-];
+            $header = "<div class='d-flex flex-wrap justify-content-between align-items-start gap-3'>
+                          <div>
+                            <h1 class='mb-1'>Kill Stats</h1>
+                            <div class='text-muted'>Scope: {$scopeName}</div>
+                          </div>
+                          <a class='btn btn-sm btn-outline-primary' href='https://zkillboard.com/{$identityType}/{$scopeId}/' target='_blank' rel='noopener'>View on zKillboard</a>
+                        </div>";
+
+            $errorHtml = '';
+            if ($statsError) {
+                $errorHtml = "<div class='alert alert-warning mt-3'>Unable to fetch killboard stats: " . htmlspecialchars($statsError) . "</div>";
+            }
+
+            $body = $header . $errorHtml . "<div class='mt-3'>" . $summaryHtml . $listsHtml . "</div>";
+
+            return Response::html($renderPage('Kill Stats', $body), 200);
+        });
+    }
+}
+
+return new KillstatsModule();

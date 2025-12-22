@@ -14,7 +14,7 @@ final class CoreRights
             ['admin.rights', 'Manage rights & groups'],
             ['admin.users', 'Manage users & groups'],
             ['admin.menu', 'Edit menu overrides'],
-            ['admin.module', 'View module registry'],
+            ['admin.modules', 'Manage Modules'],
         ];
 
         foreach ($rights as [$slug, $desc]) {

@@ -16,8 +16,7 @@ final class Modules
             if ($uid <= 0) return Response::redirect('/auth/login');
 
             $rights = new Rights($app->db);
-            $allowed = $rights->userHasRight($uid, 'admin.module')
-                || $rights->userHasRight($uid, 'admin.modules')
+            $allowed = $rights->userHasRight($uid, 'admin.modules')
                 || $rights->userHasRight($uid, 'admin.rights')
                 || $rights->userHasRight($uid, 'admin.access');
             if (!$allowed) return Response::text("403 Forbidden\n", 403);
