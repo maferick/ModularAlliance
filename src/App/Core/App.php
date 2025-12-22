@@ -785,6 +785,7 @@ HTML;
                  ON DUPLICATE KEY UPDATE name=VALUES(name), is_admin=VALUES(is_admin)",
                 [$slug, $name, $isAdmin]
             );
+            (new Rights($app->db))->bumpGlobalVersion();
 
             return Response::redirect('/admin/rights?group=' . urlencode($slug));
         }, ['right' => 'admin.rights']);
@@ -820,6 +821,7 @@ HTML;
                 $app->db->rollback();
                 throw $e;
             }
+            (new Rights($app->db))->bumpGlobalVersion();
 
             return Response::redirect('/admin/rights?group=' . urlencode($groupSlug));
         }, ['right' => 'admin.rights']);
@@ -846,6 +848,7 @@ HTML;
                 $app->db->rollback();
                 throw $e;
             }
+            (new Rights($app->db))->bumpGlobalVersion();
 
             return Response::redirect('/admin/rights');
         }, ['right' => 'admin.rights']);
@@ -914,6 +917,7 @@ HTML;
                 if ($gid <= 0) continue;
                 $app->db->run("INSERT IGNORE INTO eve_user_groups (user_id, group_id) VALUES (?, ?)", [$uid, $gid]);
             }
+            (new Rights($app->db))->bumpGlobalVersion();
             return Response::redirect('/admin/users');
         }, ['right' => 'admin.users']);
 
