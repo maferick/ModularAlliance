@@ -21,6 +21,12 @@ return [
             'area' => 'left',
         ],
     ],
+    'rights' => [
+        [
+            'slug' => 'killstats.view_all',
+            'description' => 'View kill stats outside the configured identity scope.',
+        ],
+    ],
     'cron' => [
         [
             'name' => 'refresh_stats',
@@ -107,11 +113,30 @@ return [
                     return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
                 };
 
-                if ($identityId > 0 && $memberId !== $identityId) {
-                    $body = "<h1>Kill Stats</h1>
-                             <div class='alert alert-danger mt-3'>This view is restricted to active members of the {$identityType}.</div>";
+                $uid = (int)($_SESSION['user_id'] ?? 0);
+                $rights = new Rights($app->db);
+                $canBypassScope = $uid > 0 && $rights->userHasRight($uid, 'killstats.view_all');
 
-                    return Response::html($renderPage('Kill Stats', $body), 403);
+                if ($identityId > 0 && $memberId !== $identityId && !$canBypassScope) {
+                    $body = "<div class='card'>
+                                <div class='card-body'>
+                                  <div class='d-flex flex-wrap justify-content-between align-items-start gap-3'>
+                                    <div>
+                                      <h1 class='mb-2'>Kill Stats</h1>
+                                      <div class='text-muted'>Access restricted to active members of the configured {$identityType}.</div>
+                                    </div>
+                                    <span class='badge bg-warning text-dark'>Access required</span>
+                                  </div>
+                                  <hr>
+                                  <p class='mb-2'>If you should have access, ask an admin to do one of the following:</p>
+                                  <ul class='mb-0'>
+                                    <li>Grant the <code>killstats.view_all</code> right in <strong>Admin → Rights &amp; Groups</strong>.</li>
+                                    <li>Update the configured {$identityType} in <strong>Admin → Settings</strong> so it matches your membership.</li>
+                                  </ul>
+                                </div>
+                              </div>";
+
+                    return Response::html($renderPage('Kill Stats', $body), 200);
                 }
 
                 if ($scopeId <= 0) {
