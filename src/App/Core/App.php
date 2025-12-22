@@ -61,6 +61,7 @@ final class App
         $app->menu->register(['slug'=>'admin.rights','title'=>'Rights','url'=>'/admin/rights','sort_order'=>25,'area'=>'admin_top','right_slug'=>'admin.rights']);
         $app->menu->register(['slug'=>'admin.users','title'=>'Users & Groups','url'=>'/admin/users','sort_order'=>30,'area'=>'admin_top','right_slug'=>'admin.users']);
         $app->menu->register(['slug'=>'admin.menu','title'=>'Menu Editor','url'=>'/admin/menu','sort_order'=>40,'area'=>'admin_top','right_slug'=>'admin.menu']);
+        $app->menu->register(['slug'=>'admin.modules','title'=>'Modules','url'=>'/admin/modules','sort_order'=>45,'area'=>'admin_top','right_slug'=>'admin.modules']);
 
         // Routes
         $app->router->get('/health', fn() => Response::text("OK\n", 200));
@@ -166,10 +167,62 @@ final class App
                        <li><a href='/admin/rights'>Rights</a> – groups & permission grants</li>
                        <li><a href='/admin/users'>Users</a> – assign groups to users</li>
                        <li><a href='/admin/menu'>Menu Editor</a></li>
+                       <li><a href='/admin/modules'>Modules</a> – loaded modules overview</li>
                        <li><a href='/admin/cache'>ESI Cache</a></li>
                      </ul>";
             return $render('Admin', $body);
         }, ['right' => 'admin.access']);
+
+        $app->router->get('/admin/modules', function () use ($app, $render): Response {
+            $mods = $app->modules->getManifests();
+            usort($mods, fn(array $a, array $b) => strcmp((string)($a['slug'] ?? ''), (string)($b['slug'] ?? '')));
+
+            $rows = '';
+            foreach ($mods as $m) {
+                $slug = htmlspecialchars((string)($m['slug'] ?? ''));
+                $name = htmlspecialchars((string)($m['name'] ?? $slug));
+                $desc = htmlspecialchars((string)($m['description'] ?? ''));
+                $version = htmlspecialchars((string)($m['version'] ?? ''));
+                $rights = is_array($m['rights'] ?? null) ? (string)count($m['rights']) : '0';
+                $routes = is_array($m['routes'] ?? null) ? (string)count($m['routes']) : '0';
+                $menu = is_array($m['menu'] ?? null) ? (string)count($m['menu']) : '0';
+
+                $rows .= "<tr>
+                            <td>{$name}</td>
+                            <td><code>{$slug}</code></td>
+                            <td>{$version}</td>
+                            <td>{$desc}</td>
+                            <td class='text-end'>{$rights}</td>
+                            <td class='text-end'>{$routes}</td>
+                            <td class='text-end'>{$menu}</td>
+                          </tr>";
+            }
+
+            if ($rows === '') {
+                $rows = "<tr><td colspan='7' class='text-muted'>No modules found.</td></tr>";
+            }
+
+            $body = "<h1>Modules</h1>
+                     <p class='text-muted'>Overview of loaded modules and their declared capabilities.</p>
+                     <div class='table-responsive'>
+                       <table class='table table-sm align-middle'>
+                         <thead>
+                           <tr>
+                             <th>Module</th>
+                             <th>Slug</th>
+                             <th>Version</th>
+                             <th>Description</th>
+                             <th class='text-end'>Rights</th>
+                             <th class='text-end'>Routes</th>
+                             <th class='text-end'>Menu</th>
+                           </tr>
+                         </thead>
+                         <tbody>{$rows}</tbody>
+                       </table>
+                     </div>";
+
+            return $render('Modules', $body);
+        }, ['right' => 'admin.modules']);
 
         $app->router->get('/admin/cache', function () use ($app, $render): Response {
             $pdo = $app->db->pdo();
@@ -732,6 +785,7 @@ HTML;
                  ON DUPLICATE KEY UPDATE name=VALUES(name), is_admin=VALUES(is_admin)",
                 [$slug, $name, $isAdmin]
             );
+            (new Rights($app->db))->bumpGlobalVersion();
 
             return Response::redirect('/admin/rights?group=' . urlencode($slug));
         }, ['right' => 'admin.rights']);
@@ -767,6 +821,7 @@ HTML;
                 $app->db->rollback();
                 throw $e;
             }
+            (new Rights($app->db))->bumpGlobalVersion();
 
             return Response::redirect('/admin/rights?group=' . urlencode($groupSlug));
         }, ['right' => 'admin.rights']);
@@ -793,6 +848,7 @@ HTML;
                 $app->db->rollback();
                 throw $e;
             }
+            (new Rights($app->db))->bumpGlobalVersion();
 
             return Response::redirect('/admin/rights');
         }, ['right' => 'admin.rights']);
@@ -861,6 +917,7 @@ HTML;
                 if ($gid <= 0) continue;
                 $app->db->run("INSERT IGNORE INTO eve_user_groups (user_id, group_id) VALUES (?, ?)", [$uid, $gid]);
             }
+            (new Rights($app->db))->bumpGlobalVersion();
             return Response::redirect('/admin/users');
         }, ['right' => 'admin.users']);
 
