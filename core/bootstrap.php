@@ -16,7 +16,7 @@ spl_autoload_register(function (string $class): void {
     if (str_starts_with($class, $prefix)) {
         $rel = substr($class, strlen($prefix));
         $path = APP_ROOT . '/src/App/' . str_replace('\\', '/', $rel) . '.php';
-        if (is_file($path)) require $path;
+        if (is_file($path)) require_once $path;
     }
 });
 
