@@ -27,9 +27,16 @@ return [
             'every' => 300,
             'handler' => function ($app): void {
                 $settings = new Settings($app->db);
-                $identityType = $settings->get('site.identity.type', 'corporation') ?? 'corporation';
+                $identityType = $settings->get('site.identity.type', 'corporation');
+                if ($identityType === null) {
+                    $identityType = 'corporation';
+                }
                 $identityType = $identityType === 'alliance' ? 'alliance' : 'corporation';
-                $identityId = (int)($settings->get('site.identity.id', '0') ?? '0');
+                $identityIdValue = $settings->get('site.identity.id', '0');
+                if ($identityIdValue === null) {
+                    $identityIdValue = '0';
+                }
+                $identityId = (int)$identityIdValue;
 
                 if ($identityId <= 0) return;
 
@@ -50,31 +57,38 @@ return [
             'method' => 'GET',
             'path' => '/killstats',
             'handler' => function () use ($app): Response {
-                $cid = (int)($_SESSION['character_id'] ?? 0);
+                $cid = (int)(isset($_SESSION['character_id']) ? $_SESSION['character_id'] : 0);
                 if ($cid <= 0) return Response::redirect('/auth/login');
 
                 $u = new Universe($app->db);
                 $profile = $u->characterProfile($cid);
 
                 $settings = new Settings($app->db);
-                $identityType = $settings->get('site.identity.type', 'corporation') ?? 'corporation';
+                $identityType = $settings->get('site.identity.type', 'corporation');
+                if ($identityType === null) {
+                    $identityType = 'corporation';
+                }
                 $identityType = $identityType === 'alliance' ? 'alliance' : 'corporation';
-                $identityId = (int)($settings->get('site.identity.id', '0') ?? '0');
+                $identityIdValue = $settings->get('site.identity.id', '0');
+                if ($identityIdValue === null) {
+                    $identityIdValue = '0';
+                }
+                $identityId = (int)$identityIdValue;
 
                 $memberId = $identityType === 'alliance'
-                    ? (int)($profile['alliance']['id'] ?? 0)
-                    : (int)($profile['corporation']['id'] ?? 0);
+                    ? (int)(isset($profile['alliance']['id']) ? $profile['alliance']['id'] : 0)
+                    : (int)(isset($profile['corporation']['id']) ? $profile['corporation']['id'] : 0);
 
                 $scopeId = $identityId > 0 ? $identityId : $memberId;
 
                 $scopeName = $identityType === 'alliance'
-                    ? (string)($profile['alliance']['name'] ?? 'Alliance')
-                    : (string)($profile['corporation']['name'] ?? 'Corporation');
+                    ? (string)(isset($profile['alliance']['name']) ? $profile['alliance']['name'] : 'Alliance')
+                    : (string)(isset($profile['corporation']['name']) ? $profile['corporation']['name'] : 'Corporation');
 
                 $renderPage = function (string $title, string $bodyHtml) use ($app): string {
                     $rights = new Rights($app->db);
                     $hasRight = function (string $right) use ($rights): bool {
-                        $uid = (int)($_SESSION['user_id'] ?? 0);
+                        $uid = (int)(isset($_SESSION['user_id']) ? $_SESSION['user_id'] : 0);
                         if ($uid <= 0) return false;
                         return $rights->userHasRight($uid, $right);
                     };
@@ -83,7 +97,7 @@ return [
                     $adminTree = $app->menu->tree('admin_top', $hasRight);
                     $userTree = $app->menu->tree('user_top', fn(string $r) => true);
 
-                    $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
+                    $loggedIn = ((int)(isset($_SESSION['character_id']) ? $_SESSION['character_id'] : 0) > 0);
                     if ($loggedIn) {
                         $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
                     } else {
@@ -164,8 +178,9 @@ return [
                 $killerBoards = [];
                 $lossBoards = [];
                 $otherBoards = [];
-                if (is_array($stats['topLists'] ?? null)) {
-                    foreach ($stats['topLists'] as $listName => $entries) {
+                $topLists = isset($stats['topLists']) ? $stats['topLists'] : null;
+                if (is_array($topLists)) {
+                    foreach ($topLists as $listName => $entries) {
                         if (!is_array($entries)) continue;
                         $rows = [];
                         foreach (array_slice($entries, 0, 6) as $entry) {
@@ -205,14 +220,16 @@ return [
 
                 $efficiency = null;
                 if ($iskDestroyed !== null || $iskLost !== null) {
-                    $totalIsk = ($iskDestroyed ?? 0.0) + ($iskLost ?? 0.0);
-                    if ($totalIsk > 0) $efficiency = (($iskDestroyed ?? 0.0) / $totalIsk) * 100.0;
+                    $totalIsk = ($iskDestroyed !== null ? $iskDestroyed : 0.0) + ($iskLost !== null ? $iskLost : 0.0);
+                    if ($totalIsk > 0) {
+                        $efficiency = (($iskDestroyed !== null ? $iskDestroyed : 0.0) / $totalIsk) * 100.0;
+                    }
                 }
 
                 $scopeLabel = $identityType === 'alliance' ? 'Alliance' : 'Corporation';
                 $scopeTicker = $identityType === 'alliance'
-                    ? (string)($profile['alliance']['ticker'] ?? '')
-                    : (string)($profile['corporation']['ticker'] ?? '');
+                    ? (string)(isset($profile['alliance']['ticker']) ? $profile['alliance']['ticker'] : '')
+                    : (string)(isset($profile['corporation']['ticker']) ? $profile['corporation']['ticker'] : '');
                 $scopeText = htmlspecialchars($scopeName) . ($scopeTicker !== '' ? ' [' . htmlspecialchars($scopeTicker) . ']' : '');
 
                 $body = "<div class='d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3'>
