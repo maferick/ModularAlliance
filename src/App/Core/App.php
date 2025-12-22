@@ -61,7 +61,7 @@ final class App
         $app->menu->register(['slug'=>'admin.rights','title'=>'Rights','url'=>'/admin/rights','sort_order'=>25,'area'=>'admin_top','right_slug'=>'admin.rights']);
         $app->menu->register(['slug'=>'admin.users','title'=>'Users & Groups','url'=>'/admin/users','sort_order'=>30,'area'=>'admin_top','right_slug'=>'admin.users']);
         $app->menu->register(['slug'=>'admin.menu','title'=>'Menu Editor','url'=>'/admin/menu','sort_order'=>40,'area'=>'admin_top','right_slug'=>'admin.menu']);
-        $app->menu->register(['slug'=>'admin.modules','title'=>'Modules','url'=>'/admin/modules','sort_order'=>45,'area'=>'admin_top','right_slug'=>'admin.modules']);
+        $app->menu->register(['slug'=>'admin.modules','title'=>'Modules','url'=>'/admin/modules','sort_order'=>45,'area'=>'admin_top','right_slug'=>'admin.module']);
 
         // Routes
         $app->router->get('/health', fn() => Response::text("OK\n", 200));
@@ -222,7 +222,7 @@ final class App
                      </div>";
 
             return $render('Modules', $body);
-        }, ['right' => 'admin.modules']);
+        }, ['right' => 'admin.module']);
 
         $app->router->get('/admin/cache', function () use ($app, $render): Response {
             $pdo = $app->db->pdo();
