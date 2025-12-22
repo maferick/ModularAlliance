@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
+use App\Core\Rights;
 use App\Http\Response;
 
 final class Modules
@@ -11,6 +12,16 @@ final class Modules
     public static function register(App $app, callable $render): void
     {
         $app->router->get('/admin/modules', function () use ($app, $render): Response {
+            $uid = (int)($_SESSION['user_id'] ?? 0);
+            if ($uid <= 0) return Response::redirect('/auth/login');
+
+            $rights = new Rights($app->db);
+            $allowed = $rights->userHasRight($uid, 'admin.module')
+                || $rights->userHasRight($uid, 'admin.modules')
+                || $rights->userHasRight($uid, 'admin.rights')
+                || $rights->userHasRight($uid, 'admin.access');
+            if (!$allowed) return Response::text("403 Forbidden\n", 403);
+
             $mods = $app->modules->getManifests();
             usort($mods, fn(array $a, array $b) => strcmp((string)($a['slug'] ?? ''), (string)($b['slug'] ?? '')));
 
@@ -59,6 +70,6 @@ final class Modules
                      </div>";
 
             return $render('Modules', $body);
-        }, ['right' => 'admin.module']);
+        });
     }
 }
