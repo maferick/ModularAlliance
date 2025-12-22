@@ -80,6 +80,60 @@ $app->router->get('/me', function () use ($app): Response {
     if ($allTicker !== '') $html .= "<div style='color:#666;'>[{$allTicker}]</div>";
     $html .= "</div></div>";
 
+    $uid = (int)($_SESSION['user_id'] ?? 0);
+    $rightsNote = '';
+    $rightsRows = [];
+    if ($uid > 0) {
+        $isSuper = $app->db->one("SELECT 1 FROM eve_users WHERE id=? AND is_superadmin=1 LIMIT 1", [$uid]);
+        $isAdmin = $app->db->one(
+            "SELECT 1
+             FROM eve_user_groups ug
+             JOIN groups g ON g.id = ug.group_id
+             WHERE ug.user_id=? AND g.is_admin=1
+             LIMIT 1",
+            [$uid]
+        );
+
+        if ($isSuper || $isAdmin) {
+            $rightsNote = $isSuper ? 'Superadmin: all rights enabled.' : 'Admin group: all rights enabled.';
+            $rightsRows = $app->db->all(
+                "SELECT slug, description
+                 FROM rights
+                 ORDER BY module_slug ASC, slug ASC"
+            );
+        } else {
+            $rightsRows = $app->db->all(
+                "SELECT DISTINCT r.slug, r.description
+                 FROM eve_user_groups ug
+                 JOIN group_rights gr ON gr.group_id = ug.group_id
+                 JOIN rights r ON r.id = gr.right_id
+                 WHERE ug.user_id=?
+                 ORDER BY r.module_slug ASC, r.slug ASC",
+                [$uid]
+            );
+        }
+    }
+
+    $html .= "<h2>Active Rights</h2>";
+    if ($rightsNote !== '') {
+        $html .= "<div class='text-muted'>" . htmlspecialchars($rightsNote) . "</div>";
+    }
+    if (empty($rightsRows)) {
+        $html .= "<div class='text-muted' style='margin-top:6px;'>No rights assigned.</div>";
+    } else {
+        $html .= "<ul style='margin-top:6px;'>";
+        foreach ($rightsRows as $r) {
+            $slug = htmlspecialchars((string)($r['slug'] ?? ''));
+            $desc = htmlspecialchars((string)($r['description'] ?? ''));
+            if ($desc !== '') {
+                $html .= "<li><code>{$slug}</code> – {$desc}</li>";
+            } else {
+                $html .= "<li><code>{$slug}</code></li>";
+            }
+        }
+        $html .= "</ul>";
+    }
+
     // Rights gate (admin hard override is inside Rights)
     $rights = new \App\Core\Rights($app->db);
     $hasRight = function (string $right) use ($rights): bool {
