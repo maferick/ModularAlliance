@@ -94,14 +94,96 @@ final class EveSso
         $owner = (string)($jwtPayload['owner'] ?? '');
 
         $userId = $this->upsertUser($characterId, $characterName, $owner, $jwtPayload);
-        $this->upsertToken($userId, $characterId, $token, $jwtPayload);
+
+        $finalUserId = $userId;
+        $linkFlash = null;
+        $linkRedirect = null;
+
+        $pendingToken = $_SESSION['charlink_token'] ?? null;
+        if (is_string($pendingToken) && $pendingToken !== '') {
+            unset($_SESSION['charlink_token']);
+            $tokenHash = hash('sha256', $pendingToken);
+            $tokenRow = $this->db->one(
+                "SELECT id, user_id, expires_at, used_at
+                 FROM character_link_tokens
+                 WHERE token_hash=? LIMIT 1",
+                [$tokenHash]
+            );
+
+            if (!$tokenRow) {
+                $linkFlash = ['type' => 'danger', 'message' => 'Invalid or expired character link token.'];
+            } else {
+                $expires = $tokenRow['expires_at'] ? strtotime((string)$tokenRow['expires_at']) : null;
+                $usedAt = $tokenRow['used_at'];
+                if ($usedAt !== null) {
+                    $linkFlash = ['type' => 'warning', 'message' => 'This link token has already been used.'];
+                } elseif ($expires !== null && time() > $expires) {
+                    $linkFlash = ['type' => 'warning', 'message' => 'This link token has expired.'];
+                } else {
+                    $targetUserId = (int)$tokenRow['user_id'];
+                    $existingLink = $this->db->one(
+                        "SELECT user_id, status
+                         FROM character_links
+                         WHERE character_id=? LIMIT 1",
+                        [$characterId]
+                    );
+
+                    if ($existingLink && (string)($existingLink['status'] ?? '') === 'linked') {
+                        $linkedUserId = (int)$existingLink['user_id'];
+                        if ($linkedUserId !== $targetUserId) {
+                            $linkFlash = ['type' => 'danger', 'message' => 'This character is already linked to another account.'];
+                        } else {
+                            $linkFlash = ['type' => 'info', 'message' => 'This character is already linked to your account.'];
+                            $finalUserId = $targetUserId;
+                        }
+                    } else {
+                        $this->db->run(
+                            "INSERT INTO character_links (user_id, character_id, character_name, status, linked_at, linked_by_user_id)
+                             VALUES (?, ?, ?, 'linked', NOW(), ?)
+                             ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), character_name=VALUES(character_name), status='linked', linked_at=NOW(), linked_by_user_id=VALUES(linked_by_user_id), revoked_at=NULL, revoked_by_user_id=NULL",
+                            [$targetUserId, $characterId, $characterName, $targetUserId]
+                        );
+                        $this->db->run(
+                            "UPDATE character_link_tokens
+                             SET used_at=NOW(), used_character_id=?
+                             WHERE id=?",
+                            [$characterId, (int)$tokenRow['id']]
+                        );
+                        $finalUserId = $targetUserId;
+                        $linkFlash = ['type' => 'success', 'message' => 'Character linked successfully.'];
+                    }
+                }
+            }
+
+            $linkRedirect = '/user/alts';
+        }
+
+        if ($finalUserId === $userId) {
+            $linked = $this->db->one(
+                "SELECT user_id
+                 FROM character_links
+                 WHERE character_id=? AND status='linked' LIMIT 1",
+                [$characterId]
+            );
+            if ($linked) {
+                $finalUserId = (int)$linked['user_id'];
+            }
+        }
+
+        $this->upsertToken($finalUserId, $characterId, $token, $jwtPayload);
         $this->warmIdentity($characterId, (string)$token['access_token']);
 
-        $_SESSION['user_id'] = $userId;
+        $_SESSION['user_id'] = $finalUserId;
         $_SESSION['character_id'] = $characterId;
+        if ($linkFlash) {
+            $_SESSION['charlink_flash'] = $linkFlash;
+        }
+        if ($linkRedirect) {
+            $_SESSION['charlink_redirect'] = $linkRedirect;
+        }
 
         return [
-            'user_id' => $userId,
+            'user_id' => $finalUserId,
             'character_id' => $characterId,
             'character_name' => $characterName,
             'jwt' => $jwtPayload,
@@ -284,4 +366,3 @@ final class EveSso
         );
     }
 }
-

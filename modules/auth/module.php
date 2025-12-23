@@ -39,6 +39,12 @@ return function (ModuleRegistry $registry): void {
             $sso = new EveSso($app->db, $cfg);
             $sso->handleCallback($code, $state);
 
+            $redirect = $_SESSION['charlink_redirect'] ?? null;
+            if (is_string($redirect) && $redirect !== '') {
+                unset($_SESSION['charlink_redirect']);
+                return Response::redirect($redirect);
+            }
+
             // ✅ Directly land on dashboard
             return Response::redirect('/');
         } catch (\Throwable $e) {

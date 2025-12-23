@@ -81,21 +81,5 @@ return function (ModuleRegistry $registry): void {
         return Response::html(Layout::page('Dashboard', $body, $leftTree, $adminTree, $userTree), 200);
     });
 
-    // User alts placeholder
-    $registry->route('GET', '/user/alts', function () use ($app, $hasRight): Response {
-        $cid = (int)($_SESSION['character_id'] ?? 0);
-        if ($cid <= 0) return Response::redirect('/auth/login');
-
-        $leftTree  = $app->menu->tree('left', $hasRight);
-        $adminTree = $app->menu->tree('admin_top', $hasRight);
-        $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
-        $userTree  = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
-
-        $body = "<h1>Linked Characters</h1>
-                 <p>This will allow linking multiple EVE characters (alts) to one account.</p>";
-
-        return Response::html(Layout::page('Linked Characters', $body, $leftTree, $adminTree, $userTree), 200);
-    });
-
     AdminRoutes::register($app, $registry, $hasRight);
 };
