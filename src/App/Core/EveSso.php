@@ -93,108 +93,128 @@ final class EveSso
         $characterName = (string)($jwtPayload['name'] ?? 'Unknown');
         $owner = (string)($jwtPayload['owner'] ?? '');
 
-        $userId = $this->upsertUser($characterId, $characterName, $owner, $jwtPayload);
+        $existingUser = $this->db->one("SELECT id FROM eve_users WHERE character_id=? LIMIT 1", [$characterId]);
+        $existingUserId = (int)($existingUser['id'] ?? 0);
 
-        $finalUserId = $userId;
         $linkFlash = null;
         $linkRedirect = null;
+        $linkTargetUserId = null;
+        $linkTokenRow = null;
+        $linkIntent = false;
+        $linkAllowed = true;
 
         $pendingLinkUserId = $_SESSION['charlink_link_user'] ?? null;
         if (is_numeric($pendingLinkUserId)) {
             unset($_SESSION['charlink_link_user']);
-            $targetUserId = (int)$pendingLinkUserId;
-
-            $targetUser = $this->db->one("SELECT id FROM eve_users WHERE id=? LIMIT 1", [$targetUserId]);
-            if (!$targetUser) {
-                $linkFlash = ['type' => 'danger', 'message' => 'Unable to link character: target account not found.'];
-            } else {
-                $existingLink = $this->db->one(
-                    "SELECT user_id, status
-                     FROM character_links
-                     WHERE character_id=? LIMIT 1",
-                    [$characterId]
-                );
-
-                if ($existingLink && (string)($existingLink['status'] ?? '') === 'linked') {
-                    $linkedUserId = (int)$existingLink['user_id'];
-                    if ($linkedUserId !== $targetUserId) {
-                        $linkFlash = ['type' => 'danger', 'message' => 'This character is already linked to another account.'];
-                    } else {
-                        $linkFlash = ['type' => 'info', 'message' => 'This character is already linked to your account.'];
-                        $finalUserId = $targetUserId;
-                    }
-                } else {
-                    $this->db->run(
-                        "INSERT INTO character_links (user_id, character_id, character_name, status, linked_at, linked_by_user_id)
-                         VALUES (?, ?, ?, 'linked', NOW(), ?)
-                         ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), character_name=VALUES(character_name), status='linked', linked_at=NOW(), linked_by_user_id=VALUES(linked_by_user_id), revoked_at=NULL, revoked_by_user_id=NULL",
-                        [$targetUserId, $characterId, $characterName, $targetUserId]
-                    );
-                    $finalUserId = $targetUserId;
-                    $linkFlash = ['type' => 'success', 'message' => 'Character linked successfully.'];
-                }
-            }
-
-            $linkRedirect = '/user/alts';
+            $linkIntent = true;
+            $linkTargetUserId = (int)$pendingLinkUserId;
         }
 
         $pendingToken = $_SESSION['charlink_token'] ?? null;
         if (is_string($pendingToken) && $pendingToken !== '') {
             unset($_SESSION['charlink_token']);
+            $linkIntent = true;
             $tokenHash = hash('sha256', $pendingToken);
-            $tokenRow = $this->db->one(
+            $linkTokenRow = $this->db->one(
                 "SELECT id, user_id, expires_at, used_at
-                 FROM character_link_tokens
-                 WHERE token_hash=? LIMIT 1",
+                 FROM module_charlink_states
+                 WHERE token_hash=? AND purpose='link' LIMIT 1",
                 [$tokenHash]
             );
 
-            if (!$tokenRow) {
+            if (!$linkTokenRow) {
+                $linkAllowed = false;
                 $linkFlash = ['type' => 'danger', 'message' => 'Invalid or expired character link token.'];
+                $this->audit('charlink.token_invalid', ['character_id' => $characterId]);
             } else {
-                $expires = $tokenRow['expires_at'] ? strtotime((string)$tokenRow['expires_at']) : null;
-                $usedAt = $tokenRow['used_at'];
+                $expires = $linkTokenRow['expires_at'] ? strtotime((string)$linkTokenRow['expires_at']) : null;
+                $usedAt = $linkTokenRow['used_at'];
                 if ($usedAt !== null) {
+                    $linkAllowed = false;
                     $linkFlash = ['type' => 'warning', 'message' => 'This link token has already been used.'];
+                    $this->audit('charlink.token_used', ['character_id' => $characterId, 'token_id' => (int)$linkTokenRow['id']]);
                 } elseif ($expires !== null && time() > $expires) {
+                    $linkAllowed = false;
                     $linkFlash = ['type' => 'warning', 'message' => 'This link token has expired.'];
+                    $this->audit('charlink.token_expired', ['character_id' => $characterId, 'token_id' => (int)$linkTokenRow['id']]);
                 } else {
-                    $targetUserId = (int)$tokenRow['user_id'];
-                    $existingLink = $this->db->one(
-                        "SELECT user_id, status
-                         FROM character_links
-                         WHERE character_id=? LIMIT 1",
-                        [$characterId]
-                    );
-
-                    if ($existingLink && (string)($existingLink['status'] ?? '') === 'linked') {
-                        $linkedUserId = (int)$existingLink['user_id'];
-                        if ($linkedUserId !== $targetUserId) {
-                            $linkFlash = ['type' => 'danger', 'message' => 'This character is already linked to another account.'];
-                        } else {
-                            $linkFlash = ['type' => 'info', 'message' => 'This character is already linked to your account.'];
-                            $finalUserId = $targetUserId;
-                        }
-                    } else {
-                        $this->db->run(
-                            "INSERT INTO character_links (user_id, character_id, character_name, status, linked_at, linked_by_user_id)
-                             VALUES (?, ?, ?, 'linked', NOW(), ?)
-                             ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), character_name=VALUES(character_name), status='linked', linked_at=NOW(), linked_by_user_id=VALUES(linked_by_user_id), revoked_at=NULL, revoked_by_user_id=NULL",
-                            [$targetUserId, $characterId, $characterName, $targetUserId]
-                        );
-                        $this->db->run(
-                            "UPDATE character_link_tokens
-                             SET used_at=NOW(), used_character_id=?
-                             WHERE id=?",
-                            [$characterId, (int)$tokenRow['id']]
-                        );
-                        $finalUserId = $targetUserId;
-                        $linkFlash = ['type' => 'success', 'message' => 'Character linked successfully.'];
-                    }
+                    $linkTargetUserId = (int)$linkTokenRow['user_id'];
                 }
+            }
+        }
+
+        $userId = 0;
+        if (!$linkIntent || $existingUserId > 0) {
+            $userId = $this->upsertUser($characterId, $characterName, $owner, $jwtPayload);
+        }
+
+        $finalUserId = $userId > 0 ? $userId : 0;
+
+        if ($linkIntent && $linkAllowed && $linkTargetUserId !== null) {
+            $targetUser = $this->db->one("SELECT id FROM eve_users WHERE id=? LIMIT 1", [$linkTargetUserId]);
+            if (!$targetUser) {
+                $linkFlash = ['type' => 'danger', 'message' => 'Unable to link character: target account not found.'];
+                $linkAllowed = false;
+                $this->audit('charlink.target_missing', ['character_id' => $characterId, 'target_user_id' => $linkTargetUserId]);
+            }
+        }
+
+        if ($linkIntent && $linkAllowed && $linkTargetUserId !== null) {
+            if ($existingUserId > 0 && $existingUserId !== $linkTargetUserId) {
+                $linkFlash = ['type' => 'danger', 'message' => 'This character is already the main character for another account.'];
+                $finalUserId = $existingUserId;
+                $linkAllowed = false;
+                $this->audit('charlink.main_conflict', [
+                    'character_id' => $characterId,
+                    'existing_user_id' => $existingUserId,
+                    'target_user_id' => $linkTargetUserId,
+                ]);
+            }
+        }
+
+        if ($linkIntent && $linkAllowed && $linkTargetUserId !== null) {
+            $existingLink = $this->db->one(
+                "SELECT user_id, status
+                 FROM character_links
+                 WHERE character_id=? LIMIT 1",
+                [$characterId]
+            );
+
+            if ($existingLink && (string)($existingLink['status'] ?? '') === 'linked') {
+                $linkedUserId = (int)$existingLink['user_id'];
+                if ($linkedUserId !== $linkTargetUserId) {
+                    $linkFlash = ['type' => 'danger', 'message' => 'This character is already linked to another account.'];
+                    $this->audit('charlink.link_conflict', [
+                        'character_id' => $characterId,
+                        'linked_user_id' => $linkedUserId,
+                        'target_user_id' => $linkTargetUserId,
+                    ]);
+                } else {
+                    $linkFlash = ['type' => 'info', 'message' => 'This character is already linked to your account.'];
+                    $finalUserId = $linkTargetUserId;
+                }
+            } else {
+                $this->db->run(
+                    "INSERT INTO character_links (user_id, character_id, character_name, status, linked_at, linked_by_user_id)
+                     VALUES (?, ?, ?, 'linked', NOW(), ?)
+                     ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), character_name=VALUES(character_name), status='linked', linked_at=NOW(), linked_by_user_id=VALUES(linked_by_user_id), revoked_at=NULL, revoked_by_user_id=NULL",
+                    [$linkTargetUserId, $characterId, $characterName, $linkTargetUserId]
+                );
+                if ($linkTokenRow) {
+                    $this->db->run(
+                        "UPDATE module_charlink_states
+                         SET used_at=NOW(), used_character_id=?
+                         WHERE id=?",
+                        [$characterId, (int)$linkTokenRow['id']]
+                    );
+                }
+                $finalUserId = $linkTargetUserId;
+                $linkFlash = ['type' => 'success', 'message' => 'Character linked successfully.'];
             }
 
             $linkRedirect = '/user/alts';
+        } elseif ($linkIntent && !$linkAllowed && $finalUserId <= 0) {
+            throw new \RuntimeException('Linking failed; no existing account found for this character.');
         }
 
         if ($finalUserId === $userId) {
