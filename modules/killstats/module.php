@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 use App\Core\App;
+use App\Core\AccessLog;
 use App\Core\EsiCache;
 use App\Core\EsiClient;
 use App\Core\HttpClient;
@@ -101,6 +102,16 @@ final class KillstatsModule implements ModuleInterface
             $canBypassScope = $uid > 0 && $rights->userHasRight($uid, 'killstats.view_all');
 
             if ($identityId > 0 && $memberId !== $identityId && !$canBypassScope) {
+                AccessLog::write([
+                    'method' => 'GET',
+                    'path' => '/killstats',
+                    'status' => 403,
+                    'decision' => 'deny',
+                    'reason' => 'scope_mismatch',
+                    'identity_type' => $identityType,
+                    'identity_id' => $identityId,
+                    'member_id' => $memberId,
+                ]);
                 $body = "<div class='card'>
                             <div class='card-body'>
                               <div class='d-flex flex-wrap justify-content-between align-items-start gap-3'>
@@ -128,6 +139,16 @@ final class KillstatsModule implements ModuleInterface
 
                 return Response::html($renderPage('Kill Stats', $body), 200);
             }
+
+            AccessLog::write([
+                'method' => 'GET',
+                'path' => '/killstats',
+                'status' => 200,
+                'decision' => 'allow',
+                'reason' => 'scope_allowed',
+                'identity_type' => $identityType,
+                'identity_id' => $scopeId,
+            ]);
 
             $stats = null;
             $statsError = null;
@@ -194,7 +215,7 @@ final class KillstatsModule implements ModuleInterface
                 ['label' => 'Points Lost', 'value' => $formatCompact(isset($summary['pointsLost']) ? (float)$summary['pointsLost'] : null)],
             ];
 
-            $topRows = function (?array $items, string $emptyText) use ($getListLabel, $getListValue): string {
+            $topRows = function ($items, string $emptyText) use ($getListLabel, $getListValue): string {
                 if (!is_array($items) || $items === []) {
                     return "<tr><td colspan='2' class='text-muted'>{$emptyText}</td></tr>";
                 }
