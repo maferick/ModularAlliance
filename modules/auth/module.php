@@ -39,6 +39,12 @@ return function (ModuleRegistry $registry): void {
             $sso = new EveSso($app->db, $cfg);
             $sso->handleCallback($code, $state);
 
+            $redirect = $_SESSION['charlink_redirect'] ?? null;
+            if (is_string($redirect) && $redirect !== '') {
+                unset($_SESSION['charlink_redirect']);
+                return Response::redirect($redirect);
+            }
+
             // ✅ Directly land on dashboard
             return Response::redirect('/');
         } catch (\Throwable $e) {
@@ -58,23 +64,68 @@ return function (ModuleRegistry $registry): void {
         $u = new Universe($app->db);
         $p = $u->characterProfile($cid);
 
-        $charName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
-        $portrait = $p['character']['portrait']['px256x256'] ?? $p['character']['portrait']['px128x128'] ?? null;
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        $primary = $uid > 0
+            ? $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid])
+            : null;
+        $primaryCharacterId = (int)($primary['character_id'] ?? 0);
+        $primaryName = (string)($primary['character_name'] ?? '');
+        $primaryPortrait = null;
+        $primaryProfile = null;
+        if ($primaryCharacterId > 0) {
+            $primaryProfile = $u->characterProfile($primaryCharacterId);
+            $primaryPortrait = $primaryProfile['character']['portrait']['px256x256']
+                ?? $primaryProfile['character']['portrait']['px128x128']
+                ?? null;
+        }
 
-        $corpName = htmlspecialchars($p['corporation']['name'] ?? '—');
-        $corpTicker = htmlspecialchars($p['corporation']['ticker'] ?? '');
-        $corpIcon = $p['corporation']['icons']['px128x128'] ?? $p['corporation']['icons']['px64x64'] ?? null;
+        $displayProfile = $primaryProfile ?? $p;
 
-        $allName = htmlspecialchars($p['alliance']['name'] ?? '—');
-        $allTicker = htmlspecialchars($p['alliance']['ticker'] ?? '');
-        $allIcon = $p['alliance']['icons']['px128x128'] ?? $p['alliance']['icons']['px64x64'] ?? null;
+        $charName = htmlspecialchars($displayProfile['character']['name'] ?? 'Unknown');
+        $portrait = $displayProfile['character']['portrait']['px256x256']
+            ?? $displayProfile['character']['portrait']['px128x128']
+            ?? null;
+
+        $corpName = htmlspecialchars($displayProfile['corporation']['name'] ?? '—');
+        $corpTicker = htmlspecialchars($displayProfile['corporation']['ticker'] ?? '');
+        $corpIcon = $displayProfile['corporation']['icons']['px128x128']
+            ?? $displayProfile['corporation']['icons']['px64x64']
+            ?? null;
+
+        $allName = htmlspecialchars($displayProfile['alliance']['name'] ?? '—');
+        $allTicker = htmlspecialchars($displayProfile['alliance']['ticker'] ?? '');
+        $allIcon = $displayProfile['alliance']['icons']['px128x128']
+            ?? $displayProfile['alliance']['icons']['px64x64']
+            ?? null;
 
         $html = "<h1>Profile</h1>";
+
+        if ($primaryCharacterId > 0) {
+            $primaryNameSafe = htmlspecialchars($primaryName !== '' ? $primaryName : 'Unknown');
+            $primaryBadge = $primaryCharacterId === $cid
+                ? "<span class='badge bg-success ms-2'>Current</span>"
+                : "<span class='badge bg-primary ms-2'>Primary</span>";
+            $primaryHtml = "<div class='card card-body mb-4'>
+                <div class='d-flex align-items-center gap-3'>
+                  " . ($primaryPortrait ? "<img src='" . htmlspecialchars($primaryPortrait) . "' width='64' height='64' style='border-radius:10px;'>" : "") . "
+                  <div>
+                    <div class='text-muted'>Main identity</div>
+                    <div class='fs-5 fw-bold'>{$primaryNameSafe}{$primaryBadge}</div>
+                  </div>
+                </div>
+              </div>";
+
+            $html = $primaryHtml . $html;
+        }
 
         $html .= "<div style='display:flex;gap:16px;align-items:center;margin:12px 0;'>";
         if ($portrait) $html .= "<img src='" . htmlspecialchars($portrait) . "' width='96' height='96' style='border-radius:10px;'>";
         $html .= "<div><div style='font-size:22px;font-weight:700;'>{$charName}</div></div>";
         $html .= "</div>";
+        if ($primaryCharacterId > 0 && $primaryCharacterId !== $cid) {
+            $currentName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
+            $html .= "<div class='text-muted mb-3'>Signed in as {$currentName}.</div>";
+        }
 
         $html .= "<h2>Corporation</h2>";
         $html .= "<div style='display:flex;gap:12px;align-items:center;margin:8px 0;'>";
