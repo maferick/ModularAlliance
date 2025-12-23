@@ -17,6 +17,17 @@ use App\Core\ModuleRegistry;
 use App\Core\Rights;
 use App\Core\Settings;
 use App\Core\Universe;
+use App\Corptools\MemberQueryBuilder;
+use App\Corptools\Settings as CorpToolsSettings;
+use App\Corptools\Audit\Dispatcher as AuditDispatcher;
+use App\Corptools\Audit\Collectors\AssetsCollector;
+use App\Corptools\Audit\Collectors\ClonesCollector;
+use App\Corptools\Audit\Collectors\LocationCollector;
+use App\Corptools\Audit\Collectors\RolesCollector;
+use App\Corptools\Audit\Collectors\ShipCollector;
+use App\Corptools\Audit\Collectors\SkillsCollector;
+use App\Corptools\Audit\Collectors\WalletCollector;
+use App\Corptools\Audit\SimpleCollector;
 use App\Http\Request;
 use App\Http\Response;
 
@@ -71,6 +82,11 @@ return function (ModuleRegistry $registry): void {
         return number_format($amount, 2) . ' ISK';
     };
 
+    $corptoolsSettings = new CorpToolsSettings($app->db);
+    $getCorpToolsSettings = function () use ($corptoolsSettings): array {
+        return $corptoolsSettings->get();
+    };
+
     $tokenData = function (int $characterId) use ($app): array {
         $row = $app->db->one(
             "SELECT access_token, scopes_json, expires_at
@@ -103,6 +119,7 @@ return function (ModuleRegistry $registry): void {
     $getCorpProfiles = function (array $corpIds) use ($app): array {
         $client = new EsiClient(new HttpClient());
         $cache = new EsiCache($app->db, $client);
+        $universe = new Universe($app->db);
 
         $profiles = [];
         foreach ($corpIds as $corpId) {
@@ -140,10 +157,21 @@ return function (ModuleRegistry $registry): void {
         $identityType = $identityType === 'alliance' ? 'alliance' : 'corporation';
         $identityIdValue = $settings->get('site.identity.id', '0') ?? '0';
         $identityId = (int)$identityIdValue;
-        if ($identityType !== 'corporation' || $identityId <= 0) {
+        if ($identityId <= 0) {
             return [];
         }
-        return [$identityId];
+        if ($identityType === 'corporation') {
+            return [$identityId];
+        }
+
+        $client = new EsiClient(new HttpClient());
+        $cache = new EsiCache($app->db, $client);
+        $corps = $cache->getCached(
+            "corptools:alliance:{$identityId}",
+            "GET /latest/alliances/{$identityId}/corporations/",
+            3600
+        );
+        return is_array($corps) ? array_map('intval', $corps) : [];
     };
 
     $getCorpToken = function (int $corpId, array $requiredScopes) use ($app, $hasScopes): array {
@@ -200,11 +228,111 @@ return function (ModuleRegistry $registry): void {
         ];
     };
 
-    $registry->cron('invoice_sync', 900, function (App $app) use ($tokenData, $getCorpIds) {
+    $auditCollectors = function (): array {
+        return [
+            new AssetsCollector(),
+            new ClonesCollector(),
+            new LocationCollector(),
+            new ShipCollector(),
+            new SkillsCollector(),
+            new WalletCollector(),
+            new RolesCollector(),
+            new SimpleCollector('implants', ['esi-clones.read_implants.v1'], ['/latest/characters/{character_id}/implants/'], 1800),
+            new SimpleCollector('contacts', ['esi-characters.read_contacts.v1'], ['/latest/characters/{character_id}/contacts/'], 3600),
+            new SimpleCollector('contracts', ['esi-contracts.read_character_contracts.v1'], ['/latest/characters/{character_id}/contracts/'], 1800),
+            new SimpleCollector('corp_history', [], ['/latest/characters/{character_id}/corporationhistory/'], 86400),
+            new SimpleCollector('loyalty', ['esi-characters.read_loyalty.v1'], ['/latest/characters/{character_id}/loyalty/points/'], 3600),
+            new SimpleCollector('markets', ['esi-markets.read_character_orders.v1'], ['/latest/characters/{character_id}/orders/'], 600),
+            new SimpleCollector('mining', ['esi-industry.read_character_mining.v1'], ['/latest/characters/{character_id}/mining/'], 1800),
+            new SimpleCollector('notifications', ['esi-characters.read_notifications.v1'], ['/latest/characters/{character_id}/notifications/'], 300),
+            new SimpleCollector('standings', ['esi-characters.read_standings.v1'], ['/latest/characters/{character_id}/standings/'], 7200),
+            new SimpleCollector('activity', ['esi-characters.read_statistics.v1'], ['/latest/characters/{character_id}/stats/'], 3600),
+        ];
+    };
+
+    $enabledAuditKeys = function (array $settings): array {
+        $enabled = [];
+        foreach (($settings['audit_scopes'] ?? []) as $key => $value) {
+            if ($value) $enabled[] = $key;
+        }
+        return $enabled;
+    };
+
+    $updateMemberSummary = function (int $userId, int $mainCharacterId, string $mainName) use ($app): void {
+        $mainSummary = $app->db->one(
+            "SELECT corp_id, alliance_id FROM module_corptools_character_summary WHERE character_id=? LIMIT 1",
+            [$mainCharacterId]
+        );
+        $corpId = (int)($mainSummary['corp_id'] ?? 0);
+        $allianceId = (int)($mainSummary['alliance_id'] ?? 0);
+
+        $stats = $app->db->one(
+            "SELECT MAX(total_sp) AS max_sp, MIN(audit_loaded) AS audit_loaded
+             FROM module_corptools_character_summary WHERE user_id=?",
+            [$userId]
+        );
+        $highestSp = (int)($stats['max_sp'] ?? 0);
+        $auditLoaded = (int)($stats['audit_loaded'] ?? 0);
+
+        $lastLogin = $app->db->one("SELECT updated_at FROM eve_users WHERE id=? LIMIT 1", [$userId]);
+        $lastLoginAt = $lastLogin['updated_at'] ?? null;
+
+        $corpJoinedAt = null;
+        if ($corpId > 0) {
+            $historyRow = $app->db->one(
+                "SELECT data_json FROM module_corptools_character_audit
+                 WHERE character_id=? AND category='corp_history' LIMIT 1",
+                [$mainCharacterId]
+            );
+            if ($historyRow) {
+                $historyPayloads = json_decode((string)($historyRow['data_json'] ?? '[]'), true);
+                $history = is_array($historyPayloads) ? ($historyPayloads[0] ?? []) : [];
+                if (is_array($history)) {
+                    foreach ($history as $entry) {
+                        if (!is_array($entry)) continue;
+                        if ((int)($entry['corporation_id'] ?? 0) !== $corpId) continue;
+                        $corpJoinedAt = $entry['start_date'] ?? null;
+                    }
+                }
+            }
+        }
+
+        $app->db->run(
+            "INSERT INTO module_corptools_member_summary
+             (user_id, main_character_id, main_character_name, corp_id, alliance_id, highest_sp, last_login_at, corp_joined_at, audit_loaded, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE
+               main_character_id=VALUES(main_character_id),
+               main_character_name=VALUES(main_character_name),
+               corp_id=VALUES(corp_id),
+               alliance_id=VALUES(alliance_id),
+               highest_sp=VALUES(highest_sp),
+               last_login_at=VALUES(last_login_at),
+               corp_joined_at=VALUES(corp_joined_at),
+               audit_loaded=VALUES(audit_loaded),
+               updated_at=NOW()",
+            [
+                $userId,
+                $mainCharacterId,
+                $mainName,
+                $corpId,
+                $allianceId,
+                $highestSp,
+                $lastLoginAt,
+                $corpJoinedAt,
+                $auditLoaded,
+            ]
+        );
+    };
+
+    $registry->cron('invoice_sync', 900, function (App $app) use ($tokenData, $getCorpIds, $getCorpToolsSettings) {
+        $settings = $getCorpToolsSettings();
         $corpIds = $getCorpIds();
         if (empty($corpIds)) return;
 
-        $walletDivisions = $cfg['wallet_divisions'] ?? [1];
+        $walletDivisions = $settings['invoices']['wallet_divisions']
+            ?? $settings['general']['holding_wallet_divisions']
+            ?? [1];
         if (!is_array($walletDivisions) || empty($walletDivisions)) {
             $walletDivisions = [1];
         }
@@ -288,6 +416,210 @@ return function (ModuleRegistry $registry): void {
         }
     });
 
+    $registry->cron('audit_refresh', 3600, function (App $app) use (
+        $tokenData,
+        $auditCollectors,
+        $enabledAuditKeys,
+        $updateMemberSummary,
+        $getCorpToolsSettings
+    ) {
+        $settings = $getCorpToolsSettings();
+        $enabledKeys = $enabledAuditKeys($settings);
+        if (empty($enabledKeys)) return;
+
+        $dispatcher = new AuditDispatcher($app->db);
+        $universe = new Universe($app->db);
+
+        $users = $app->db->all("SELECT id, character_id, character_name FROM eve_users");
+        $links = $app->db->all(
+            "SELECT user_id, character_id, character_name FROM character_links WHERE status='linked'"
+        );
+        $linksByUser = [];
+        foreach ($links as $link) {
+            $linksByUser[(int)$link['user_id']][] = [
+                'character_id' => (int)($link['character_id'] ?? 0),
+                'character_name' => (string)($link['character_name'] ?? ''),
+            ];
+        }
+
+        foreach ($users as $user) {
+            $userId = (int)($user['id'] ?? 0);
+            $mainCharacterId = (int)($user['character_id'] ?? 0);
+            $mainName = (string)($user['character_name'] ?? '');
+            if ($userId <= 0 || $mainCharacterId <= 0) continue;
+
+            $characters = array_merge(
+                [['character_id' => $mainCharacterId, 'character_name' => $mainName]],
+                $linksByUser[$userId] ?? []
+            );
+
+            foreach ($characters as $character) {
+                $characterId = (int)($character['character_id'] ?? 0);
+                if ($characterId <= 0) continue;
+                $token = $tokenData($characterId);
+                if (empty($token['access_token']) || $token['expired']) {
+                    continue;
+                }
+
+                $profile = $universe->characterProfile($characterId);
+                $characterName = (string)($profile['character']['name'] ?? ($character['character_name'] ?? 'Unknown'));
+                $baseSummary = [
+                    'corp_id' => (int)($profile['corporation']['id'] ?? 0),
+                    'alliance_id' => (int)($profile['alliance']['id'] ?? 0),
+                    'is_main' => $characterId === $mainCharacterId ? 1 : 0,
+                ];
+
+                $dispatcher->run(
+                    $userId,
+                    $characterId,
+                    $characterName,
+                    $token,
+                    $auditCollectors(),
+                    $enabledKeys,
+                    $baseSummary
+                );
+            }
+
+            $updateMemberSummary($userId, $mainCharacterId, $mainName);
+        }
+    });
+
+    $registry->cron('corp_audit_refresh', 3600, function (App $app) use ($getCorpIds, $getCorpToken, $getCorpToolsSettings) {
+        $settings = $getCorpToolsSettings();
+        $enabled = $settings['corp_audit'] ?? [];
+        $corpIds = $getCorpIds();
+        if (empty($corpIds)) return;
+
+        $client = new EsiClient(new HttpClient());
+        $cache = new EsiCache($app->db, $client);
+
+        $collectors = [
+            'wallets' => [
+                'scopes' => ['esi-wallet.read_corporation_wallets.v1'],
+                'endpoint' => '/latest/corporations/{corp_id}/wallets/',
+                'ttl' => 600,
+            ],
+            'structures' => [
+                'scopes' => ['esi-corporations.read_structures.v1'],
+                'endpoint' => '/latest/corporations/{corp_id}/structures/',
+                'ttl' => 900,
+            ],
+            'assets' => [
+                'scopes' => ['esi-assets.read_corporation_assets.v1'],
+                'endpoint' => '/latest/corporations/{corp_id}/assets/',
+                'ttl' => 900,
+            ],
+            'sov' => [
+                'scopes' => ['esi-sovereignty.read_corporation_campaigns.v1'],
+                'endpoint' => '/latest/corporation/{corp_id}/sov/',
+                'ttl' => 1800,
+            ],
+            'jump_bridges' => [
+                'scopes' => ['esi-universe.read_structures.v1'],
+                'endpoint' => '/latest/corporations/{corp_id}/structures/',
+                'ttl' => 1800,
+            ],
+        ];
+
+        foreach ($corpIds as $corpId) {
+            $corpId = (int)$corpId;
+            if ($corpId <= 0) continue;
+
+            foreach ($collectors as $key => $cfg) {
+                if (empty($enabled[$key])) continue;
+                $token = $getCorpToken($corpId, $cfg['scopes']);
+                if (empty($token['access_token']) || $token['expired']) continue;
+
+                $endpoint = str_replace('{corp_id}', (string)$corpId, $cfg['endpoint']);
+                $payload = $cache->getCachedAuth(
+                    "corptools:corp:{$corpId}",
+                    "GET {$endpoint}",
+                    (int)$cfg['ttl'],
+                    (string)$token['access_token'],
+                    [403, 404]
+                );
+
+                $app->db->run(
+                    "INSERT INTO module_corptools_corp_audit (corp_id, category, data_json, fetched_at)
+                     VALUES (?, ?, ?, NOW())
+                     ON DUPLICATE KEY UPDATE data_json=VALUES(data_json), fetched_at=NOW()",
+                    [
+                        $corpId,
+                        $key,
+                        json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                    ]
+                );
+
+                if ($key === 'structures' && is_array($payload)) {
+                    foreach ($payload as $structure) {
+                        if (!is_array($structure)) continue;
+                        $structureId = (int)($structure['structure_id'] ?? 0);
+                        if ($structureId <= 0) continue;
+                        $systemId = (int)($structure['solar_system_id'] ?? 0);
+                        $regionId = 0;
+                        if ($systemId > 0) {
+                            $system = $universe->entity('system', $systemId);
+                            $extra = json_decode((string)($system['extra_json'] ?? '[]'), true);
+                            if (is_array($extra)) {
+                                $regionId = (int)($extra['region_id'] ?? 0);
+                            }
+                        }
+
+                        $app->db->run(
+                            "INSERT INTO module_corptools_industry_structures
+                             (corp_id, structure_id, name, system_id, region_id, rigs_json, services_json, fuel_expires_at, state)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             ON DUPLICATE KEY UPDATE
+                               name=VALUES(name), system_id=VALUES(system_id), region_id=VALUES(region_id),
+                               rigs_json=VALUES(rigs_json), services_json=VALUES(services_json),
+                               fuel_expires_at=VALUES(fuel_expires_at), state=VALUES(state)",
+                            [
+                                $corpId,
+                                $structureId,
+                                (string)($structure['name'] ?? ''),
+                                $systemId,
+                                $regionId,
+                                json_encode($structure['rigs'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                                json_encode($structure['services'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                                $structure['fuel_expires'] ?? null,
+                                (string)($structure['state'] ?? ''),
+                            ]
+                        );
+                    }
+                }
+            }
+
+            if (!empty($enabled['metenox'])) {
+                $app->db->run(
+                    "INSERT INTO module_corptools_corp_audit (corp_id, category, data_json, fetched_at)
+                     VALUES (?, 'metenox', ?, NOW())
+                     ON DUPLICATE KEY UPDATE data_json=VALUES(data_json), fetched_at=NOW()",
+                    [$corpId, json_encode(['status' => 'scaffolded'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
+                );
+            }
+        }
+    });
+
+    $registry->cron('cleanup', 86400, function (App $app) use ($getCorpToolsSettings) {
+        $settings = $getCorpToolsSettings();
+        $retentionDays = (int)($settings['general']['retention_days'] ?? 30);
+        if ($retentionDays <= 0) return;
+        $cutoff = date('Y-m-d H:i:s', time() - ($retentionDays * 86400));
+
+        $app->db->run(
+            "DELETE FROM module_corptools_audit_runs WHERE started_at < ?",
+            [$cutoff]
+        );
+        $app->db->run(
+            "DELETE FROM module_corptools_character_audit WHERE updated_at < ?",
+            [$cutoff]
+        );
+        $app->db->run(
+            "DELETE FROM module_corptools_pings WHERE received_at < ?",
+            [$cutoff]
+        );
+    });
+
     $registry->route('GET', '/corptools', function () use ($app, $renderPage, $corpContext, $tokenData, $hasScopes, $formatIsk): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
@@ -356,10 +688,13 @@ return function (ModuleRegistry $registry): void {
                       </div>
                     </div>
                     <div class='d-flex gap-2'>
+                      <a class='btn btn-outline-light' href='/corptools/characters'>My Characters</a>
+                      <a class='btn btn-outline-light' href='/corptools/overview'>At a Glance</a>
                       <a class='btn btn-outline-light' href='/corptools/invoices'>Invoices</a>
                       <a class='btn btn-outline-light' href='/corptools/moons'>Moons</a>
                       <a class='btn btn-outline-light' href='/corptools/members'>Members</a>
                       <a class='btn btn-outline-light' href='/corptools/industry'>Industry</a>
+                      <a class='btn btn-outline-light' href='/corptools/corp-audit'>Corp Audit</a>
                       <a class='btn btn-outline-light' href='/corptools/notifications'>Notifications</a>
                     </div>
                   </div>
@@ -396,6 +731,131 @@ return function (ModuleRegistry $registry): void {
                   </div>";
 
         return Response::html($renderPage('Corp Tools', $body), 200);
+    }, ['right' => 'corptools.view']);
+
+    $registry->route('GET', '/corptools/characters', function () use ($app, $renderPage): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $primary = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
+        $mainId = (int)($primary['character_id'] ?? 0);
+        $mainName = (string)($primary['character_name'] ?? 'Unknown');
+
+        $links = $app->db->all(
+            "SELECT character_id, character_name FROM character_links WHERE user_id=? AND status='linked' ORDER BY linked_at ASC",
+            [$uid]
+        );
+
+        $characters = array_merge(
+            [['character_id' => $mainId, 'character_name' => $mainName, 'is_main' => true]],
+            array_map(fn($row) => [
+                'character_id' => (int)($row['character_id'] ?? 0),
+                'character_name' => (string)($row['character_name'] ?? ''),
+                'is_main' => false,
+            ], $links)
+        );
+
+        $cards = '';
+        foreach ($characters as $character) {
+            $characterId = (int)($character['character_id'] ?? 0);
+            if ($characterId <= 0) continue;
+            $summary = $app->db->one(
+                "SELECT audit_loaded, last_audit_at, total_sp, wallet_balance, assets_count
+                 FROM module_corptools_character_summary WHERE character_id=? LIMIT 1",
+                [$characterId]
+            );
+            $auditLoaded = ((int)($summary['audit_loaded'] ?? 0) === 1) ? 'Loaded' : 'Pending';
+            $lastAudit = htmlspecialchars((string)($summary['last_audit_at'] ?? '—'));
+            $sp = number_format((int)($summary['total_sp'] ?? 0));
+            $wallet = number_format((float)($summary['wallet_balance'] ?? 0), 2);
+            $assets = (int)($summary['assets_count'] ?? 0);
+            $name = htmlspecialchars((string)($character['character_name'] ?? 'Unknown'));
+            $badge = $character['is_main'] ? "<span class='badge bg-primary ms-2'>Main</span>" : '';
+
+            $cards .= "<div class='col-md-6'>
+                <div class='card card-body'>
+                  <div class='d-flex justify-content-between'>
+                    <div>
+                      <div class='fw-semibold'>{$name}{$badge}</div>
+                      <div class='text-muted small'>Audit: {$auditLoaded}</div>
+                    </div>
+                    <div class='text-muted small'>Last audit: {$lastAudit}</div>
+                  </div>
+                  <div class='row text-muted mt-2'>
+                    <div class='col-4'>SP: {$sp}</div>
+                    <div class='col-4'>Wallet: {$wallet}</div>
+                    <div class='col-4'>Assets: {$assets}</div>
+                  </div>
+                </div>
+              </div>";
+        }
+        if ($cards === '') {
+            $cards = "<div class='col-12 text-muted'>No linked characters found.</div>";
+        }
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>My Characters</h1>
+                      <div class='text-muted'>Audit coverage across your linked characters.</div>
+                    </div>
+                  </div>
+                  <div class='row g-3 mt-3'>{$cards}</div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Audit cadence</div>
+                    <div class='text-muted'>Audits refresh hourly through the CorpTools cron jobs. Missing scopes will show as pending.</div>
+                  </div>";
+
+        return Response::html($renderPage('My Characters', $body), 200);
+    }, ['right' => 'corptools.view']);
+
+    $registry->route('GET', '/corptools/overview', function () use ($app, $renderPage, $formatIsk): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $summary = $app->db->one(
+            "SELECT SUM(wallet_balance) AS wallet_total, SUM(assets_count) AS assets_total, MAX(total_sp) AS max_sp
+             FROM module_corptools_character_summary WHERE user_id=?",
+            [$uid]
+        );
+
+        $walletTotal = (float)($summary['wallet_total'] ?? 0);
+        $assetsTotal = (int)($summary['assets_total'] ?? 0);
+        $maxSp = (int)($summary['max_sp'] ?? 0);
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>At a Glance</h1>
+                      <div class='text-muted'>Cross-character overview for your account.</div>
+                    </div>
+                  </div>
+                  <div class='row g-3 mt-3'>
+                    <div class='col-md-4'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Total wallet</div>
+                        <div class='fs-5 fw-semibold'>" . htmlspecialchars($formatIsk($walletTotal)) . "</div>
+                      </div>
+                    </div>
+                    <div class='col-md-4'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Total assets</div>
+                        <div class='fs-5 fw-semibold'>" . htmlspecialchars((string)$assetsTotal) . "</div>
+                      </div>
+                    </div>
+                    <div class='col-md-4'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Highest skillpoints</div>
+                        <div class='fs-5 fw-semibold'>" . htmlspecialchars(number_format($maxSp)) . "</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Next steps</div>
+                    <div class='text-muted'>Visit My Characters to see audit coverage and missing scopes per pilot.</div>
+                  </div>";
+
+        return Response::html($renderPage('At a Glance', $body), 200);
     }, ['right' => 'corptools.view']);
 
     $registry->route('GET', '/corptools/invoices', function (Request $req) use ($app, $renderPage, $corpContext, $formatIsk, $getCorpToken): Response {
@@ -501,7 +961,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Invoices', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/members', function () use ($app, $renderPage, $corpContext, $getCorpToken): Response {
+    $registry->route('GET', '/corptools/members', function (Request $req) use ($app, $renderPage, $corpContext, $getCorpToolsSettings): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -513,135 +973,154 @@ return function (ModuleRegistry $registry): void {
             return Response::html($renderPage('Members', $body), 200);
         }
 
-        $corpId = (int)$corp['id'];
+        $settings = $getCorpToolsSettings();
+        $defaultAssetMin = (string)($settings['filters']['asset_value_min'] ?? '');
+        $defaultAuditOnly = !empty($settings['filters']['audit_loaded_only']) ? '1' : '';
 
-        $membersScopes = ['esi-corporations.read_corporation_membership.v1'];
-        $rolesScopes = ['esi-corporations.read_corporation_roles.v1'];
-        $titlesScopes = ['esi-corporations.read_titles.v1'];
+        $filters = [
+            'asset_presence' => (string)($req->query['asset_presence'] ?? ''),
+            'asset_value_min' => (string)($req->query['asset_value_min'] ?? $defaultAssetMin),
+            'location_region_id' => (string)($req->query['location_region_id'] ?? ''),
+            'location_system_id' => (string)($req->query['location_system_id'] ?? ''),
+            'ship_type_id' => (string)($req->query['ship_type_id'] ?? ''),
+            'corp_role' => (string)($req->query['corp_role'] ?? ''),
+            'corp_title' => (string)($req->query['corp_title'] ?? ''),
+            'highest_sp_min' => (string)($req->query['highest_sp_min'] ?? ''),
+            'last_login_since' => (string)($req->query['last_login_since'] ?? ''),
+            'corp_joined_since' => (string)($req->query['corp_joined_since'] ?? ''),
+            'home_station_id' => (string)($req->query['home_station_id'] ?? ''),
+            'death_clone_location_id' => (string)($req->query['death_clone_location_id'] ?? ''),
+            'jump_clone_location_id' => (string)($req->query['jump_clone_location_id'] ?? ''),
+            'audit_loaded' => (string)($req->query['audit_loaded'] ?? $defaultAuditOnly),
+            'skill_id' => (string)($req->query['skill_id'] ?? ''),
+            'asset_type_id' => (string)($req->query['asset_type_id'] ?? ''),
+            'asset_group_id' => (string)($req->query['asset_group_id'] ?? ''),
+            'asset_category_id' => (string)($req->query['asset_category_id'] ?? ''),
+        ];
 
-        $membersToken = $getCorpToken($corpId, $membersScopes);
-        $rolesToken = $getCorpToken($corpId, $rolesScopes);
-        $titlesToken = $getCorpToken($corpId, $titlesScopes);
+        $builder = new MemberQueryBuilder();
+        $query = $builder->build($filters);
+        $rows = $app->db->all($query['sql'] . ' LIMIT 200', $query['params']);
 
-        $client = new EsiClient(new HttpClient());
-        $cache = new EsiCache($app->db, $client);
+        $u = new Universe($app->db);
+        $rowsHtml = '';
+        foreach ($rows as $row) {
+            $name = htmlspecialchars((string)($row['main_character_name'] ?? $row['character_name'] ?? 'Unknown'));
+            $sp = number_format((int)($row['highest_sp'] ?? 0));
+            $audit = ((int)($row['audit_loaded'] ?? 0) === 1) ? 'Yes' : 'No';
+            $systemId = (int)($row['location_system_id'] ?? 0);
+            $systemName = $systemId > 0 ? htmlspecialchars($u->name('system', $systemId)) : '—';
+            $shipTypeId = (int)($row['current_ship_type_id'] ?? 0);
+            $shipName = $shipTypeId > 0 ? htmlspecialchars($u->name('type', $shipTypeId)) : '—';
+            $assets = (int)($row['assets_count'] ?? 0);
+            $title = htmlspecialchars((string)($row['corp_title'] ?? '—'));
 
-        $members = [];
-        if (!$membersToken['expired'] && $membersToken['access_token']) {
-            $members = $cache->getCachedAuth(
-                "corptools:members:{$corpId}",
-                "GET /latest/corporations/{$corpId}/members/",
-                600,
-                (string)$membersToken['access_token'],
-                [403, 404]
-            );
-            if (!is_array($members)) $members = [];
+            $rowsHtml .= "<tr>
+                <td>{$name}</td>
+                <td>{$sp}</td>
+                <td>{$audit}</td>
+                <td>{$systemName}</td>
+                <td>{$shipName}</td>
+                <td>{$assets}</td>
+                <td>{$title}</td>
+              </tr>";
         }
-
-        $roles = [];
-        if (!$rolesToken['expired'] && $rolesToken['access_token']) {
-            $roles = $cache->getCachedAuth(
-                "corptools:roles:{$corpId}",
-                "GET /latest/corporations/{$corpId}/roles/",
-                3600,
-                (string)$rolesToken['access_token'],
-                [403, 404]
-            );
-            if (!is_array($roles)) $roles = [];
+        if ($rowsHtml === '') {
+            $rowsHtml = "<tr><td colspan='7' class='text-muted'>No members matched the filters yet.</td></tr>";
         }
-
-        $titles = [];
-        if (!$titlesToken['expired'] && $titlesToken['access_token']) {
-            $titles = $cache->getCachedAuth(
-                "corptools:titles:{$corpId}",
-                "GET /latest/corporations/{$corpId}/titles/",
-                3600,
-                (string)$titlesToken['access_token'],
-                [403, 404]
-            );
-            if (!is_array($titles)) $titles = [];
-        }
-
-        $membersRows = '';
-        $memberCount = is_array($members) ? count($members) : 0;
-        $membersPreview = array_slice($members, 0, 200);
-        foreach ($membersPreview as $memberId) {
-            $memberId = (int)$memberId;
-            if ($memberId <= 0) continue;
-            $membersRows .= "<tr><td>{$memberId}</td></tr>";
-        }
-        if ($membersRows === '') {
-            $membersRows = "<tr><td class='text-muted'>No member data available.</td></tr>";
-        }
-        $memberNote = $memberCount > count($membersPreview)
-            ? "<div class='text-muted small'>Showing first " . count($membersPreview) . " of {$memberCount} members.</div>"
-            : "<div class='text-muted small'>Total members: {$memberCount}</div>";
-
-        $rolesRows = '';
-        foreach (array_slice($roles, 0, 200) as $role) {
-            if (!is_array($role)) continue;
-            $charId = (int)($role['character_id'] ?? 0);
-            $rolesList = $role['roles'] ?? [];
-            $roleText = is_array($rolesList) ? implode(', ', $rolesList) : '';
-            $roleText = htmlspecialchars($roleText !== '' ? $roleText : '—');
-            $rolesRows .= "<tr><td>{$charId}</td><td>{$roleText}</td></tr>";
-        }
-        if ($rolesRows === '') {
-            $rolesRows = "<tr><td colspan='2' class='text-muted'>No role data available.</td></tr>";
-        }
-
-        $titlesRows = '';
-        foreach ($titles as $title) {
-            if (!is_array($title)) continue;
-            $titleId = (int)($title['title_id'] ?? 0);
-            $titleName = htmlspecialchars((string)($title['name'] ?? 'Untitled'));
-            $titlesRows .= "<tr><td>{$titleName}</td><td>{$titleId}</td></tr>";
-        }
-        if ($titlesRows === '') {
-            $titlesRows = "<tr><td colspan='2' class='text-muted'>No title data available.</td></tr>";
-        }
-
-        $membersMissing = (!$membersToken['expired'] && $membersToken['access_token']) ? '' :
-            "<div class='alert alert-warning'>Missing scopes: " . htmlspecialchars(implode(', ', $membersScopes)) . ". <a href='/charlink'>Link via Character Link Hub</a>.</div>";
-        $rolesMissing = (!$rolesToken['expired'] && $rolesToken['access_token']) ? '' :
-            "<div class='alert alert-warning'>Missing scopes: " . htmlspecialchars(implode(', ', $rolesScopes)) . ". <a href='/charlink'>Link via Character Link Hub</a>.</div>";
-        $titlesMissing = (!$titlesToken['expired'] && $titlesToken['access_token']) ? '' :
-            "<div class='alert alert-warning'>Missing scopes: " . htmlspecialchars(implode(', ', $titlesScopes)) . ". <a href='/charlink'>Link via Character Link Hub</a>.</div>";
 
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>Members</h1>
-                      <div class='text-muted'>Corporation member roster, roles, and titles.</div>
+                      <div class='text-muted'>Security filters driven by audit snapshots.</div>
                     </div>
                   </div>
-                  <div class='mt-3'>{$membersMissing}</div>
-                  <div class='card card-body mt-3'>
-                    <div class='fw-semibold mb-2'>Members</div>
-                    {$memberNote}
-                    <div class='table-responsive mt-2'>
-                      <table class='table table-sm align-middle'>
-                        <thead><tr><th>Character ID</th></tr></thead>
-                        <tbody>{$membersRows}</tbody>
-                      </table>
+                  <form method='get' class='card card-body mt-3'>
+                    <div class='row g-2'>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Assets</label>
+                        <select class='form-select' name='asset_presence'>
+                          <option value=''>Any</option>
+                          <option value='has'" . ($filters['asset_presence'] === 'has' ? ' selected' : '') . ">Has assets</option>
+                          <option value='none'" . ($filters['asset_presence'] === 'none' ? ' selected' : '') . ">No assets</option>
+                        </select>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Asset value min (ISK)</label>
+                        <input class='form-control' name='asset_value_min' value='" . htmlspecialchars($filters['asset_value_min']) . "' placeholder='0'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Location system ID</label>
+                        <input class='form-control' name='location_system_id' value='" . htmlspecialchars($filters['location_system_id']) . "' placeholder='30000142'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Ship type ID</label>
+                        <input class='form-control' name='ship_type_id' value='" . htmlspecialchars($filters['ship_type_id']) . "' placeholder='603'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Corp role contains</label>
+                        <input class='form-control' name='corp_role' value='" . htmlspecialchars($filters['corp_role']) . "' placeholder='Director'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Corp title</label>
+                        <input class='form-control' name='corp_title' value='" . htmlspecialchars($filters['corp_title']) . "' placeholder='Quartermaster'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Highest SP min</label>
+                        <input class='form-control' name='highest_sp_min' value='" . htmlspecialchars($filters['highest_sp_min']) . "' placeholder='50000000'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Audit loaded</label>
+                        <select class='form-select' name='audit_loaded'>
+                          <option value=''>Any</option>
+                          <option value='1'" . ($filters['audit_loaded'] === '1' ? ' selected' : '') . ">Loaded</option>
+                        </select>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Skill ID</label>
+                        <input class='form-control' name='skill_id' value='" . htmlspecialchars($filters['skill_id']) . "' placeholder='3300'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Asset type ID</label>
+                        <input class='form-control' name='asset_type_id' value='" . htmlspecialchars($filters['asset_type_id']) . "' placeholder='34'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Asset group ID</label>
+                        <input class='form-control' name='asset_group_id' value='" . htmlspecialchars($filters['asset_group_id']) . "' placeholder='18'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Asset category ID</label>
+                        <input class='form-control' name='asset_category_id' value='" . htmlspecialchars($filters['asset_category_id']) . "' placeholder='6'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Last login since</label>
+                        <input type='date' class='form-control' name='last_login_since' value='" . htmlspecialchars($filters['last_login_since']) . "'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Corp joined since</label>
+                        <input type='date' class='form-control' name='corp_joined_since' value='" . htmlspecialchars($filters['corp_joined_since']) . "'>
+                      </div>
+                      <div class='col-md-3 d-flex align-items-end'>
+                        <button class='btn btn-primary me-2'>Apply filters</button>
+                        <a class='btn btn-outline-secondary' href='/corptools/members'>Reset</a>
+                      </div>
                     </div>
-                  </div>
-                  <div class='mt-3'>{$rolesMissing}</div>
+                  </form>
                   <div class='card card-body mt-3'>
-                    <div class='fw-semibold mb-2'>Roles</div>
                     <div class='table-responsive'>
                       <table class='table table-sm align-middle'>
-                        <thead><tr><th>Character ID</th><th>Roles</th></tr></thead>
-                        <tbody>{$rolesRows}</tbody>
-                      </table>
-                    </div>
-                  </div>
-                  <div class='mt-3'>{$titlesMissing}</div>
-                  <div class='card card-body mt-3'>
-                    <div class='fw-semibold mb-2'>Titles</div>
-                    <div class='table-responsive'>
-                      <table class='table table-sm align-middle'>
-                        <thead><tr><th>Title</th><th>ID</th></tr></thead>
-                        <tbody>{$titlesRows}</tbody>
+                        <thead>
+                          <tr>
+                            <th>Member</th>
+                            <th>Highest SP</th>
+                            <th>Audit</th>
+                            <th>Location</th>
+                            <th>Ship</th>
+                            <th>Assets</th>
+                            <th>Title</th>
+                          </tr>
+                        </thead>
+                        <tbody>{$rowsHtml}</tbody>
                       </table>
                     </div>
                   </div>";
@@ -649,7 +1128,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Members', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/moons', function () use ($app, $renderPage, $corpContext): Response {
+    $registry->route('GET', '/corptools/moons', function () use ($app, $renderPage, $corpContext, $getCorpToolsSettings): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -660,6 +1139,9 @@ return function (ModuleRegistry $registry): void {
             $body = "<h1>Moon Tracking</h1><div class='alert alert-warning mt-3'>No corporation is configured.</div>";
             return Response::html($renderPage('Moon Tracking', $body), 200);
         }
+
+        $settings = $getCorpToolsSettings();
+        $defaultTax = (float)($settings['moons']['default_tax_rate'] ?? 0);
 
         $rows = $app->db->all(
             "SELECT event_date, moon_name, pilot_name, ore_name, quantity, tax_rate
@@ -721,7 +1203,7 @@ return function (ModuleRegistry $registry): void {
                       </div>
                       <div class='col-md-1'>
                         <label class='form-label'>Tax %</label>
-                        <input type='number' step='0.01' class='form-control' name='tax_rate' value='0'>
+                        <input type='number' step='0.01' class='form-control' name='tax_rate' value='" . htmlspecialchars((string)$defaultTax) . "'>
                       </div>
                     </div>
                     <button class='btn btn-primary mt-3'>Add event</button>
@@ -747,7 +1229,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Moon Tracking', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('POST', '/corptools/moons/add', function (Request $req) use ($app, $corpContext): Response {
+    $registry->route('POST', '/corptools/moons/add', function (Request $req) use ($app, $corpContext, $getCorpToolsSettings): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -762,6 +1244,10 @@ return function (ModuleRegistry $registry): void {
         $oreName = trim((string)($req->post['ore_name'] ?? ''));
         $quantity = (float)($req->post['quantity'] ?? 0);
         $taxRate = (float)($req->post['tax_rate'] ?? 0);
+        if ($taxRate <= 0) {
+            $settings = $getCorpToolsSettings();
+            $taxRate = (float)($settings['moons']['default_tax_rate'] ?? 0);
+        }
 
         if ($eventDate !== '' && $moonName !== '' && $pilotName !== '' && $oreName !== '') {
             $app->db->run(
@@ -775,7 +1261,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/corptools/moons');
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/industry', function () use ($app, $renderPage, $corpContext, $getCorpToken): Response {
+    $registry->route('GET', '/corptools/industry', function () use ($app, $renderPage, $corpContext): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -787,63 +1273,42 @@ return function (ModuleRegistry $registry): void {
             return Response::html($renderPage('Industry', $body), 200);
         }
 
-        $requiredScopes = ['esi-corporations.read_structures.v1'];
-        $token = $getCorpToken((int)$corp['id'], $requiredScopes);
-        $missingScopes = !$token['expired'] && $token['access_token'] ? [] : $requiredScopes;
+        $rows = $app->db->all(
+            "SELECT structure_id, name, system_id, region_id, rigs_json, services_json, state, fuel_expires_at
+             FROM module_corptools_industry_structures
+             WHERE corp_id=?
+             ORDER BY name ASC
+             LIMIT 200",
+            [$corp['id']]
+        );
 
-        $structures = [];
-        $staleNote = '';
-        if (empty($missingScopes)) {
-            $client = new EsiClient(new HttpClient());
-            $cache = new EsiCache($app->db, $client);
-            $structures = $cache->getCachedAuth(
-                "corptools:structures:{$corp['id']}",
-                "GET /latest/corporations/{$corp['id']}/structures/",
-                3600,
-                (string)$token['access_token'],
-                [403, 404]
-            );
-            if (!is_array($structures)) $structures = [];
-            if (empty($structures)) {
-                $staleNote = "<div class='text-muted'>No structures cached yet or ESI returned no data.</div>";
-            }
-        }
-
+        $u = new Universe($app->db);
         $rowsHtml = '';
-        foreach ($structures as $structure) {
-            if (!is_array($structure)) continue;
+        foreach ($rows as $structure) {
             $name = htmlspecialchars((string)($structure['name'] ?? 'Unknown structure'));
             $systemId = (int)($structure['system_id'] ?? 0);
-            $systemName = 'Unknown system';
-            if ($systemId > 0) {
-                $u = new Universe($app->db);
-                $systemNameRaw = $u->name('system', $systemId);
-                $systemName = str_contains($systemNameRaw, '#') ? 'Unknown system' : $systemNameRaw;
-            }
-            $services = $structure['services'] ?? [];
-            $serviceNames = [];
-            if (is_array($services)) {
-                foreach ($services as $service) {
-                    if (!is_array($service)) continue;
-                    $serviceNames[] = (string)($service['name'] ?? '');
+            $regionId = (int)($structure['region_id'] ?? 0);
+            $systemName = $systemId > 0 ? htmlspecialchars($u->name('system', $systemId)) : '—';
+            $regionName = $regionId > 0 ? htmlspecialchars($u->name('region', $regionId)) : '—';
+            $rigs = json_decode((string)($structure['rigs_json'] ?? '[]'), true);
+            $rigNames = [];
+            if (is_array($rigs)) {
+                foreach ($rigs as $rigId) {
+                    $rigId = (int)$rigId;
+                    if ($rigId > 0) $rigNames[] = $u->name('type', $rigId);
                 }
             }
-            $serviceText = htmlspecialchars(implode(', ', array_filter($serviceNames)));
-            if ($serviceText === '') $serviceText = '—';
+            $rigText = htmlspecialchars(implode(', ', array_filter($rigNames)));
+            if ($rigText === '') $rigText = '—';
             $rowsHtml .= "<tr>
                 <td>{$name}</td>
-                <td>" . htmlspecialchars($systemName) . "</td>
-                <td>{$serviceText}</td>
+                <td>{$systemName}</td>
+                <td>{$regionName}</td>
+                <td>{$rigText}</td>
               </tr>";
         }
         if ($rowsHtml === '') {
-            $rowsHtml = "<tr><td colspan='3' class='text-muted'>No structure data available.</td></tr>";
-        }
-
-        $missingHtml = '';
-        if (!empty($missingScopes)) {
-            $missingList = htmlspecialchars(implode(', ', $missingScopes));
-            $missingHtml = "<div class='alert alert-warning'>Missing scopes: {$missingList}. <a href='/charlink'>Link via Character Link Hub</a>.</div>";
+            $rowsHtml = "<tr><td colspan='4' class='text-muted'>No structure data available. Run the CorpTools corp audit job to populate structures.</td></tr>";
         }
 
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
@@ -852,7 +1317,6 @@ return function (ModuleRegistry $registry): void {
                       <div class='text-muted'>Structures, rigs, and services overview.</div>
                     </div>
                   </div>
-                  <div class='mt-3'>{$missingHtml}{$staleNote}</div>
                   <div class='card card-body mt-3'>
                     <div class='table-responsive'>
                       <table class='table table-sm align-middle'>
@@ -860,7 +1324,8 @@ return function (ModuleRegistry $registry): void {
                           <tr>
                             <th>Structure</th>
                             <th>System</th>
-                            <th>Services</th>
+                            <th>Region</th>
+                            <th>Rigs</th>
                           </tr>
                         </thead>
                         <tbody>{$rowsHtml}</tbody>
@@ -869,6 +1334,59 @@ return function (ModuleRegistry $registry): void {
                   </div>";
 
         return Response::html($renderPage('Industry', $body), 200);
+    }, ['right' => 'corptools.director']);
+
+    $registry->route('GET', '/corptools/corp-audit', function () use ($app, $renderPage, $corpContext): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $context = $corpContext();
+        $corp = $context['selected'];
+        if (!$corp) {
+            $body = "<h1>Corp Audit</h1><div class='alert alert-warning mt-3'>No corporation is configured.</div>";
+            return Response::html($renderPage('Corp Audit', $body), 200);
+        }
+
+        $rows = $app->db->all(
+            "SELECT category, data_json, fetched_at
+             FROM module_corptools_corp_audit
+             WHERE corp_id=?
+             ORDER BY category ASC",
+            [$corp['id']]
+        );
+
+        $cards = '';
+        foreach ($rows as $row) {
+            $category = htmlspecialchars((string)($row['category'] ?? 'unknown'));
+            $data = json_decode((string)($row['data_json'] ?? '[]'), true);
+            $count = is_array($data) ? count($data) : 0;
+            $fetched = htmlspecialchars((string)($row['fetched_at'] ?? '—'));
+            $cards .= "<div class='col-md-4'>
+                <div class='card card-body'>
+                  <div class='fw-semibold text-capitalize'>{$category}</div>
+                  <div class='text-muted small'>Records: {$count}</div>
+                  <div class='text-muted small'>Last sync: {$fetched}</div>
+                </div>
+              </div>";
+        }
+        if ($cards === '') {
+            $cards = "<div class='col-12 text-muted'>No corp audit data cached yet. Run the corp audit cron job.</div>";
+        }
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Corp Audit</h1>
+                      <div class='text-muted'>Corp-wide dashboards for wallets, structures, assets, and more.</div>
+                    </div>
+                  </div>
+                  <div class='row g-3 mt-3'>{$cards}</div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Metenox / Sov / Jump Bridges</div>
+                    <div class='text-muted'>These dashboards are scaffolded and will populate as corp audit scopes are enabled.</div>
+                  </div>";
+
+        return Response::html($renderPage('Corp Audit', $body), 200);
     }, ['right' => 'corptools.director']);
 
     $registry->route('GET', '/corptools/notifications', function () use ($app, $renderPage, $tokenData, $hasScopes): Response {
@@ -936,105 +1454,347 @@ return function (ModuleRegistry $registry): void {
                   </div>
                   <div class='card card-body mt-3'>
                     <div class='fw-semibold mb-2'>Notification rules</div>
-                    <div class='text-muted'>Webhook dispatch is not yet implemented. Configure rules in Admin → Corp Tools.</div>
+                    <div class='text-muted'>Webhook dispatch is configured in Admin → Corp Tools → Pinger.</div>
                   </div>";
 
         return Response::html($renderPage('Notifications', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/admin/corptools', function () use ($app, $renderPage): Response {
-        $settingsRow = $app->db->one(
-            "SELECT settings_json FROM module_corptools_settings WHERE scope_type='global' LIMIT 1"
-        );
-        $settings = [];
-        if ($settingsRow) {
-            $settings = json_decode((string)($settingsRow['settings_json'] ?? '[]'), true);
-            if (!is_array($settings)) $settings = [];
+    $registry->route('POST', '/corptools/pinger', function (Request $req) use ($app, $getCorpToolsSettings): Response {
+        $settings = $getCorpToolsSettings();
+        $secret = (string)($settings['pinger']['shared_secret'] ?? '');
+        $provided = (string)($req->server['HTTP_X_CORPTOOLS_TOKEN'] ?? ($req->query['token'] ?? ''));
+        if ($secret !== '' && hash_equals($secret, $provided) === false) {
+            return Response::text("Unauthorized\n", 403);
         }
 
-        $webhook = htmlspecialchars((string)($settings['webhook_url'] ?? ''));
-        $rules = $app->db->all(
-            "SELECT name, filters_json, is_enabled
-             FROM module_corptools_notification_rules
-             ORDER BY id DESC"
+        $raw = file_get_contents('php://input') ?: '';
+        $payload = json_decode($raw, true);
+        if (!is_array($payload)) {
+            $payload = ['raw' => $raw];
+        }
+
+        $eventId = (string)($payload['event_id'] ?? $payload['id'] ?? '');
+        $eventHash = hash('sha256', $eventId !== '' ? $eventId : $raw);
+
+        $inserted = $app->db->run(
+            "INSERT IGNORE INTO module_corptools_pings (event_hash, source, payload_json, received_at)
+             VALUES (?, 'webhook', ?, NOW())",
+            [$eventHash, json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
         );
 
-        $ruleRows = '';
-        foreach ($rules as $rule) {
-            $name = htmlspecialchars((string)($rule['name'] ?? 'Rule'));
-            $filters = json_decode((string)($rule['filters_json'] ?? '[]'), true);
-            $filtersText = is_array($filters) ? implode(', ', array_filter($filters, 'is_string')) : '';
-            $filtersText = htmlspecialchars($filtersText !== '' ? $filtersText : '—');
-            $enabled = ((int)($rule['is_enabled'] ?? 0) === 1) ? 'Enabled' : 'Disabled';
-            $ruleRows .= "<tr>
-                <td>{$name}</td>
-                <td>{$filtersText}</td>
-                <td>{$enabled}</td>
-              </tr>";
+        if ($inserted > 0) {
+            $webhook = (string)($settings['pinger']['webhook_url'] ?? '');
+            if ($webhook !== '') {
+                $ch = curl_init($webhook);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_CUSTOMREQUEST => 'POST',
+                    CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                    CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                    CURLOPT_TIMEOUT => 5,
+                ]);
+                curl_exec($ch);
+                curl_close($ch);
+            }
         }
-        if ($ruleRows === '') {
-            $ruleRows = "<tr><td colspan='3' class='text-muted'>No rules configured.</td></tr>";
+
+        return Response::text("OK\n", 202);
+    }, ['public' => true]);
+
+    $registry->route('GET', '/corptools/health', function () use ($app, $renderPage, $getCorpToolsSettings): Response {
+        $tables = [
+            'module_corptools_settings',
+            'module_corptools_character_summary',
+            'module_corptools_member_summary',
+            'module_corptools_character_audit',
+            'module_corptools_pings',
+            'module_corptools_industry_structures',
+            'module_corptools_corp_audit',
+        ];
+
+        $rowsHtml = '';
+        foreach ($tables as $table) {
+            $exists = $app->db->one("SHOW TABLES LIKE ?", [$table]);
+            $status = $exists ? "<span class='badge bg-success'>OK</span>" : "<span class='badge bg-danger'>Missing</span>";
+            $rowsHtml .= "<tr><td>{$table}</td><td>{$status}</td></tr>";
         }
+
+        $settings = $getCorpToolsSettings();
+        $pingerWebhook = htmlspecialchars((string)($settings['pinger']['webhook_url'] ?? ''));
+        $retentionDays = htmlspecialchars((string)($settings['general']['retention_days'] ?? 30));
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>CorpTools Health Check</h1>
+                      <div class='text-muted'>Schema and configuration verification.</div>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Schema</div>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Table</th><th>Status</th></tr></thead>
+                        <tbody>{$rowsHtml}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Configuration</div>
+                    <div class='text-muted'>Retention days: {$retentionDays}</div>
+                    <div class='text-muted'>Pinger webhook: " . ($pingerWebhook !== '' ? $pingerWebhook : 'Not set') . "</div>
+                  </div>";
+
+        return Response::html($renderPage('CorpTools Health', $body), 200);
+    }, ['right' => 'corptools.admin']);
+
+    $registry->route('GET', '/admin/corptools', function () use ($app, $renderPage, $getCorpToolsSettings): Response {
+        $settings = $getCorpToolsSettings();
+        $tab = (string)($_GET['tab'] ?? 'general');
+
+        $tabs = [
+            'general' => 'General',
+            'audit' => 'Audit Scopes',
+            'corp_audit' => 'Corp Audit',
+            'invoices' => 'Invoices',
+            'moons' => 'Moons',
+            'indy' => 'Indy Dash',
+            'pinger' => 'Pinger',
+            'filters' => 'Filters',
+        ];
+
+        $nav = "<ul class='nav nav-tabs mt-3'>";
+        foreach ($tabs as $key => $label) {
+            $active = $tab === $key ? 'active' : '';
+            $nav .= "<li class='nav-item'>
+                        <a class='nav-link {$active}' href='/admin/corptools?tab={$key}'>" . htmlspecialchars($label) . "</a>
+                      </li>";
+        }
+        $nav .= "</ul>";
 
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>Corp Tools Settings</h1>
-                      <div class='text-muted'>Configure webhooks and notification filters.</div>
+                      <div class='text-muted'>Configure the CorpTools ecosystem.</div>
                     </div>
                   </div>
-                  <form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
-                    <label class='form-label'>Webhook URL (optional)</label>
-                    <input class='form-control' name='webhook_url' value='{$webhook}' placeholder='https://...'>
-                    <div class='form-text'>Webhook dispatch is staged for a future release.</div>
-                    <button class='btn btn-primary mt-3'>Save settings</button>
-                  </form>
-                  <form method='post' action='/admin/corptools/rules' class='card card-body mt-3'>
-                    <div class='fw-semibold mb-2'>Add notification rule</div>
-                    <div class='row g-2'>
-                      <div class='col-md-4'>
-                        <label class='form-label'>Rule name</label>
-                        <input class='form-control' name='name' required>
-                      </div>
-                      <div class='col-md-6'>
-                        <label class='form-label'>Filters (comma-separated)</label>
-                        <input class='form-control' name='filters' placeholder='Region, System, Type'>
-                      </div>
-                      <div class='col-md-2 d-flex align-items-end'>
-                        <button class='btn btn-outline-light'>Add</button>
-                      </div>
-                    </div>
-                  </form>
-                  <div class='card card-body mt-3'>
-                    <div class='fw-semibold mb-2'>Existing rules</div>
-                    <div class='table-responsive'>
-                      <table class='table table-sm align-middle'>
-                        <thead>
-                          <tr>
-                            <th>Name</th>
-                            <th>Filters</th>
-                            <th>Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>{$ruleRows}</tbody>
-                      </table>
-                    </div>
-                  </div>";
+                  {$nav}";
+
+        $sectionHtml = '';
+        if ($tab === 'general') {
+            $divisions = htmlspecialchars(implode(',', $settings['general']['holding_wallet_divisions'] ?? [1]));
+            $label = htmlspecialchars((string)($settings['general']['holding_wallet_label'] ?? 'Holding Wallet'));
+            $retention = htmlspecialchars((string)($settings['general']['retention_days'] ?? 30));
+            $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
+                <input type='hidden' name='section' value='general'>
+                <label class='form-label'>Holding wallet divisions (comma-separated)</label>
+                <input class='form-control' name='holding_wallet_divisions' value='{$divisions}'>
+                <label class='form-label mt-3'>Holding wallet label</label>
+                <input class='form-control' name='holding_wallet_label' value='{$label}'>
+                <label class='form-label mt-3'>Retention days</label>
+                <input class='form-control' name='retention_days' value='{$retention}'>
+                <button class='btn btn-primary mt-3'>Save General Settings</button>
+              </form>";
+        } elseif ($tab === 'audit') {
+            $audit = $settings['audit_scopes'] ?? [];
+            $rows = '';
+            foreach ($audit as $key => $enabled) {
+                $checked = $enabled ? 'checked' : '';
+                $rows .= "<div class='form-check'>
+                            <input class='form-check-input' type='checkbox' name='scopes[]' value='{$key}' id='audit-{$key}' {$checked}>
+                            <label class='form-check-label' for='audit-{$key}'>" . htmlspecialchars(str_replace('_', ' ', (string)$key)) . "</label>
+                          </div>";
+            }
+            $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
+                <input type='hidden' name='section' value='audit'>
+                <div class='fw-semibold mb-2'>Enabled audit scopes</div>
+                {$rows}
+                <button class='btn btn-primary mt-3'>Save Audit Scopes</button>
+              </form>";
+        } elseif ($tab === 'corp_audit') {
+            $corpAudit = $settings['corp_audit'] ?? [];
+            $rows = '';
+            foreach ($corpAudit as $key => $enabled) {
+                $checked = $enabled ? 'checked' : '';
+                $rows .= "<div class='form-check'>
+                            <input class='form-check-input' type='checkbox' name='corp_scopes[]' value='{$key}' id='corp-{$key}' {$checked}>
+                            <label class='form-check-label' for='corp-{$key}'>" . htmlspecialchars(str_replace('_', ' ', (string)$key)) . "</label>
+                          </div>";
+            }
+            $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
+                <input type='hidden' name='section' value='corp_audit'>
+                <div class='fw-semibold mb-2'>Corp audit collectors</div>
+                {$rows}
+                <button class='btn btn-primary mt-3'>Save Corp Audit Settings</button>
+              </form>";
+        } elseif ($tab === 'invoices') {
+            $divisions = htmlspecialchars(implode(',', $settings['invoices']['wallet_divisions'] ?? [1]));
+            $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
+                <input type='hidden' name='section' value='invoices'>
+                <label class='form-label'>Wallet divisions (comma-separated)</label>
+                <input class='form-control' name='wallet_divisions' value='{$divisions}'>
+                <button class='btn btn-primary mt-3'>Save Invoice Settings</button>
+              </form>";
+        } elseif ($tab === 'moons') {
+            $tax = htmlspecialchars((string)($settings['moons']['default_tax_rate'] ?? 0));
+            $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
+                <input type='hidden' name='section' value='moons'>
+                <label class='form-label'>Default tax rate (%)</label>
+                <input class='form-control' name='default_tax_rate' value='{$tax}'>
+                <button class='btn btn-primary mt-3'>Save Moon Settings</button>
+              </form>";
+        } elseif ($tab === 'indy') {
+            $enabled = !empty($settings['indy']['enabled']) ? 'checked' : '';
+            $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
+                <input type='hidden' name='section' value='indy'>
+                <div class='form-check'>
+                  <input class='form-check-input' type='checkbox' name='enabled' value='1' id='indy-enabled' {$enabled}>
+                  <label class='form-check-label' for='indy-enabled'>Enable Indy dashboards</label>
+                </div>
+                <button class='btn btn-primary mt-3'>Save Indy Settings</button>
+              </form>";
+        } elseif ($tab === 'pinger') {
+            $webhook = htmlspecialchars((string)($settings['pinger']['webhook_url'] ?? ''));
+            $secret = htmlspecialchars((string)($settings['pinger']['shared_secret'] ?? ''));
+            $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
+                <input type='hidden' name='section' value='pinger'>
+                <label class='form-label'>Webhook URL</label>
+                <input class='form-control' name='webhook_url' value='{$webhook}' placeholder='https://...'>
+                <label class='form-label mt-3'>Shared secret (optional)</label>
+                <input class='form-control' name='shared_secret' value='{$secret}'>
+                <button class='btn btn-primary mt-3'>Save Pinger Settings</button>
+              </form>";
+
+            $rules = $app->db->all(
+                "SELECT name, filters_json, is_enabled
+                 FROM module_corptools_notification_rules
+                 ORDER BY id DESC"
+            );
+            $ruleRows = '';
+            foreach ($rules as $rule) {
+                $name = htmlspecialchars((string)($rule['name'] ?? 'Rule'));
+                $filters = json_decode((string)($rule['filters_json'] ?? '[]'), true);
+                $filtersText = is_array($filters) ? implode(', ', array_filter($filters, 'is_string')) : '';
+                $filtersText = htmlspecialchars($filtersText !== '' ? $filtersText : '—');
+                $enabled = ((int)($rule['is_enabled'] ?? 0) === 1) ? 'Enabled' : 'Disabled';
+                $ruleRows .= "<tr>
+                    <td>{$name}</td>
+                    <td>{$filtersText}</td>
+                    <td>{$enabled}</td>
+                  </tr>";
+            }
+            if ($ruleRows === '') {
+                $ruleRows = "<tr><td colspan='3' class='text-muted'>No rules configured.</td></tr>";
+            }
+
+            $sectionHtml .= "<form method='post' action='/admin/corptools/rules' class='card card-body mt-3'>
+                <div class='fw-semibold mb-2'>Add notification rule</div>
+                <div class='row g-2'>
+                  <div class='col-md-4'>
+                    <label class='form-label'>Rule name</label>
+                    <input class='form-control' name='name' required>
+                  </div>
+                  <div class='col-md-6'>
+                    <label class='form-label'>Filters (comma-separated)</label>
+                    <input class='form-control' name='filters' placeholder='Region, System, Type'>
+                  </div>
+                  <div class='col-md-2 d-flex align-items-end'>
+                    <button class='btn btn-outline-light'>Add</button>
+                  </div>
+                </div>
+              </form>
+              <div class='card card-body mt-3'>
+                <div class='fw-semibold mb-2'>Existing rules</div>
+                <div class='table-responsive'>
+                  <table class='table table-sm align-middle'>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Filters</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>{$ruleRows}</tbody>
+                  </table>
+                </div>
+              </div>";
+        } elseif ($tab === 'filters') {
+            $assetValue = htmlspecialchars((string)($settings['filters']['asset_value_min'] ?? 0));
+            $auditOnly = !empty($settings['filters']['audit_loaded_only']) ? 'checked' : '';
+            $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
+                <input type='hidden' name='section' value='filters'>
+                <label class='form-label'>Default asset value min</label>
+                <input class='form-control' name='asset_value_min' value='{$assetValue}'>
+                <div class='form-check mt-3'>
+                  <input class='form-check-input' type='checkbox' name='audit_loaded_only' value='1' id='audit-only' {$auditOnly}>
+                  <label class='form-check-label' for='audit-only'>Filter to audit-loaded members by default</label>
+                </div>
+                <button class='btn btn-primary mt-3'>Save Filter Defaults</button>
+              </form>";
+        }
+
+        $body .= $sectionHtml;
 
         return Response::html($renderPage('Corp Tools Settings', $body), 200);
     }, ['right' => 'corptools.admin']);
 
     $registry->route('POST', '/admin/corptools/settings', function (Request $req) use ($app): Response {
-        $webhook = trim((string)($req->post['webhook_url'] ?? ''));
-        $settings = ['webhook_url' => $webhook];
+        $section = (string)($req->post['section'] ?? 'general');
+        $settings = new CorpToolsSettings($app->db);
 
-        $app->db->run(
-            "INSERT INTO module_corptools_settings (scope_type, scope_id, settings_json, created_at, updated_at)
-             VALUES ('global', 0, ?, NOW(), NOW())
-             ON DUPLICATE KEY UPDATE settings_json=VALUES(settings_json), updated_at=NOW()",
-            [json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
-        );
+        if ($section === 'general') {
+            $divisions = array_values(array_filter(array_map('trim', explode(',', (string)($req->post['holding_wallet_divisions'] ?? '')))));
+            $divisions = array_map('intval', $divisions);
+            $settings->updateSection('general', [
+                'holding_wallet_divisions' => $divisions ?: [1],
+                'holding_wallet_label' => trim((string)($req->post['holding_wallet_label'] ?? 'Holding Wallet')),
+                'retention_days' => (int)($req->post['retention_days'] ?? 30),
+            ]);
+        } elseif ($section === 'audit') {
+            $selected = $req->post['scopes'] ?? [];
+            if (!is_array($selected)) $selected = [];
+            $current = $settings->get()['audit_scopes'] ?? [];
+            $next = [];
+            foreach ($current as $key => $enabled) {
+                $next[$key] = in_array($key, $selected, true);
+            }
+            $settings->updateSection('audit_scopes', $next);
+        } elseif ($section === 'corp_audit') {
+            $selected = $req->post['corp_scopes'] ?? [];
+            if (!is_array($selected)) $selected = [];
+            $current = $settings->get()['corp_audit'] ?? [];
+            $next = [];
+            foreach ($current as $key => $enabled) {
+                $next[$key] = in_array($key, $selected, true);
+            }
+            $settings->updateSection('corp_audit', $next);
+        } elseif ($section === 'invoices') {
+            $divisions = array_values(array_filter(array_map('trim', explode(',', (string)($req->post['wallet_divisions'] ?? '')))));
+            $divisions = array_map('intval', $divisions);
+            $settings->updateSection('invoices', [
+                'wallet_divisions' => $divisions ?: [1],
+            ]);
+        } elseif ($section === 'moons') {
+            $settings->updateSection('moons', [
+                'default_tax_rate' => (float)($req->post['default_tax_rate'] ?? 0),
+            ]);
+        } elseif ($section === 'indy') {
+            $settings->updateSection('indy', [
+                'enabled' => !empty($req->post['enabled']),
+            ]);
+        } elseif ($section === 'pinger') {
+            $settings->updateSection('pinger', [
+                'webhook_url' => trim((string)($req->post['webhook_url'] ?? '')),
+                'shared_secret' => trim((string)($req->post['shared_secret'] ?? '')),
+            ]);
+        } elseif ($section === 'filters') {
+            $settings->updateSection('filters', [
+                'asset_value_min' => (float)($req->post['asset_value_min'] ?? 0),
+                'audit_loaded_only' => !empty($req->post['audit_loaded_only']),
+            ]);
+        }
 
-        return Response::redirect('/admin/corptools');
+        return Response::redirect('/admin/corptools?tab=' . urlencode($section));
     }, ['right' => 'corptools.admin']);
 
     $registry->route('POST', '/admin/corptools/rules', function (Request $req) use ($app): Response {

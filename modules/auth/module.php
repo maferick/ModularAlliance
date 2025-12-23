@@ -176,7 +176,9 @@ return function (ModuleRegistry $registry): void {
         foreach ($linked as $link) {
             $linkId = (int)($link['character_id'] ?? 0);
             if ($linkId <= 0) continue;
-            $linkName = htmlspecialchars((string)($link['character_name'] ?? 'Unknown'));
+            $linkNameRaw = (string)($link['character_name'] ?? 'Unknown');
+            $linkName = htmlspecialchars($linkNameRaw);
+            $linkNameJs = addslashes($linkNameRaw);
             $portraitUrl = $getPortrait($linkId);
             $linkedAt = htmlspecialchars((string)($link['linked_at'] ?? ''));
 
@@ -189,6 +191,10 @@ return function (ModuleRegistry $registry): void {
             $linkedCards .= "<div>
                       <div class='fw-semibold'>{$linkName}</div>
                       <div class='text-muted small'>Linked {$linkedAt}</div>
+                      <form method='post' action='/user/alts/make-main' class='mt-2' onsubmit=\"return confirm('Promote {$linkNameJs} to main character?');\">
+                        <input type='hidden' name='character_id' value='{$linkId}'>
+                        <button class='btn btn-sm btn-outline-light'>Promote to main</button>
+                      </form>
                     </div>
                   </div>
                 </div>
