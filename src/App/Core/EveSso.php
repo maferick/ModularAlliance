@@ -132,6 +132,12 @@ final class EveSso
                     );
                     $finalUserId = $targetUserId;
                     $linkFlash = ['type' => 'success', 'message' => 'Character linked successfully.'];
+                }
+            }
+
+            $linkRedirect = '/user/alts';
+        }
+
         $pendingToken = $_SESSION['charlink_token'] ?? null;
         if (is_string($pendingToken) && $pendingToken !== '') {
             unset($_SESSION['charlink_token']);
