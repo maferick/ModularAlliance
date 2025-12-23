@@ -10,6 +10,7 @@ Version: 1.0.0
 use App\Core\Layout;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
+use App\Core\Settings;
 use App\Http\Request;
 use App\Http\Response;
 
@@ -28,6 +29,38 @@ return function (ModuleRegistry $registry): void {
     ]);
 
     $modulesRoot = APP_ROOT . '/modules';
+    $protectedSlugs = ['auth', 'plugins'];
+
+    $getDisabled = function () use ($app): array {
+        $settings = new Settings($app->db);
+        $raw = $settings->get('plugins.disabled', '') ?? '';
+        if ($raw === '') return [];
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) return [];
+
+        $out = [];
+        foreach ($decoded as $slug) {
+            if (is_string($slug) && $slug !== '') {
+                $out[] = $slug;
+            }
+        }
+
+        return array_values(array_unique($out));
+    };
+
+    $setDisabled = function (array $slugs) use ($app): void {
+        $settings = new Settings($app->db);
+        $clean = [];
+        foreach ($slugs as $slug) {
+            if (is_string($slug) && $slug !== '') {
+                $clean[] = $slug;
+            }
+        }
+        $clean = array_values(array_unique($clean));
+        sort($clean);
+        $settings->set('plugins.disabled', json_encode($clean));
+    };
 
     $parseHeader = function (string $file): array {
         $contents = file_get_contents($file);
@@ -117,6 +150,10 @@ return function (ModuleRegistry $registry): void {
         return Response::html(Layout::page($title, $body, $leftTree, $adminTree, $userTree), 200);
     };
 
+    $registry->route('GET', '/admin/plugins', function (Request $req) use ($listPlugins, $renderAdmin, $getDisabled, $protectedSlugs): Response {
+        $notice = is_string($req->query['notice'] ?? null) ? $req->query['notice'] : '';
+        $error = is_string($req->query['error'] ?? null) ? $req->query['error'] : '';
+        $disabled = $getDisabled();
     $registry->route('GET', '/admin/plugins', function (Request $req) use ($listPlugins, $renderAdmin): Response {
         $notice = is_string($req->query['notice'] ?? null) ? $req->query['notice'] : '';
         $error = is_string($req->query['error'] ?? null) ? $req->query['error'] : '';
@@ -135,21 +172,39 @@ return function (ModuleRegistry $registry): void {
             $name = htmlspecialchars((string)$plugin['name']);
             $desc = htmlspecialchars((string)$plugin['description']);
             $version = htmlspecialchars((string)$plugin['version']);
+            $isDisabled = in_array($plugin['dir'], $disabled, true) && !in_array($plugin['dir'], $protectedSlugs, true);
+            $statusBadge = $isDisabled
+                ? '<span class="badge text-bg-secondary">Disabled</span>'
+                : '<span class="badge text-bg-success">Enabled</span>';
 
             $actions = '<div class="btn-group btn-group-sm" role="group">'
                 . '<a class="btn btn-outline-light" href="/admin/plugins/download?slug=' . $dir . '">Download</a>'
                 . '<a class="btn btn-outline-light" href="/admin/plugins/edit?slug=' . $dir . '">Edit</a>'
                 . '</div>';
 
+            if (!in_array($plugin['dir'], $protectedSlugs, true)) {
+                $toggleLabel = $isDisabled ? 'Enable' : 'Disable';
+                $toggleValue = $isDisabled ? 'enable' : 'disable';
+                $actions .= '<form method="post" action="/admin/plugins/toggle" class="d-inline ms-2">'
+                    . '<input type="hidden" name="slug" value="' . $dir . '">'
+                    . '<input type="hidden" name="action" value="' . $toggleValue . '">'
+                    . '<button class="btn btn-outline-warning btn-sm" type="submit">' . $toggleLabel . '</button>'
+                    . '</form>';
+            } else {
+                $actions .= '<span class="text-muted ms-2 small">Protected</span>';
+            }
+
             $rows .= '<tr>'
                 . '<td><div class="fw-semibold">' . $name . '</div><div class="text-muted small"><code>' . $slug . '</code></div></td>'
                 . '<td>' . ($version !== '' ? $version : '—') . '</td>'
                 . '<td>' . ($desc !== '' ? $desc : '<span class="text-muted">No description.</span>') . '</td>'
+                . '<td>' . $statusBadge . '</td>'
                 . '<td>' . $actions . '</td>'
                 . '</tr>';
         }
 
         if ($rows === '') {
+            $rows = '<tr><td colspan="5" class="text-muted">No plugins found.</td></tr>';
             $rows = '<tr><td colspan="4" class="text-muted">No plugins found.</td></tr>';
         }
 
@@ -160,6 +215,7 @@ return function (ModuleRegistry $registry): void {
             . $alert
             . '<div class="card mb-4"><div class="card-body">'
             . '<h2 class="h5">Upload Plugin</h2>'
+            . '<p class="text-muted mb-3">Disabling a plugin prevents it from being loaded on next app boot. Protected plugins cannot be disabled.</p>'
             . '<form class="row g-3" method="post" enctype="multipart/form-data" action="/admin/plugins/upload">'
             . '<div class="col-md-6">'
             . '<label class="form-label" for="plugin-zip">Plugin zip</label>'
@@ -178,12 +234,48 @@ return function (ModuleRegistry $registry): void {
             . '</div></div>'
             . '<div class="table-responsive">'
             . '<table class="table table-sm align-middle">'
+            . '<thead><tr><th>Plugin</th><th>Version</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead>'
             . '<thead><tr><th>Plugin</th><th>Version</th><th>Description</th><th>Actions</th></tr></thead>'
             . '<tbody>' . $rows . '</tbody>'
             . '</table>'
             . '</div>';
 
         return $renderAdmin('Plugins', $body);
+    }, ['right' => 'admin.plugins']);
+
+    $registry->route('POST', '/admin/plugins/toggle', function (Request $req) use ($sanitizeSlug, $getDisabled, $setDisabled, $protectedSlugs): Response {
+        $slug = is_string($req->post['slug'] ?? null) ? $req->post['slug'] : null;
+        $action = is_string($req->post['action'] ?? null) ? $req->post['action'] : '';
+        $safe = $sanitizeSlug($slug);
+        if ($safe === null) {
+            return Response::redirect('/admin/plugins?error=' . rawurlencode('Invalid plugin.'));
+        }
+
+        if (in_array($safe, $protectedSlugs, true) && $action === 'disable') {
+            return Response::redirect('/admin/plugins?error=' . rawurlencode('This plugin is protected.'));
+        }
+
+        $disabled = $getDisabled();
+        $changed = false;
+
+        if ($action === 'disable') {
+            if (!in_array($safe, $disabled, true)) {
+                $disabled[] = $safe;
+                $changed = true;
+            }
+        } elseif ($action === 'enable') {
+            $disabled = array_values(array_filter($disabled, fn(string $slug): bool => $slug !== $safe));
+            $changed = true;
+        } else {
+            return Response::redirect('/admin/plugins?error=' . rawurlencode('Unknown action.'));
+        }
+
+        if ($changed) {
+            $setDisabled($disabled);
+        }
+
+        $message = $action === 'disable' ? 'Plugin disabled.' : 'Plugin enabled.';
+        return Response::redirect('/admin/plugins?notice=' . rawurlencode($message));
     }, ['right' => 'admin.plugins']);
 
     $registry->route('POST', '/admin/plugins/upload', function (Request $req) use ($modulesRoot, $sanitizeSlug): Response {
