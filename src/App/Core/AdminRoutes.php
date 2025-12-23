@@ -11,10 +11,11 @@ use App\Core\AdminRoutes\Settings;
 use App\Core\Settings as CoreSettings;
 use App\Core\AdminRoutes\Users;
 use App\Http\Response;
+use App\Core\ModuleRegistry;
 
 final class AdminRoutes
 {
-    public static function register(App $app, callable $hasRight): void
+    public static function register(App $app, ModuleRegistry $registry, callable $hasRight): void
     {
         // Admin renderer (shared)
         $render = function (string $title, string $bodyHtml) use ($app, $hasRight): Response {
@@ -56,11 +57,11 @@ final class AdminRoutes
             return Response::html(Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree, $brandName, $brandLogoUrl), 200);
         };
 
-        Home::register($app, $render);
-        Settings::register($app, $render);
-        Cache::register($app, $render);
-        Rights::register($app, $render);
-        Users::register($app, $render);
-        Menu::register($app, $render);
+        Home::register($app, $registry, $render);
+        Settings::register($app, $registry, $render);
+        Cache::register($app, $registry, $render);
+        Rights::register($app, $registry, $render);
+        Users::register($app, $registry, $render);
+        Menu::register($app, $registry, $render);
     }
 }

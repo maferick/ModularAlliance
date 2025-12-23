@@ -4,14 +4,15 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
+use App\Core\ModuleRegistry;
 use App\Core\RedisCache;
 use App\Http\Response;
 
 final class Cache
 {
-    public static function register(App $app, callable $render): void
+    public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
-        $app->router->get('/admin/cache', function () use ($app, $render): Response {
+        $registry->route('GET', '/admin/cache', function () use ($app, $render): Response {
             $pdo = $app->db->pdo();
 
             // ESI cache uses fetched_at + ttl_seconds (canonical schema)
@@ -113,7 +114,7 @@ HTML;
             return $render('Cache', $h);
         }, ['right' => 'admin.cache']);
 
-        $app->router->post('/admin/cache', function () use ($app): Response {
+        $registry->route('POST', '/admin/cache', function () use ($app): Response {
             $pdo = $app->db->pdo();
             $action = (string)($_POST['action'] ?? '');
 

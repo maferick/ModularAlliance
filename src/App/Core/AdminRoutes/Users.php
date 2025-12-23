@@ -4,16 +4,17 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
+use App\Core\ModuleRegistry;
 use App\Core\Rights;
 use App\Http\Request;
 use App\Http\Response;
 
 final class Users
 {
-    public static function register(App $app, callable $render): void
+    public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
         // Users: assign groups
-        $app->router->get('/admin/users', function () use ($app, $render): Response {
+        $registry->route('GET', '/admin/users', function () use ($app, $render): Response {
             $users = $app->db->all("SELECT id, character_id, character_name, is_superadmin, created_at FROM eve_users ORDER BY id DESC LIMIT 200");
             $groups = $app->db->all("SELECT id, slug, name, is_admin FROM groups ORDER BY is_admin DESC, name ASC");
             $ug = [];
@@ -64,7 +65,7 @@ final class Users
             return $render('Users', $h);
         }, ['right' => 'admin.users']);
 
-        $app->router->post('/admin/users/save', function (Request $req) use ($app): Response {
+        $registry->route('POST', '/admin/users/save', function (Request $req) use ($app): Response {
             $uid = (int)($req->post['user_id'] ?? 0);
             if ($uid <= 0) return Response::redirect('/admin/users');
             $ids = $req->post['group_ids'] ?? [];

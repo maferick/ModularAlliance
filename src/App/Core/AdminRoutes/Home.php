@@ -4,13 +4,14 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
+use App\Core\ModuleRegistry;
 use App\Http\Response;
 
 final class Home
 {
-    public static function register(App $app, callable $render): void
+    public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
-        $app->router->get('/admin', function () use ($render): Response {
+        $registry->route('GET', '/admin', function () use ($render): Response {
             $body = "<h1>Admin</h1>
                      <p class='text-muted'>Control plane for platform configuration and governance.</p>
                      <ul>
