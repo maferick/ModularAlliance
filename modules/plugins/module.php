@@ -154,9 +154,6 @@ return function (ModuleRegistry $registry): void {
         $notice = is_string($req->query['notice'] ?? null) ? $req->query['notice'] : '';
         $error = is_string($req->query['error'] ?? null) ? $req->query['error'] : '';
         $disabled = $getDisabled();
-    $registry->route('GET', '/admin/plugins', function (Request $req) use ($listPlugins, $renderAdmin): Response {
-        $notice = is_string($req->query['notice'] ?? null) ? $req->query['notice'] : '';
-        $error = is_string($req->query['error'] ?? null) ? $req->query['error'] : '';
 
         $alert = '';
         if ($notice !== '') {
@@ -205,7 +202,6 @@ return function (ModuleRegistry $registry): void {
 
         if ($rows === '') {
             $rows = '<tr><td colspan="5" class="text-muted">No plugins found.</td></tr>';
-            $rows = '<tr><td colspan="4" class="text-muted">No plugins found.</td></tr>';
         }
 
         $body = '<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">'
@@ -235,7 +231,6 @@ return function (ModuleRegistry $registry): void {
             . '<div class="table-responsive">'
             . '<table class="table table-sm align-middle">'
             . '<thead><tr><th>Plugin</th><th>Version</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead>'
-            . '<thead><tr><th>Plugin</th><th>Version</th><th>Description</th><th>Actions</th></tr></thead>'
             . '<tbody>' . $rows . '</tbody>'
             . '</table>'
             . '</div>';
