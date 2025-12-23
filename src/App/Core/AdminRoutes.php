@@ -6,7 +6,6 @@ namespace App\Core;
 use App\Core\AdminRoutes\Cache;
 use App\Core\AdminRoutes\Home;
 use App\Core\AdminRoutes\Menu;
-use App\Core\AdminRoutes\Modules;
 use App\Core\AdminRoutes\Rights;
 use App\Core\AdminRoutes\Settings;
 use App\Core\Settings as CoreSettings;
@@ -63,6 +62,5 @@ final class AdminRoutes
         Rights::register($app, $render);
         Users::register($app, $render);
         Menu::register($app, $render);
-        Modules::register($app, $render);
     }
 }
