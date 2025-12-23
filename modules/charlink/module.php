@@ -18,8 +18,18 @@ use App\Http\Response;
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
 
-    $registry->right('charlink.admin', 'Manage character links.');
-    $registry->right('charlink.admin', 'Manage character links and link tokens.');
+    $registry->right('charlink.view', 'Access the character link hub.');
+    $registry->right('charlink.audit', 'Audit character link targets.');
+    $registry->right('charlink.admin', 'Manage character links and link targets.');
+
+    $registry->menu([
+        'slug' => 'charlink.hub',
+        'title' => 'Character Link Hub',
+        'url' => '/charlink',
+        'sort_order' => 24,
+        'area' => 'left',
+        'right_slug' => 'charlink.view',
+    ]);
 
     $registry->menu([
         'slug' => 'charlink',
@@ -35,6 +45,26 @@ return function (ModuleRegistry $registry): void {
         'url' => '/admin/charlink',
         'sort_order' => 35,
         'area' => 'admin_top',
+        'right_slug' => 'charlink.admin',
+    ]);
+
+    $registry->menu([
+        'slug' => 'admin.charlink.audit',
+        'title' => 'Link Audit',
+        'url' => '/charlink/audit',
+        'sort_order' => 36,
+        'area' => 'admin_top',
+        'parent_slug' => 'admin.charlink',
+        'right_slug' => 'charlink.audit',
+    ]);
+
+    $registry->menu([
+        'slug' => 'admin.charlink.targets',
+        'title' => 'Link Targets',
+        'url' => '/admin/charlink/targets',
+        'sort_order' => 37,
+        'area' => 'admin_top',
+        'parent_slug' => 'admin.charlink',
         'right_slug' => 'charlink.admin',
     ]);
 
@@ -59,6 +89,603 @@ return function (ModuleRegistry $registry): void {
 
         return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
     };
+
+    $defaultTargets = [
+        'wallet' => [
+            'name' => 'Wallet Access',
+            'description' => 'Character wallet balances and transactions.',
+            'scopes' => ['esi-wallet.read_character_wallet.v1'],
+        ],
+        'mining' => [
+            'name' => 'Mining Ledger',
+            'description' => 'Mining ledger and yield reports.',
+            'scopes' => ['esi-industry.read_character_mining.v1'],
+        ],
+        'assets' => [
+            'name' => 'Assets',
+            'description' => 'Character assets and inventory snapshots.',
+            'scopes' => ['esi-assets.read_assets.v1'],
+        ],
+        'contracts' => [
+            'name' => 'Contracts',
+            'description' => 'Personal contracts and deliveries.',
+            'scopes' => ['esi-contracts.read_character_contracts.v1'],
+        ],
+        'notifications' => [
+            'name' => 'Notifications',
+            'description' => 'In-game notification feed.',
+            'scopes' => ['esi-characters.read_notifications.v1'],
+        ],
+        'structures' => [
+            'name' => 'Structures',
+            'description' => 'Private structure access and services.',
+            'scopes' => ['esi-universe.read_structures.v1'],
+        ],
+    ];
+
+    $configuredTargets = $app->config['charlink']['targets'] ?? [];
+    if (is_array($configuredTargets) && !empty($configuredTargets)) {
+        foreach ($configuredTargets as $slug => $target) {
+            if (!is_string($slug) || $slug === '' || !is_array($target)) continue;
+            $defaultTargets[$slug] = array_merge(
+                $defaultTargets[$slug] ?? [],
+                [
+                    'name' => (string)($target['name'] ?? $slug),
+                    'description' => (string)($target['description'] ?? ''),
+                    'scopes' => is_array($target['scopes'] ?? null) ? $target['scopes'] : [],
+                ]
+            );
+        }
+    }
+
+    $loadTargets = function () use ($app, $defaultTargets): array {
+        $rows = $app->db->all(
+            "SELECT slug, name, description, scopes_json, is_enabled, is_ignored
+             FROM module_charlink_targets"
+        );
+
+        $dbTargets = [];
+        foreach ($rows as $row) {
+            $slug = (string)($row['slug'] ?? '');
+            if ($slug === '') continue;
+            $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
+            if (!is_array($scopes)) $scopes = [];
+            $dbTargets[$slug] = [
+                'slug' => $slug,
+                'name' => (string)($row['name'] ?? $slug),
+                'description' => (string)($row['description'] ?? ''),
+                'scopes' => $scopes,
+                'is_enabled' => (int)($row['is_enabled'] ?? 1),
+                'is_ignored' => (int)($row['is_ignored'] ?? 0),
+            ];
+        }
+
+        $missing = [];
+        foreach ($defaultTargets as $slug => $target) {
+            if (!isset($dbTargets[$slug])) {
+                $missing[$slug] = $target;
+            }
+        }
+
+        foreach ($missing as $slug => $target) {
+            $app->db->run(
+                "INSERT INTO module_charlink_targets (slug, name, description, scopes_json, is_enabled, is_ignored, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, 1, 0, NOW(), NOW())",
+                [
+                    $slug,
+                    (string)$target['name'],
+                    (string)$target['description'],
+                    json_encode($target['scopes'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                ]
+            );
+        }
+
+        if (!empty($missing)) {
+            $rows = $app->db->all(
+                "SELECT slug, name, description, scopes_json, is_enabled, is_ignored
+                 FROM module_charlink_targets"
+            );
+            $dbTargets = [];
+            foreach ($rows as $row) {
+                $slug = (string)($row['slug'] ?? '');
+                if ($slug === '') continue;
+                $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
+                if (!is_array($scopes)) $scopes = [];
+                $dbTargets[$slug] = [
+                    'slug' => $slug,
+                    'name' => (string)($row['name'] ?? $slug),
+                    'description' => (string)($row['description'] ?? ''),
+                    'scopes' => $scopes,
+                    'is_enabled' => (int)($row['is_enabled'] ?? 1),
+                    'is_ignored' => (int)($row['is_ignored'] ?? 0),
+                ];
+            }
+        }
+
+        $final = [];
+        foreach ($defaultTargets as $slug => $target) {
+            $row = $dbTargets[$slug] ?? null;
+            $final[] = [
+                'slug' => $slug,
+                'name' => $row['name'] ?? $target['name'],
+                'description' => $row['description'] ?? $target['description'],
+                'scopes' => $row['scopes'] ?? $target['scopes'],
+                'is_enabled' => $row['is_enabled'] ?? 1,
+                'is_ignored' => $row['is_ignored'] ?? 0,
+            ];
+        }
+
+        foreach ($dbTargets as $slug => $row) {
+            if (isset($defaultTargets[$slug])) continue;
+            $final[] = $row;
+        }
+
+        usort($final, fn($a, $b) => strcmp((string)$a['name'], (string)$b['name']));
+        return $final;
+    };
+
+    $tokenInfo = function (int $characterId) use ($app): array {
+        $row = $app->db->one(
+            "SELECT scopes_json, expires_at
+             FROM eve_tokens
+             WHERE character_id=? LIMIT 1",
+            [$characterId]
+        );
+        $scopes = [];
+        $expired = false;
+        if ($row) {
+            $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
+            if (!is_array($scopes)) $scopes = [];
+            $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
+            if ($expiresAt !== null && time() > $expiresAt) {
+                $expired = true;
+            }
+        }
+        return ['scopes' => $scopes, 'expired' => $expired];
+    };
+
+    $registry->route('GET', '/charlink', function () use ($app, $renderPage, $loadTargets, $tokenInfo): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $targets = array_values(array_filter($loadTargets(), fn($t) => (int)($t['is_ignored'] ?? 0) !== 1));
+
+        $linkRow = $app->db->one(
+            "SELECT enabled_targets_json
+             FROM module_charlink_links
+             WHERE user_id=? AND character_id=? LIMIT 1",
+            [$uid, $cid]
+        );
+        $enabledTargets = [];
+        if ($linkRow) {
+            $enabledTargets = json_decode((string)($linkRow['enabled_targets_json'] ?? '[]'), true);
+            if (!is_array($enabledTargets)) $enabledTargets = [];
+        }
+
+        $tokenData = $tokenInfo($cid);
+        $tokenScopes = $tokenData['scopes'];
+        $tokenExpired = (bool)$tokenData['expired'];
+
+        $u = new Universe($app->db);
+        $profile = $u->characterProfile($cid);
+        $charName = htmlspecialchars($profile['character']['name'] ?? 'Unknown');
+        $portrait = $profile['character']['portrait']['px128x128']
+            ?? $profile['character']['portrait']['px64x64']
+            ?? null;
+        $corpName = htmlspecialchars($profile['corporation']['name'] ?? 'Unknown');
+        $corpTicker = htmlspecialchars($profile['corporation']['ticker'] ?? '');
+
+        $flash = $_SESSION['charlink_hub_flash'] ?? null;
+        unset($_SESSION['charlink_hub_flash']);
+        $flashHtml = '';
+        if (is_array($flash)) {
+            $type = htmlspecialchars((string)($flash['type'] ?? 'info'));
+            $message = htmlspecialchars((string)($flash['message'] ?? ''));
+            if ($message !== '') {
+                $flashHtml = "<div class='alert alert-{$type}'>{$message}</div>";
+            }
+        }
+
+        $rowsHtml = '';
+        foreach ($targets as $target) {
+            $slug = (string)($target['slug'] ?? '');
+            if ($slug === '') continue;
+            $name = htmlspecialchars((string)($target['name'] ?? $slug));
+            $desc = htmlspecialchars((string)($target['description'] ?? ''));
+            $scopes = is_array($target['scopes'] ?? null) ? $target['scopes'] : [];
+            $isEnabled = in_array($slug, $enabledTargets, true);
+            $requiredScopes = array_values(array_unique(array_filter($scopes, 'is_string')));
+            $missingScopes = array_values(array_diff($requiredScopes, $tokenScopes));
+
+            $status = 'Not linked';
+            $badgeClass = 'bg-secondary';
+            if ($tokenExpired) {
+                $status = 'Token expired';
+                $badgeClass = 'bg-warning text-dark';
+            } elseif ($isEnabled && empty($missingScopes)) {
+                $status = 'Linked';
+                $badgeClass = 'bg-success';
+            } elseif ($isEnabled && !empty($missingScopes)) {
+                $status = 'Missing scopes';
+                $badgeClass = 'bg-danger';
+            } elseif ((int)($target['is_enabled'] ?? 1) !== 1) {
+                $status = 'Disabled';
+                $badgeClass = 'bg-secondary';
+            }
+
+            $scopeBadges = '';
+            if (!empty($requiredScopes)) {
+                foreach ($requiredScopes as $scope) {
+                    $scopeBadges .= "<span class='badge bg-dark me-1'>" . htmlspecialchars($scope) . "</span>";
+                }
+            } else {
+                $scopeBadges = "<span class='text-muted'>No scopes required</span>";
+            }
+
+            $checked = $isEnabled ? 'checked' : '';
+
+            $rowsHtml .= "<div class='card card-body mb-3'>
+                <div class='d-flex flex-wrap justify-content-between align-items-start gap-3'>
+                  <div>
+                    <div class='fw-semibold'>{$name}</div>
+                    <div class='text-muted small'>{$desc}</div>
+                    <div class='mt-2'>{$scopeBadges}</div>
+                  </div>
+                  <div class='text-end'>
+                    <span class='badge {$badgeClass}'>{$status}</span>
+                    <div class='form-check mt-2'>
+                      <input class='form-check-input' type='checkbox' name='targets[]' value='" . htmlspecialchars($slug) . "' id='target-{$slug}' {$checked}>
+                      <label class='form-check-label small' for='target-{$slug}'>Enable</label>
+                    </div>
+                  </div>
+                </div>
+              </div>";
+        }
+        if ($rowsHtml === '') {
+            $rowsHtml = "<div class='text-muted'>No link targets configured.</div>";
+        }
+
+        $portraitHtml = $portrait ? "<img src='" . htmlspecialchars($portrait) . "' width='64' height='64' style='border-radius:10px;'>" : '';
+        $corpLabel = $corpTicker !== '' ? "{$corpName} [{$corpTicker}]" : $corpName;
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-3'>
+                    <div>
+                      <h1 class='mb-1'>Character Link Hub</h1>
+                      <div class='text-muted'>Select the features you want to enable for this character.</div>
+                    </div>
+                    <a class='btn btn-outline-light' href='/user/alts'>Manage linked characters</a>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='d-flex align-items-center gap-3'>
+                      {$portraitHtml}
+                      <div>
+                        <div class='fw-semibold'>{$charName}</div>
+                        <div class='text-muted small'>{$corpLabel}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class='mt-3'>{$flashHtml}</div>
+                  <form method='post' action='/charlink/link'>
+                    {$rowsHtml}
+                    <div class='d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3'>
+                      <div class='text-muted small'>Scopes will be requested via EVE SSO for the selected targets.</div>
+                      <button class='btn btn-primary'>Link / Update character</button>
+                    </div>
+                  </form>";
+
+        return Response::html($renderPage('Character Link Hub', $body), 200);
+    }, ['right' => 'charlink.view']);
+
+    $registry->route('POST', '/charlink/link', function (Request $req) use ($app, $loadTargets): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $targets = $loadTargets();
+        $allowed = [];
+        $scopes = [];
+        foreach ($targets as $target) {
+            $slug = (string)($target['slug'] ?? '');
+            if ($slug === '') continue;
+            if ((int)($target['is_enabled'] ?? 1) !== 1 || (int)($target['is_ignored'] ?? 0) === 1) {
+                continue;
+            }
+            $allowed[$slug] = $target;
+        }
+
+        $selected = $req->post['targets'] ?? [];
+        if (!is_array($selected)) $selected = [];
+        $selected = array_values(array_unique(array_filter($selected, fn($s) => is_string($s) && isset($allowed[$s]))));
+
+        if (empty($selected)) {
+            $_SESSION['charlink_hub_flash'] = ['type' => 'warning', 'message' => 'Select at least one target to link.'];
+            return Response::redirect('/charlink');
+        }
+
+        foreach ($selected as $slug) {
+            $targetScopes = $allowed[$slug]['scopes'] ?? [];
+            if (is_array($targetScopes)) {
+                foreach ($targetScopes as $scope) {
+                    if (is_string($scope) && $scope !== '') {
+                        $scopes[] = $scope;
+                    }
+                }
+            }
+        }
+
+        $scopes = array_values(array_unique($scopes));
+        $_SESSION['sso_scopes_override'] = $scopes;
+        $_SESSION['charlink_pending_targets'] = $selected;
+        $_SESSION['charlink_redirect'] = '/charlink';
+
+        return Response::redirect('/auth/login');
+    }, ['right' => 'charlink.view']);
+
+    $registry->route('GET', '/charlink/audit', function (Request $req) use ($app, $renderPage, $loadTargets): Response {
+        $targets = $loadTargets();
+        $targetMap = [];
+        foreach ($targets as $t) {
+            $slug = (string)($t['slug'] ?? '');
+            if ($slug === '') continue;
+            $targetMap[$slug] = $t;
+        }
+
+        $filterTarget = (string)($req->query['target'] ?? '');
+        $filterGroup = (string)($req->query['group'] ?? '');
+        $filterCorp = (string)($req->query['corp'] ?? '');
+
+        $rows = $app->db->all(
+            "SELECT l.user_id, l.character_id, l.enabled_targets_json, l.updated_at
+             FROM module_charlink_links l
+             ORDER BY l.updated_at DESC
+             LIMIT 500"
+        );
+
+        $groupRows = $app->db->all(
+            "SELECT ug.user_id, g.name
+             FROM eve_user_groups ug
+             JOIN groups g ON g.id = ug.group_id"
+        );
+        $groupMap = [];
+        foreach ($groupRows as $row) {
+            $userId = (int)($row['user_id'] ?? 0);
+            $name = (string)($row['name'] ?? '');
+            if ($userId <= 0 || $name === '') continue;
+            $groupMap[$userId][] = $name;
+        }
+
+        $u = new Universe($app->db);
+        $corpOptions = [];
+        $groupOptions = [];
+        $targetOptions = [];
+
+        foreach ($groupMap as $names) {
+            foreach ($names as $name) {
+                $groupOptions[$name] = true;
+            }
+        }
+
+        foreach ($targetMap as $slug => $t) {
+            $targetOptions[$slug] = (string)($t['name'] ?? $slug);
+        }
+
+        $filtered = [];
+        foreach ($rows as $row) {
+            $userId = (int)($row['user_id'] ?? 0);
+            $characterId = (int)($row['character_id'] ?? 0);
+            if ($userId <= 0 || $characterId <= 0) continue;
+
+            $enabledTargets = json_decode((string)($row['enabled_targets_json'] ?? '[]'), true);
+            if (!is_array($enabledTargets)) $enabledTargets = [];
+
+            if ($filterTarget !== '' && !in_array($filterTarget, $enabledTargets, true)) {
+                continue;
+            }
+
+            $groups = $groupMap[$userId] ?? [];
+            if ($filterGroup !== '' && !in_array($filterGroup, $groups, true)) {
+                continue;
+            }
+
+            $profile = $u->characterProfile($characterId);
+            $corpName = (string)($profile['corporation']['name'] ?? '');
+            $corpTicker = (string)($profile['corporation']['ticker'] ?? '');
+            $corpLabel = $corpTicker !== '' ? "{$corpName} [{$corpTicker}]" : $corpName;
+
+            if ($corpLabel !== '') {
+                $corpOptions[$corpLabel] = true;
+            }
+
+            if ($filterCorp !== '' && strcasecmp($corpLabel, $filterCorp) !== 0) {
+                continue;
+            }
+
+            $charName = (string)($profile['character']['name'] ?? 'Unknown');
+            $filtered[] = [
+                'character' => $charName,
+                'corp' => $corpLabel !== '' ? $corpLabel : 'Unknown',
+                'groups' => $groups,
+                'targets' => $enabledTargets,
+            ];
+        }
+
+        $targetSelect = "<option value=''>All targets</option>";
+        foreach ($targetOptions as $slug => $name) {
+            $selected = $filterTarget === $slug ? 'selected' : '';
+            $targetSelect .= "<option value='" . htmlspecialchars($slug) . "' {$selected}>" . htmlspecialchars($name) . "</option>";
+        }
+
+        $groupSelect = "<option value=''>All groups</option>";
+        foreach (array_keys($groupOptions) as $name) {
+            $selected = $filterGroup === $name ? 'selected' : '';
+            $groupSelect .= "<option value='" . htmlspecialchars($name) . "' {$selected}>" . htmlspecialchars($name) . "</option>";
+        }
+
+        $corpSelect = "<option value=''>All corporations</option>";
+        foreach (array_keys($corpOptions) as $name) {
+            $selected = $filterCorp === $name ? 'selected' : '';
+            $corpSelect .= "<option value='" . htmlspecialchars($name) . "' {$selected}>" . htmlspecialchars($name) . "</option>";
+        }
+
+        $rowsHtml = '';
+        foreach ($filtered as $row) {
+            $charName = htmlspecialchars($row['character']);
+            $corpLabel = htmlspecialchars($row['corp']);
+            $groups = $row['groups'] ?: ['None'];
+            $targetsList = [];
+            foreach ($row['targets'] as $slug) {
+                $targetsList[] = $targetMap[$slug]['name'] ?? $slug;
+            }
+            $groupsHtml = htmlspecialchars(implode(', ', $groups));
+            $targetsHtml = htmlspecialchars(implode(', ', $targetsList));
+
+            $rowsHtml .= "<tr>
+                <td>{$charName}</td>
+                <td>{$corpLabel}</td>
+                <td>{$groupsHtml}</td>
+                <td>{$targetsHtml}</td>
+              </tr>";
+        }
+        if ($rowsHtml === '') {
+            $rowsHtml = "<tr><td colspan='4' class='text-muted'>No matching links found.</td></tr>";
+        }
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Character Link Audit</h1>
+                      <div class='text-muted'>Review which targets are enabled across linked characters.</div>
+                    </div>
+                  </div>
+                  <form method='get' class='card card-body mt-3'>
+                    <div class='row g-2'>
+                      <div class='col-md-4'>
+                        <label class='form-label'>Target</label>
+                        <select class='form-select' name='target'>{$targetSelect}</select>
+                      </div>
+                      <div class='col-md-4'>
+                        <label class='form-label'>Group</label>
+                        <select class='form-select' name='group'>{$groupSelect}</select>
+                      </div>
+                      <div class='col-md-4'>
+                        <label class='form-label'>Corporation</label>
+                        <select class='form-select' name='corp'>{$corpSelect}</select>
+                      </div>
+                    </div>
+                    <div class='mt-3'>
+                      <button class='btn btn-primary'>Filter</button>
+                      <a class='btn btn-outline-secondary ms-2' href='/charlink/audit'>Reset</a>
+                    </div>
+                  </form>
+                  <div class='card card-body mt-3'>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle mb-0'>
+                        <thead>
+                          <tr>
+                            <th>Character</th>
+                            <th>Corporation</th>
+                            <th>Groups</th>
+                            <th>Targets</th>
+                          </tr>
+                        </thead>
+                        <tbody>{$rowsHtml}</tbody>
+                      </table>
+                    </div>
+                  </div>";
+
+        return Response::html($renderPage('Character Link Audit', $body), 200);
+    }, ['right' => 'charlink.audit']);
+
+    $registry->route('GET', '/admin/charlink/targets', function () use ($app, $renderPage, $loadTargets): Response {
+        $flash = $_SESSION['charlink_targets_flash'] ?? null;
+        unset($_SESSION['charlink_targets_flash']);
+        $targets = $loadTargets();
+        $rowsHtml = '';
+        foreach ($targets as $target) {
+            $slug = (string)($target['slug'] ?? '');
+            if ($slug === '') continue;
+            $name = htmlspecialchars((string)($target['name'] ?? $slug));
+            $desc = htmlspecialchars((string)($target['description'] ?? ''));
+            $scopes = is_array($target['scopes'] ?? null) ? $target['scopes'] : [];
+            $scopeText = htmlspecialchars(implode(', ', array_filter($scopes, 'is_string')));
+            $enabledChecked = ((int)($target['is_enabled'] ?? 1) === 1) ? 'checked' : '';
+            $ignoredChecked = ((int)($target['is_ignored'] ?? 0) === 1) ? 'checked' : '';
+            $rowsHtml .= "<tr>
+                <td><strong>{$name}</strong><div class='text-muted small'>{$desc}</div></td>
+                <td class='small'>{$scopeText}</td>
+                <td class='text-center'>
+                  <input type='checkbox' class='form-check-input' name='enabled[{$slug}]' {$enabledChecked}>
+                </td>
+                <td class='text-center'>
+                  <input type='checkbox' class='form-check-input' name='ignored[{$slug}]' {$ignoredChecked}>
+                </td>
+              </tr>";
+        }
+        if ($rowsHtml === '') {
+            $rowsHtml = "<tr><td colspan='4' class='text-muted'>No targets registered.</td></tr>";
+        }
+
+        $flashHtml = '';
+        if (is_array($flash)) {
+            $type = htmlspecialchars((string)($flash['type'] ?? 'info'));
+            $message = htmlspecialchars((string)($flash['message'] ?? ''));
+            if ($message !== '') {
+                $flashHtml = "<div class='alert alert-{$type}'>{$message}</div>";
+            }
+        }
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Link Targets</h1>
+                      <div class='text-muted'>Enable, disable, or ignore link targets globally.</div>
+                    </div>
+                  </div>
+                  <div class='mt-3'>{$flashHtml}</div>
+                  <form method='post' action='/admin/charlink/targets/update' class='card card-body mt-3'>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle mb-0'>
+                        <thead>
+                          <tr>
+                            <th>Target</th>
+                            <th>Scopes</th>
+                            <th class='text-center'>Enabled</th>
+                            <th class='text-center'>Ignored</th>
+                          </tr>
+                        </thead>
+                        <tbody>{$rowsHtml}</tbody>
+                      </table>
+                    </div>
+                    <div class='mt-3'>
+                      <button class='btn btn-primary'>Save changes</button>
+                    </div>
+                  </form>";
+
+        return Response::html($renderPage('Link Targets', $body), 200);
+    }, ['right' => 'charlink.admin']);
+
+    $registry->route('POST', '/admin/charlink/targets/update', function (Request $req) use ($app, $loadTargets): Response {
+        $targets = $loadTargets();
+        $enabled = $req->post['enabled'] ?? [];
+        $ignored = $req->post['ignored'] ?? [];
+        if (!is_array($enabled)) $enabled = [];
+        if (!is_array($ignored)) $ignored = [];
+
+        foreach ($targets as $target) {
+            $slug = (string)($target['slug'] ?? '');
+            if ($slug === '') continue;
+            $isEnabled = array_key_exists($slug, $enabled) ? 1 : 0;
+            $isIgnored = array_key_exists($slug, $ignored) ? 1 : 0;
+            $app->db->run(
+                "UPDATE module_charlink_targets
+                 SET is_enabled=?, is_ignored=?, updated_at=NOW()
+                 WHERE slug=?",
+                [$isEnabled, $isIgnored, $slug]
+            );
+        }
+
+        $_SESSION['charlink_targets_flash'] = ['type' => 'success', 'message' => 'Targets updated.'];
+        return Response::redirect('/admin/charlink/targets');
+    }, ['right' => 'charlink.admin']);
 
     $registry->route('POST', '/user/alts/link-start', function () use ($app): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
@@ -189,7 +816,6 @@ return function (ModuleRegistry $registry): void {
             }
             $cards .= "<div>
                     <div class='fw-semibold'>{$primaryName}{$badge}</div>
-                    <div class='text-muted small'>Character ID: {$primaryId}</div>
                   </div>
                 </div>
               </div>
@@ -260,8 +886,7 @@ return function (ModuleRegistry $registry): void {
             $prefix = htmlspecialchars((string)($tokenRow['token_prefix'] ?? ''));
             $expiresAt = htmlspecialchars((string)($tokenRow['expires_at'] ?? ''));
             $usedAt = htmlspecialchars((string)($tokenRow['used_at'] ?? ''));
-            $usedChar = htmlspecialchars((string)($tokenRow['used_character_id'] ?? ''));
-            $status = $usedAt !== '' ? "Used ({$usedChar})" : 'Active';
+            $status = $usedAt !== '' ? "Used" : 'Active';
 
             $tokenRows .= "<tr>
                 <td>{$prefix}</td>
@@ -361,7 +986,6 @@ return function (ModuleRegistry $registry): void {
             $linkedAt = htmlspecialchars((string)($link['linked_at'] ?? ''));
             $linkRows .= "<tr>
                 <td>{$linkName}</td>
-                <td>{$linkId}</td>
                 <td>{$userName}</td>
                 <td>{$linkedAt}</td>
                 <td>
@@ -373,7 +997,7 @@ return function (ModuleRegistry $registry): void {
               </tr>";
         }
         if ($linkRows === '') {
-            $linkRows = "<tr><td colspan='5' class='text-muted'>No active links.</td></tr>";
+            $linkRows = "<tr><td colspan='4' class='text-muted'>No active links.</td></tr>";
         }
 
         $tokenRows = '';
@@ -383,8 +1007,7 @@ return function (ModuleRegistry $registry): void {
             $userName = htmlspecialchars((string)($token['user_name'] ?? ''));
             $expiresAt = htmlspecialchars((string)($token['expires_at'] ?? ''));
             $usedAt = htmlspecialchars((string)($token['used_at'] ?? ''));
-            $usedChar = htmlspecialchars((string)($token['used_character_id'] ?? ''));
-            $status = $usedAt !== '' ? "Used ({$usedChar})" : 'Active';
+            $status = $usedAt !== '' ? "Used" : 'Active';
             $tokenRows .= "<tr>
                 <td>{$prefix}</td>
                 <td>{$userName}</td>
@@ -416,7 +1039,6 @@ return function (ModuleRegistry $registry): void {
                         <thead>
                           <tr>
                             <th>Character</th>
-                            <th>ID</th>
                             <th>Primary</th>
                             <th>Linked at</th>
                             <th></th>

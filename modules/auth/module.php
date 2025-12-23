@@ -20,6 +20,10 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('GET', '/auth/login', function () use ($app): Response {
         $cfg = $app->config['eve_sso'] ?? [];
+        $override = $_SESSION['sso_scopes_override'] ?? null;
+        if (is_array($override) && !empty($override)) {
+            $cfg['scopes'] = array_values(array_unique(array_filter($override, 'is_string')));
+        }
         $sso = new EveSso($app->db, $cfg);
 
         $url = $sso->beginLogin();

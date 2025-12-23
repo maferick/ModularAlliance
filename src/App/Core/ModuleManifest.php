@@ -9,6 +9,7 @@ final class ModuleManifest
      * @param array<int, array{slug:string, description:string}> $rights
      * @param array<int, array<string, mixed>> $menu
      * @param array<int, array<string, mixed>> $routes
+     * @param array<int, array<string, mixed>> $cron
      */
     public function __construct(
         public readonly string $slug,
@@ -18,6 +19,7 @@ final class ModuleManifest
         public readonly array $rights = [],
         public readonly array $menu = [],
         public readonly array $routes = [],
+        public readonly array $cron = [],
     ) {}
 
     public function toArray(): array
@@ -30,6 +32,7 @@ final class ModuleManifest
             'rights' => $this->rights,
             'menu' => $this->menu,
             'routes' => $this->routes,
+            'cron' => $this->cron,
         ];
     }
 }

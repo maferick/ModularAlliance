@@ -20,6 +20,9 @@ final class ModuleRegistry
     /** @var array<int, array<string, mixed>> */
     private array $menu = [];
 
+    /** @var array<int, array<string, mixed>> */
+    private array $cron = [];
+
     public function __construct(
         private readonly App $app,
         private string $slug,
@@ -80,6 +83,19 @@ final class ModuleRegistry
         $this->manifestRoutes[] = $manifestRoute;
     }
 
+    /**
+     * @param callable(App):void $handler
+     */
+    public function cron(string $name, int $every, callable $handler): void
+    {
+        if ($name === '' || $every <= 0) return;
+        $this->cron[] = [
+            'name' => $name,
+            'every' => $every,
+            'handler' => $handler,
+        ];
+    }
+
     /** @return array<int, array{method:string, path:string, handler:callable, meta:array}> */
     public function routes(): array
     {
@@ -96,6 +112,7 @@ final class ModuleRegistry
             rights: $this->rights,
             menu: $this->menu,
             routes: $this->manifestRoutes,
+            cron: $this->cron,
         );
     }
 }

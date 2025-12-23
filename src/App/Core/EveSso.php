@@ -212,6 +212,36 @@ final class EveSso
         $this->upsertToken($finalUserId, $characterId, $token, $jwtPayload);
         $this->warmIdentity($characterId, (string)$token['access_token']);
 
+        $pendingTargets = $_SESSION['charlink_pending_targets'] ?? null;
+        if (is_array($pendingTargets)) {
+            unset($_SESSION['charlink_pending_targets']);
+            $pendingTargets = array_values(array_unique(array_filter($pendingTargets, 'is_string')));
+            if (!empty($pendingTargets)) {
+                $existing = $this->db->one(
+                    "SELECT enabled_targets_json
+                     FROM module_charlink_links
+                     WHERE user_id=? AND character_id=? LIMIT 1",
+                    [$finalUserId, $characterId]
+                );
+                $existingTargets = [];
+                if ($existing) {
+                    $existingTargets = json_decode((string)($existing['enabled_targets_json'] ?? '[]'), true);
+                    if (!is_array($existingTargets)) $existingTargets = [];
+                }
+                $merged = array_values(array_unique(array_merge($existingTargets, $pendingTargets)));
+                $this->db->run(
+                    "INSERT INTO module_charlink_links (user_id, character_id, enabled_targets_json, created_at, updated_at)
+                     VALUES (?, ?, ?, NOW(), NOW())
+                     ON DUPLICATE KEY UPDATE enabled_targets_json=VALUES(enabled_targets_json), updated_at=NOW()",
+                    [$finalUserId, $characterId, json_encode($merged, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
+                );
+            }
+        }
+
+        if (isset($_SESSION['sso_scopes_override'])) {
+            unset($_SESSION['sso_scopes_override']);
+        }
+
         $_SESSION['user_id'] = $finalUserId;
         $_SESSION['character_id'] = $characterId;
         if ($linkFlash) {
