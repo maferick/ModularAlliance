@@ -64,6 +64,20 @@ return function (ModuleRegistry $registry): void {
         $u = new Universe($app->db);
         $p = $u->characterProfile($cid);
 
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        $primary = $uid > 0
+            ? $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid])
+            : null;
+        $primaryCharacterId = (int)($primary['character_id'] ?? 0);
+        $primaryName = (string)($primary['character_name'] ?? '');
+        $primaryPortrait = null;
+        if ($primaryCharacterId > 0) {
+            $primaryProfile = $u->characterProfile($primaryCharacterId);
+            $primaryPortrait = $primaryProfile['character']['portrait']['px256x256']
+                ?? $primaryProfile['character']['portrait']['px128x128']
+                ?? null;
+        }
+
         $charName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
         $portrait = $p['character']['portrait']['px256x256'] ?? $p['character']['portrait']['px128x128'] ?? null;
 
@@ -76,6 +90,24 @@ return function (ModuleRegistry $registry): void {
         $allIcon = $p['alliance']['icons']['px128x128'] ?? $p['alliance']['icons']['px64x64'] ?? null;
 
         $html = "<h1>Profile</h1>";
+
+        if ($primaryCharacterId > 0) {
+            $primaryNameSafe = htmlspecialchars($primaryName !== '' ? $primaryName : 'Unknown');
+            $primaryBadge = $primaryCharacterId === $cid
+                ? "<span class='badge bg-success ms-2'>Current</span>"
+                : "<span class='badge bg-primary ms-2'>Primary</span>";
+            $primaryHtml = "<div class='card card-body mb-4'>
+                <div class='d-flex align-items-center gap-3'>
+                  " . ($primaryPortrait ? "<img src='" . htmlspecialchars($primaryPortrait) . "' width='64' height='64' style='border-radius:10px;'>" : "") . "
+                  <div>
+                    <div class='text-muted'>Main identity</div>
+                    <div class='fs-5 fw-bold'>{$primaryNameSafe}{$primaryBadge}</div>
+                  </div>
+                </div>
+              </div>";
+
+            $html = $primaryHtml . $html;
+        }
 
         $html .= "<div style='display:flex;gap:16px;align-items:center;margin:12px 0;'>";
         if ($portrait) $html .= "<img src='" . htmlspecialchars($portrait) . "' width='96' height='96' style='border-radius:10px;'>";
