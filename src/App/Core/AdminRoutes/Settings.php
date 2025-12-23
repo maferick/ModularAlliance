@@ -4,16 +4,17 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
+use App\Core\ModuleRegistry;
 use App\Core\Settings as CoreSettings;
 use App\Core\Universe;
 use App\Http\Response;
 
 final class Settings
 {
-    public static function register(App $app, callable $render): void
+    public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
         // Settings (branding / identity)
-        $app->router->get('/admin/settings', function () use ($app, $render): Response {
+        $registry->route('GET', '/admin/settings', function () use ($app, $render): Response {
             $settings = new CoreSettings($app->db);
 
             $brandName = $settings->get('site.brand.name', 'killsineve.online') ?? 'killsineve.online';
@@ -96,7 +97,7 @@ final class Settings
             return $render('Settings', $h);
         }, ['right' => 'admin.settings']);
 
-        $app->router->post('/admin/settings/save', function () use ($app): Response {
+        $registry->route('POST', '/admin/settings/save', function () use ($app): Response {
             $settings = new CoreSettings($app->db);
 
             $name = trim((string)($_POST['site_brand_name'] ?? 'killsineve.online'));

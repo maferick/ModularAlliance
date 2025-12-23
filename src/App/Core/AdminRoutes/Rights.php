@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
+use App\Core\ModuleRegistry;
 use App\Core\Rights as CoreRights;
 use App\Http\Response;
 
@@ -13,10 +14,10 @@ if (class_exists(__NAMESPACE__ . '\\Rights', false)) {
 
 final class Rights
 {
-    public static function register(App $app, callable $render): void
+    public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
         // Rights (Groups + Permissions) — scalable UI
-        $app->router->get('/admin/rights', function () use ($app, $render): Response {
+        $registry->route('GET', '/admin/rights', function () use ($app, $render): Response {
             $groups = $app->db->all("SELECT id, slug, name, is_admin FROM groups ORDER BY is_admin DESC, name ASC");
 
             // Selected group (default: first)
@@ -302,7 +303,7 @@ final class Rights
             return $render('Rights', $h);
         }, ['right' => 'admin.rights']);
 
-        $app->router->post('/admin/rights/group-create', function () use ($app): Response {
+        $registry->route('POST', '/admin/rights/group-create', function () use ($app): Response {
             $slug = strtolower(trim((string)($_POST['slug'] ?? '')));
             $name = trim((string)($_POST['name'] ?? ''));
             $isAdmin = (int)($_POST['is_admin'] ?? 0) === 1 ? 1 : 0;
@@ -321,7 +322,7 @@ final class Rights
         }, ['right' => 'admin.rights']);
 
         // Save grants for selected group (by slugs, no IDs)
-        $app->router->post('/admin/rights/group-save', function () use ($app): Response {
+        $registry->route('POST', '/admin/rights/group-save', function () use ($app): Response {
             $groupSlug = trim((string)($_POST['group_slug'] ?? ''));
             if ($groupSlug === '') return Response::redirect('/admin/rights');
 
@@ -357,7 +358,7 @@ final class Rights
         }, ['right' => 'admin.rights']);
 
         // Delete group by slug (no IDs). Admin group cannot be deleted.
-        $app->router->post('/admin/rights/group-delete', function () use ($app): Response {
+        $registry->route('POST', '/admin/rights/group-delete', function () use ($app): Response {
             $slug = strtolower(trim((string)($_POST['group_slug'] ?? '')));
             if ($slug === '') return Response::redirect('/admin/rights');
 

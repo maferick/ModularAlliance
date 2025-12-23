@@ -4,14 +4,15 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
+use App\Core\ModuleRegistry;
 use App\Http\Request;
 use App\Http\Response;
 
 final class Menu
 {
-    public static function register(App $app, callable $render): void
+    public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
-        $app->router->get('/admin/menu', function () use ($app, $render): Response {
+        $registry->route('GET', '/admin/menu', function () use ($app, $render): Response {
             $menuRows = $app->db->all(
                 "SELECT r.slug,
                         r.title AS r_title,
@@ -181,7 +182,7 @@ final class Menu
             return $render('Menu Editor', $h);
         }, ['right' => 'admin.menu']);
 
-        $app->router->post('/admin/menu/save', function (Request $req) use ($app): Response {
+        $registry->route('POST', '/admin/menu/save', function (Request $req) use ($app): Response {
             $slug = trim((string)($req->post['slug'] ?? ''));
             if ($slug === '') return Response::redirect('/admin/menu?msg=' . rawurlencode('Missing menu slug.'));
 

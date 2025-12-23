@@ -30,7 +30,7 @@ final class ModuleManager
             $disabled = [];
         }
 
-        $protected = ['auth', 'plugins'];
+        $protected = ['auth', 'core', 'plugins'];
 
         foreach (glob($dir . '/*/module.php') ?: [] as $file) {
             $slug = basename(dirname($file));
