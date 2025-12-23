@@ -56,14 +56,14 @@ return function (ModuleRegistry $registry): void {
         'right_slug' => 'corptools.admin',
     ]);
 
-    $renderPage = function (string $title, string $bodyHtml) use ($app): string {
-        $rights = new Rights($app->db);
-        $hasRight = function (string $right) use ($rights): bool {
-            $uid = (int)($_SESSION['user_id'] ?? 0);
-            if ($uid <= 0) return false;
-            return $rights->userHasRight($uid, $right);
-        };
+    $rights = new Rights($app->db);
+    $hasRight = function (string $right) use ($rights): bool {
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($uid <= 0) return false;
+        return $rights->userHasRight($uid, $right);
+    };
 
+    $renderPage = function (string $title, string $bodyHtml) use ($app, $hasRight): string {
         $leftTree = $app->menu->tree('left', $hasRight);
         $adminTree = $app->menu->tree('admin_top', $hasRight);
         $userTree = $app->menu->tree('user_top', fn(string $r) => true);
@@ -119,7 +119,6 @@ return function (ModuleRegistry $registry): void {
     $getCorpProfiles = function (array $corpIds) use ($app): array {
         $client = new EsiClient(new HttpClient());
         $cache = new EsiCache($app->db, $client);
-        $universe = new Universe($app->db);
 
         $profiles = [];
         foreach ($corpIds as $corpId) {
@@ -140,7 +139,7 @@ return function (ModuleRegistry $registry): void {
             $name = (string)($corp['name'] ?? 'Unknown');
             $ticker = (string)($corp['ticker'] ?? '');
             $label = $ticker !== '' ? "{$name} [{$ticker}]" : $name;
-            $profiles[$label] = [
+            $profiles[$corpId] = [
                 'id' => $corpId,
                 'name' => $name,
                 'label' => $label,
@@ -151,7 +150,7 @@ return function (ModuleRegistry $registry): void {
         return $profiles;
     };
 
-    $getCorpIds = function () use ($app): array {
+    $getIdentityCorpIds = function () use ($app): array {
         $settings = new Settings($app->db);
         $identityType = $settings->get('site.identity.type', 'corporation') ?? 'corporation';
         $identityType = $identityType === 'alliance' ? 'alliance' : 'corporation';
@@ -172,6 +171,15 @@ return function (ModuleRegistry $registry): void {
             3600
         );
         return is_array($corps) ? array_map('intval', $corps) : [];
+    };
+
+    $getAvailableCorpIds = function () use ($getCorpToolsSettings, $getIdentityCorpIds): array {
+        $settings = $getCorpToolsSettings();
+        $corpIds = $settings['general']['corp_ids'] ?? [];
+        if (is_array($corpIds) && !empty($corpIds)) {
+            return array_values(array_filter(array_map('intval', $corpIds), fn(int $id) => $id > 0));
+        }
+        return $getIdentityCorpIds();
     };
 
     $getCorpToken = function (int $corpId, array $requiredScopes) use ($app, $hasScopes): array {
@@ -212,20 +220,96 @@ return function (ModuleRegistry $registry): void {
         return ['character_id' => 0, 'access_token' => null, 'scopes' => [], 'expired' => true];
     };
 
-    $corpContext = function () use ($getCorpIds, $getCorpProfiles): array {
-        $corpIds = $getCorpIds();
-
+    $corpContext = function () use ($getAvailableCorpIds, $getCorpProfiles, $getCorpToolsSettings, $hasRight): array {
+        $settings = $getCorpToolsSettings();
+        $corpIds = $getAvailableCorpIds();
         $profiles = $getCorpProfiles($corpIds);
-        $selected = (string)($_GET['corp'] ?? '');
-        if ($selected === '' && !empty($profiles)) {
-            $selected = array_key_first($profiles);
+
+        $configuredId = (int)($settings['general']['corp_context_id'] ?? 0);
+        $allowSwitch = !empty($settings['general']['allow_context_switch']);
+        $selectedId = $configuredId;
+        $isConfigured = $configuredId > 0 && isset($profiles[$configuredId]);
+
+        if ($allowSwitch && $hasRight('corptools.director')) {
+            $overrideId = (int)($_SESSION['corptools_corp_context_id'] ?? 0);
+            if ($overrideId > 0 && isset($profiles[$overrideId])) {
+                $selectedId = $overrideId;
+            }
         }
-        $corpProfile = $profiles[$selected] ?? null;
+
+        if ($selectedId <= 0 || !isset($profiles[$selectedId])) {
+            $selectedId = !empty($profiles) ? (int)array_key_first($profiles) : 0;
+        }
 
         return [
             'profiles' => $profiles,
-            'selected' => $corpProfile,
+            'selected' => $selectedId > 0 ? $profiles[$selectedId] : null,
+            'configured_id' => $configuredId,
+            'is_configured' => $isConfigured,
+            'allow_switch' => $allowSwitch,
+            'is_override' => $allowSwitch && $hasRight('corptools.director') && $selectedId > 0 && $selectedId !== $configuredId,
         ];
+    };
+
+    $renderCorpContext = function (array $context, string $returnTo) use ($hasRight): string {
+        $flash = $_SESSION['corptools_context_flash'] ?? null;
+        unset($_SESSION['corptools_context_flash']);
+        $flashHtml = '';
+        if (is_array($flash)) {
+            $type = htmlspecialchars((string)($flash['type'] ?? 'info'));
+            $message = htmlspecialchars((string)($flash['message'] ?? ''));
+            if ($message !== '') {
+                $flashHtml = "<div class='alert alert-{$type} mb-2'>{$message}</div>";
+            }
+        }
+
+        $corp = $context['selected'] ?? null;
+        if (!$corp) {
+            return "{$flashHtml}<div class='alert alert-warning mt-3'>Corp data shown for: <strong>None configured</strong>. Set a CorpTools corp context in Admin → Corp Tools.</div>";
+        }
+
+        $label = htmlspecialchars((string)($corp['label'] ?? 'Corporation'));
+        $contextNote = $context['is_override'] ? 'director override' : ($context['is_configured'] ? 'configured' : 'defaulted');
+        $helper = $context['is_configured']
+            ? "Corp data shown for: <strong>{$label}</strong> ({$contextNote})."
+            : "Corp data shown for: <strong>{$label}</strong> ({$contextNote}). Configure the canonical corp context in Admin → Corp Tools.";
+
+        $switchHtml = '';
+        if (!empty($context['allow_switch']) && $hasRight('corptools.director')) {
+            $options = '';
+            foreach ($context['profiles'] as $profile) {
+                $pid = (int)($profile['id'] ?? 0);
+                $pLabel = htmlspecialchars((string)($profile['label'] ?? 'Corporation'));
+                $selected = ($corp['id'] ?? 0) === $pid ? 'selected' : '';
+                $options .= "<option value='{$pid}' {$selected}>{$pLabel}</option>";
+            }
+            $switchHtml = "<form method='post' action='/corptools/context-switch' class='mt-2'>
+                <input type='hidden' name='return_to' value='" . htmlspecialchars($returnTo) . "'>
+                <div class='row g-2 align-items-end'>
+                  <div class='col-md-5'>
+                    <label class='form-label'>Switch corp context</label>
+                    <select class='form-select' name='corp_id'>{$options}</select>
+                  </div>
+                  <div class='col-md-4'>
+                    <div class='form-check'>
+                      <input class='form-check-input' type='checkbox' name='confirm' value='1' id='context-confirm'>
+                      <label class='form-check-label' for='context-confirm'>I understand this changes corp dashboards for this session.</label>
+                    </div>
+                  </div>
+                  <div class='col-md-3 d-flex gap-2'>
+                    <button class='btn btn-outline-primary'>Apply</button>
+                    <button class='btn btn-outline-secondary' name='reset' value='1'>Reset</button>
+                  </div>
+                </div>
+              </form>";
+        }
+
+        return "{$flashHtml}<div class='card card-body mt-3'>
+                  <div class='fw-semibold'>Corp Context</div>
+                  <div class='text-muted'>{$helper}</div>
+                  <div class='text-muted small'>Corp context is always configured in settings or explicitly selected by a director; it never follows the last logged-in character.</div>
+                  {$switchHtml}
+                </div>";
     };
 
     $auditCollectors = function (): array {
@@ -325,9 +409,9 @@ return function (ModuleRegistry $registry): void {
         );
     };
 
-    $registry->cron('invoice_sync', 900, function (App $app) use ($tokenData, $getCorpIds, $getCorpToolsSettings) {
+    $registry->cron('invoice_sync', 900, function (App $app) use ($tokenData, $getAvailableCorpIds, $getCorpToolsSettings) {
         $settings = $getCorpToolsSettings();
-        $corpIds = $getCorpIds();
+        $corpIds = $getAvailableCorpIds();
         if (empty($corpIds)) return;
 
         $walletDivisions = $settings['invoices']['wallet_divisions']
@@ -484,10 +568,10 @@ return function (ModuleRegistry $registry): void {
         }
     });
 
-    $registry->cron('corp_audit_refresh', 3600, function (App $app) use ($getCorpIds, $getCorpToken, $getCorpToolsSettings) {
+    $registry->cron('corp_audit_refresh', 3600, function (App $app) use ($getAvailableCorpIds, $getCorpToken, $getCorpToolsSettings) {
         $settings = $getCorpToolsSettings();
         $enabled = $settings['corp_audit'] ?? [];
-        $corpIds = $getCorpIds();
+        $corpIds = $getAvailableCorpIds();
         if (empty($corpIds)) return;
 
         $client = new EsiClient(new HttpClient());
@@ -620,15 +704,61 @@ return function (ModuleRegistry $registry): void {
         );
     });
 
-    $registry->route('GET', '/corptools', function () use ($app, $renderPage, $corpContext, $tokenData, $hasScopes, $formatIsk): Response {
+    $registry->route('POST', '/corptools/context-switch', function (Request $req) use ($corpContext, $hasRight): Response {
+        if (!$hasRight('corptools.director')) {
+            return Response::redirect('/corptools');
+        }
+
+        $returnTo = (string)($req->post['return_to'] ?? '/corptools');
+        if ($returnTo === '' || $returnTo[0] !== '/') {
+            $returnTo = '/corptools';
+        }
+
+        if (!empty($req->post['reset'])) {
+            unset($_SESSION['corptools_corp_context_id']);
+            $_SESSION['corptools_context_flash'] = [
+                'type' => 'info',
+                'message' => 'Corp context reset to the configured default.',
+            ];
+            return Response::redirect($returnTo);
+        }
+
+        if (empty($req->post['confirm'])) {
+            $_SESSION['corptools_context_flash'] = [
+                'type' => 'warning',
+                'message' => 'Confirm the context switch before applying.',
+            ];
+            return Response::redirect($returnTo);
+        }
+
+        $context = $corpContext();
+        $corpId = (int)($req->post['corp_id'] ?? 0);
+        if ($corpId > 0 && isset($context['profiles'][$corpId])) {
+            $_SESSION['corptools_corp_context_id'] = $corpId;
+            $_SESSION['corptools_context_flash'] = [
+                'type' => 'success',
+                'message' => 'Corp context updated for this session.',
+            ];
+        } else {
+            $_SESSION['corptools_context_flash'] = [
+                'type' => 'danger',
+                'message' => 'Unable to switch: corp context is not available.',
+            ];
+        }
+
+        return Response::redirect($returnTo);
+    }, ['right' => 'corptools.director']);
+
+    $registry->route('GET', '/corptools', function () use ($app, $renderPage, $corpContext, $tokenData, $hasScopes, $formatIsk, $renderCorpContext): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
         $context = $corpContext();
         $corp = $context['selected'];
+        $contextPanel = $renderCorpContext($context, '/corptools');
         if (!$corp) {
-            $body = "<h1>Corp Tools</h1><div class='alert alert-warning mt-3'>No corporation is configured for CorpTools.</div>";
+            $body = "<h1>Corp Tools</h1>{$contextPanel}";
             return Response::html($renderPage('Corp Tools', $body), 200);
         }
 
@@ -698,6 +828,7 @@ return function (ModuleRegistry $registry): void {
                       <a class='btn btn-outline-light' href='/corptools/notifications'>Notifications</a>
                     </div>
                   </div>
+                  {$contextPanel}
                   <div class='row g-3 mt-3'>
                     <div class='col-md-3'>
                       <div class='card card-body'>
@@ -738,6 +869,9 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
+        $search = trim((string)($_GET['q'] ?? ''));
+        $statusFilter = trim((string)($_GET['status'] ?? ''));
+
         $primary = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
         $mainId = (int)($primary['character_id'] ?? 0);
         $mainName = (string)($primary['character_name'] ?? 'Unknown');
@@ -756,7 +890,26 @@ return function (ModuleRegistry $registry): void {
             ], $links)
         );
 
-        $cards = '';
+        $auditState = function (?array $summary): array {
+            $auditLoaded = (int)($summary['audit_loaded'] ?? 0);
+            $lastAudit = (string)($summary['last_audit_at'] ?? '');
+            if ($lastAudit === '') {
+                return ['key' => 'missing', 'label' => 'Missing scopes', 'badge' => 'bg-warning', 'hint' => 'No audit data yet.'];
+            }
+            $lastAuditTs = strtotime($lastAudit) ?: 0;
+            if ($lastAuditTs > 0 && $lastAuditTs < strtotime('-7 days')) {
+                return ['key' => 'stale', 'label' => 'Stale', 'badge' => 'bg-secondary', 'hint' => 'Last audit is over 7 days old.'];
+            }
+            if ($auditLoaded === 0) {
+                return ['key' => 'partial', 'label' => 'Partial', 'badge' => 'bg-info', 'hint' => 'Some scopes missing or pending.'];
+            }
+            return ['key' => 'ok', 'label' => 'OK', 'badge' => 'bg-success', 'hint' => 'Audit data is current.'];
+        };
+
+        $statusCounts = ['ok' => 0, 'stale' => 0, 'partial' => 0, 'missing' => 0];
+        $linkedGroups = ['ok' => [], 'stale' => [], 'partial' => [], 'missing' => []];
+        $mainCard = '';
+
         foreach ($characters as $character) {
             $characterId = (int)($character['character_id'] ?? 0);
             if ($characterId <= 0) continue;
@@ -765,48 +918,261 @@ return function (ModuleRegistry $registry): void {
                  FROM module_corptools_character_summary WHERE character_id=? LIMIT 1",
                 [$characterId]
             );
-            $auditLoaded = ((int)($summary['audit_loaded'] ?? 0) === 1) ? 'Loaded' : 'Pending';
+            $state = $auditState($summary);
+            if (isset($statusCounts[$state['key']])) {
+                $statusCounts[$state['key']]++;
+            }
+
+            $name = htmlspecialchars((string)($character['character_name'] ?? 'Unknown'));
+            if ($search !== '' && stripos($name, $search) === false) {
+                continue;
+            }
+            if ($statusFilter !== '' && $state['key'] !== $statusFilter) {
+                continue;
+            }
+
             $lastAudit = htmlspecialchars((string)($summary['last_audit_at'] ?? '—'));
             $sp = number_format((int)($summary['total_sp'] ?? 0));
             $wallet = number_format((float)($summary['wallet_balance'] ?? 0), 2);
             $assets = (int)($summary['assets_count'] ?? 0);
-            $name = htmlspecialchars((string)($character['character_name'] ?? 'Unknown'));
             $badge = $character['is_main'] ? "<span class='badge bg-primary ms-2'>Main</span>" : '';
+            $auditBadge = "<span class='badge {$state['badge']}'>" . htmlspecialchars($state['label']) . "</span>";
 
-            $cards .= "<div class='col-md-6'>
-                <div class='card card-body'>
-                  <div class='d-flex justify-content-between'>
+            $card = "<div class='col-md-6'>
+                <div class='card card-body h-100'>
+                  <div class='d-flex justify-content-between align-items-start'>
                     <div>
                       <div class='fw-semibold'>{$name}{$badge}</div>
-                      <div class='text-muted small'>Audit: {$auditLoaded}</div>
+                      <div class='text-muted small'>Audit status: {$auditBadge}</div>
+                      <div class='text-muted small'>{$state['hint']}</div>
                     </div>
                     <div class='text-muted small'>Last audit: {$lastAudit}</div>
                   </div>
-                  <div class='row text-muted mt-2'>
+                  <div class='row text-muted mt-3'>
                     <div class='col-4'>SP: {$sp}</div>
                     <div class='col-4'>Wallet: {$wallet}</div>
                     <div class='col-4'>Assets: {$assets}</div>
                   </div>
+                  <div class='d-flex justify-content-between align-items-center mt-3'>
+                    <div class='form-check'>
+                      <input class='form-check-input' type='checkbox' name='character_ids[]' value='{$characterId}' id='char-{$characterId}'>
+                      <label class='form-check-label small text-muted' for='char-{$characterId}'>Select</label>
+                    </div>
+                    <a class='btn btn-sm btn-outline-secondary' href='/user/alts'>Manage link</a>
+                  </div>
                 </div>
               </div>";
+
+            if (!empty($character['is_main'])) {
+                $mainCard = $card;
+            } else {
+                $linkedGroups[$state['key']][] = $card;
+            }
         }
-        if ($cards === '') {
-            $cards = "<div class='col-12 text-muted'>No linked characters found.</div>";
+
+        $totalCharacters = array_sum($statusCounts);
+        $summaryCards = "<div class='row g-3 mt-3'>
+            <div class='col-md-3'>
+              <div class='card card-body'>
+                <div class='text-muted small'>Total characters</div>
+                <div class='fs-5 fw-semibold'>" . htmlspecialchars((string)$totalCharacters) . "</div>
+              </div>
+            </div>
+            <div class='col-md-3'>
+              <div class='card card-body'>
+                <div class='text-muted small'>Audit OK</div>
+                <div class='fs-5 fw-semibold'>" . htmlspecialchars((string)$statusCounts['ok']) . "</div>
+              </div>
+            </div>
+            <div class='col-md-3'>
+              <div class='card card-body'>
+                <div class='text-muted small'>Stale audits</div>
+                <div class='fs-5 fw-semibold'>" . htmlspecialchars((string)$statusCounts['stale']) . "</div>
+              </div>
+            </div>
+            <div class='col-md-3'>
+              <div class='card card-body'>
+                <div class='text-muted small'>Missing/Partial</div>
+                <div class='fs-5 fw-semibold'>" . htmlspecialchars((string)($statusCounts['missing'] + $statusCounts['partial'])) . "</div>
+              </div>
+            </div>
+          </div>";
+
+        $filterForm = "<form method='get' class='card card-body mt-3'>
+            <div class='row g-2 align-items-end'>
+              <div class='col-md-6'>
+                <label class='form-label'>Search characters</label>
+                <input class='form-control' name='q' value='" . htmlspecialchars($search) . "' placeholder='Search by name'>
+              </div>
+              <div class='col-md-4'>
+                <label class='form-label'>Audit status</label>
+                <select class='form-select' name='status'>
+                  <option value=''>All statuses</option>
+                  <option value='ok'" . ($statusFilter === 'ok' ? ' selected' : '') . ">OK</option>
+                  <option value='stale'" . ($statusFilter === 'stale' ? ' selected' : '') . ">Stale</option>
+                  <option value='partial'" . ($statusFilter === 'partial' ? ' selected' : '') . ">Partial</option>
+                  <option value='missing'" . ($statusFilter === 'missing' ? ' selected' : '') . ">Missing scopes</option>
+                </select>
+              </div>
+              <div class='col-md-2 d-flex gap-2'>
+                <button class='btn btn-primary'>Filter</button>
+                <a class='btn btn-outline-secondary' href='/corptools/characters'>Reset</a>
+              </div>
+            </div>
+          </form>";
+
+        $groupSections = '';
+        $groupLabels = [
+            'ok' => 'Audit OK',
+            'stale' => 'Stale audits',
+            'partial' => 'Partial audits',
+            'missing' => 'Missing scopes',
+        ];
+        foreach ($groupLabels as $key => $label) {
+            $cards = $linkedGroups[$key] ?? [];
+            $cardsHtml = $cards ? implode('', $cards) : "<div class='col-12 text-muted'>No characters in this group.</div>";
+            $groupSections .= "<div class='mt-3'>
+                <div class='fw-semibold mb-2'>{$label}</div>
+                <div class='row g-3'>{$cardsHtml}</div>
+              </div>";
+        }
+
+        $mainSection = $mainCard !== ''
+            ? "<div class='mt-3'>
+                <div class='fw-semibold mb-2'>Main character</div>
+                <div class='row g-3'>{$mainCard}</div>
+              </div>"
+            : "<div class='mt-3 text-muted'>Main character not found.</div>";
+
+        $bulkActions = "<div class='d-flex flex-wrap gap-2 mt-3'>
+            <button class='btn btn-outline-primary'>Refresh audit for selected</button>
+            <a class='btn btn-outline-secondary' href='/user/alts'>Manage main/linked characters</a>
+          </div>";
+
+        $flash = $_SESSION['corptools_characters_flash'] ?? null;
+        unset($_SESSION['corptools_characters_flash']);
+        $flashHtml = '';
+        if (is_array($flash)) {
+            $type = htmlspecialchars((string)($flash['type'] ?? 'info'));
+            $message = htmlspecialchars((string)($flash['message'] ?? ''));
+            if ($message !== '') {
+                $flashHtml = "<div class='alert alert-{$type} mt-3'>{$message}</div>";
+            }
         }
 
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>My Characters</h1>
-                      <div class='text-muted'>Audit coverage across your linked characters.</div>
+                      <div class='text-muted'>Audit coverage across your linked characters. Main character is defined explicitly and is not the same as your last logged-in character.</div>
                     </div>
                   </div>
-                  <div class='row g-3 mt-3'>{$cards}</div>
+                  {$flashHtml}
+                  {$filterForm}
+                  {$summaryCards}
+                  <form method='post' action='/corptools/characters/audit'>
+                    {$bulkActions}
+                    {$mainSection}
+                    <div class='mt-4'>
+                      <div class='fw-semibold mb-1'>Linked characters (grouped by audit status)</div>
+                      <div class='text-muted small'>Audit state reflects collected data, not just token presence.</div>
+                    </div>
+                    {$groupSections}
+                  </form>
                   <div class='card card-body mt-3'>
                     <div class='fw-semibold mb-2'>Audit cadence</div>
-                    <div class='text-muted'>Audits refresh hourly through the CorpTools cron jobs. Missing scopes will show as pending.</div>
+                    <div class='text-muted'>Audits refresh hourly through the CorpTools cron jobs. Missing scopes will show as partial or missing, and stale audits should be refreshed.</div>
                   </div>";
 
         return Response::html($renderPage('My Characters', $body), 200);
+    }, ['right' => 'corptools.view']);
+
+    $registry->route('POST', '/corptools/characters/audit', function (Request $req) use ($app, $auditCollectors, $getCorpToolsSettings, $tokenData): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $selected = $req->post['character_ids'] ?? [];
+        if (!is_array($selected)) $selected = [];
+        $selectedIds = array_values(array_filter(array_map('intval', $selected), fn(int $id) => $id > 0));
+
+        if (empty($selectedIds)) {
+            $_SESSION['corptools_characters_flash'] = [
+                'type' => 'warning',
+                'message' => 'Select at least one character to refresh.',
+            ];
+            return Response::redirect('/corptools/characters');
+        }
+
+        $primary = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
+        $mainId = (int)($primary['character_id'] ?? 0);
+        $owned = [];
+        if ($mainId > 0) {
+            $owned[$mainId] = (string)($primary['character_name'] ?? 'Unknown');
+        }
+        $links = $app->db->all(
+            "SELECT character_id, character_name FROM character_links WHERE user_id=? AND status='linked'",
+            [$uid]
+        );
+        foreach ($links as $link) {
+            $charId = (int)($link['character_id'] ?? 0);
+            if ($charId > 0) {
+                $owned[$charId] = (string)($link['character_name'] ?? 'Unknown');
+            }
+        }
+
+        $dispatch = new AuditDispatcher($app->db);
+        $settings = $getCorpToolsSettings();
+        $enabled = array_keys(array_filter($settings['audit_scopes'] ?? [], fn($enabled) => !empty($enabled)));
+        $collectors = $auditCollectors();
+        $u = new Universe($app->db);
+
+        $success = 0;
+        $skipped = 0;
+        $missingTokens = 0;
+
+        foreach ($selectedIds as $characterId) {
+            if (!isset($owned[$characterId])) {
+                $skipped++;
+                continue;
+            }
+
+            $token = $tokenData($characterId);
+            if ($token['expired'] || empty($token['access_token'])) {
+                $missingTokens++;
+                continue;
+            }
+
+            $profile = $u->characterProfile($characterId);
+            $baseSummary = [
+                'is_main' => $characterId === $mainId ? 1 : 0,
+                'corp_id' => (int)($profile['corporation']['id'] ?? 0),
+                'alliance_id' => (int)($profile['alliance']['id'] ?? 0),
+            ];
+
+            $dispatch->run($uid, $characterId, $owned[$characterId], $token, $collectors, $enabled, $baseSummary);
+            $success++;
+        }
+
+        $messages = [];
+        if ($success > 0) {
+            $messages[] = "Queued audits for {$success} character(s).";
+        }
+        if ($missingTokens > 0) {
+            $messages[] = "{$missingTokens} character(s) are missing valid tokens.";
+        }
+        if ($skipped > 0) {
+            $messages[] = "{$skipped} character(s) were skipped.";
+        }
+        if (empty($messages)) {
+            $messages[] = 'No characters were refreshed.';
+        }
+
+        $_SESSION['corptools_characters_flash'] = [
+            'type' => $success > 0 ? 'success' : 'warning',
+            'message' => implode(' ', $messages),
+        ];
+
+        return Response::redirect('/corptools/characters');
     }, ['right' => 'corptools.view']);
 
     $registry->route('GET', '/corptools/overview', function () use ($app, $renderPage, $formatIsk): Response {
@@ -858,15 +1224,16 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('At a Glance', $body), 200);
     }, ['right' => 'corptools.view']);
 
-    $registry->route('GET', '/corptools/invoices', function (Request $req) use ($app, $renderPage, $corpContext, $formatIsk, $getCorpToken): Response {
+    $registry->route('GET', '/corptools/invoices', function (Request $req) use ($app, $renderPage, $corpContext, $formatIsk, $getCorpToken, $renderCorpContext): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
         $context = $corpContext();
         $corp = $context['selected'];
+        $contextPanel = $renderCorpContext($context, '/corptools/invoices');
         if (!$corp) {
-            $body = "<h1>Invoices</h1><div class='alert alert-warning mt-3'>No corporation is configured.</div>";
+            $body = "<h1>Invoices</h1>{$contextPanel}";
             return Response::html($renderPage('Invoices', $body), 200);
         }
 
@@ -925,6 +1292,7 @@ return function (ModuleRegistry $registry): void {
                       <div class='text-muted'>Wallet journal entries cached for invoice tracking.</div>
                     </div>
                   </div>
+                  {$contextPanel}
                   <div class='mt-3'>{$missingHtml}</div>
                   <form class='card card-body mt-3' method='get'>
                     <div class='row g-2'>
@@ -961,15 +1329,16 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Invoices', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/members', function (Request $req) use ($app, $renderPage, $corpContext, $getCorpToolsSettings): Response {
+    $registry->route('GET', '/corptools/members', function (Request $req) use ($app, $renderPage, $corpContext, $getCorpToolsSettings, $renderCorpContext): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
         $context = $corpContext();
         $corp = $context['selected'];
+        $contextPanel = $renderCorpContext($context, '/corptools/members');
         if (!$corp) {
-            $body = "<h1>Members</h1><div class='alert alert-warning mt-3'>No corporation is configured.</div>";
+            $body = "<h1>Members</h1>{$contextPanel}";
             return Response::html($renderPage('Members', $body), 200);
         }
 
@@ -977,12 +1346,26 @@ return function (ModuleRegistry $registry): void {
         $defaultAssetMin = (string)($settings['filters']['asset_value_min'] ?? '');
         $defaultAuditOnly = !empty($settings['filters']['audit_loaded_only']) ? '1' : '';
 
+        $resolveEntityId = function (string $type, string $value) use ($app): string {
+            $value = trim($value);
+            if ($value === '') return '';
+            if (ctype_digit($value)) return $value;
+            $row = $app->db->one(
+                "SELECT entity_id FROM universe_entities WHERE entity_type=? AND name LIKE ? ORDER BY fetched_at DESC LIMIT 1",
+                [$type, '%' . $value . '%']
+            );
+            return $row ? (string)($row['entity_id'] ?? '') : '';
+        };
+
+        $locationSystemInput = (string)($req->query['location_system_id'] ?? '');
+        $shipTypeInput = (string)($req->query['ship_type_id'] ?? '');
+
         $filters = [
             'asset_presence' => (string)($req->query['asset_presence'] ?? ''),
             'asset_value_min' => (string)($req->query['asset_value_min'] ?? $defaultAssetMin),
             'location_region_id' => (string)($req->query['location_region_id'] ?? ''),
-            'location_system_id' => (string)($req->query['location_system_id'] ?? ''),
-            'ship_type_id' => (string)($req->query['ship_type_id'] ?? ''),
+            'location_system_id' => $resolveEntityId('system', $locationSystemInput),
+            'ship_type_id' => $resolveEntityId('type', $shipTypeInput),
             'corp_role' => (string)($req->query['corp_role'] ?? ''),
             'corp_title' => (string)($req->query['corp_title'] ?? ''),
             'highest_sp_min' => (string)($req->query['highest_sp_min'] ?? ''),
@@ -1035,6 +1418,7 @@ return function (ModuleRegistry $registry): void {
                       <div class='text-muted'>Security filters driven by audit snapshots.</div>
                     </div>
                   </div>
+                  {$contextPanel}
                   <form method='get' class='card card-body mt-3'>
                     <div class='row g-2'>
                       <div class='col-md-3'>
@@ -1050,12 +1434,12 @@ return function (ModuleRegistry $registry): void {
                         <input class='form-control' name='asset_value_min' value='" . htmlspecialchars($filters['asset_value_min']) . "' placeholder='0'>
                       </div>
                       <div class='col-md-3'>
-                        <label class='form-label'>Location system ID</label>
-                        <input class='form-control' name='location_system_id' value='" . htmlspecialchars($filters['location_system_id']) . "' placeholder='30000142'>
+                        <label class='form-label'>Location system (name or ID)</label>
+                        <input class='form-control' name='location_system_id' value='" . htmlspecialchars($locationSystemInput) . "' placeholder='Jita or 30000142'>
                       </div>
                       <div class='col-md-3'>
-                        <label class='form-label'>Ship type ID</label>
-                        <input class='form-control' name='ship_type_id' value='" . htmlspecialchars($filters['ship_type_id']) . "' placeholder='603'>
+                        <label class='form-label'>Ship type (name or ID)</label>
+                        <input class='form-control' name='ship_type_id' value='" . htmlspecialchars($shipTypeInput) . "' placeholder='Hulk or 603'>
                       </div>
                       <div class='col-md-3'>
                         <label class='form-label'>Corp role contains</label>
@@ -1128,15 +1512,16 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Members', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/moons', function () use ($app, $renderPage, $corpContext, $getCorpToolsSettings): Response {
+    $registry->route('GET', '/corptools/moons', function () use ($app, $renderPage, $corpContext, $getCorpToolsSettings, $renderCorpContext): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
         $context = $corpContext();
         $corp = $context['selected'];
+        $contextPanel = $renderCorpContext($context, '/corptools/moons');
         if (!$corp) {
-            $body = "<h1>Moon Tracking</h1><div class='alert alert-warning mt-3'>No corporation is configured.</div>";
+            $body = "<h1>Moon Tracking</h1>{$contextPanel}";
             return Response::html($renderPage('Moon Tracking', $body), 200);
         }
 
@@ -1179,6 +1564,7 @@ return function (ModuleRegistry $registry): void {
                       <div class='text-muted'>Manual or imported moon extraction records.</div>
                     </div>
                   </div>
+                  {$contextPanel}
                   <form method='post' action='/corptools/moons/add' class='card card-body mt-3'>
                     <div class='row g-2'>
                       <div class='col-md-3'>
@@ -1261,15 +1647,16 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/corptools/moons');
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/industry', function () use ($app, $renderPage, $corpContext): Response {
+    $registry->route('GET', '/corptools/industry', function () use ($app, $renderPage, $corpContext, $renderCorpContext): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
         $context = $corpContext();
         $corp = $context['selected'];
+        $contextPanel = $renderCorpContext($context, '/corptools/industry');
         if (!$corp) {
-            $body = "<h1>Industry</h1><div class='alert alert-warning mt-3'>No corporation is configured.</div>";
+            $body = "<h1>Industry</h1>{$contextPanel}";
             return Response::html($renderPage('Industry', $body), 200);
         }
 
@@ -1317,6 +1704,7 @@ return function (ModuleRegistry $registry): void {
                       <div class='text-muted'>Structures, rigs, and services overview.</div>
                     </div>
                   </div>
+                  {$contextPanel}
                   <div class='card card-body mt-3'>
                     <div class='table-responsive'>
                       <table class='table table-sm align-middle'>
@@ -1336,15 +1724,16 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Industry', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/corp-audit', function () use ($app, $renderPage, $corpContext): Response {
+    $registry->route('GET', '/corptools/corp-audit', function () use ($app, $renderPage, $corpContext, $renderCorpContext): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
         $context = $corpContext();
         $corp = $context['selected'];
+        $contextPanel = $renderCorpContext($context, '/corptools/corp-audit');
         if (!$corp) {
-            $body = "<h1>Corp Audit</h1><div class='alert alert-warning mt-3'>No corporation is configured.</div>";
+            $body = "<h1>Corp Audit</h1>{$contextPanel}";
             return Response::html($renderPage('Corp Audit', $body), 200);
         }
 
@@ -1380,6 +1769,7 @@ return function (ModuleRegistry $registry): void {
                       <div class='text-muted'>Corp-wide dashboards for wallets, structures, assets, and more.</div>
                     </div>
                   </div>
+                  {$contextPanel}
                   <div class='row g-3 mt-3'>{$cards}</div>
                   <div class='card card-body mt-3'>
                     <div class='fw-semibold mb-2'>Metenox / Sov / Jump Bridges</div>
@@ -1548,7 +1938,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('CorpTools Health', $body), 200);
     }, ['right' => 'corptools.admin']);
 
-    $registry->route('GET', '/admin/corptools', function () use ($app, $renderPage, $getCorpToolsSettings): Response {
+    $registry->route('GET', '/admin/corptools', function () use ($app, $renderPage, $getCorpToolsSettings, $getIdentityCorpIds, $getCorpProfiles, $getAvailableCorpIds): Response {
         $settings = $getCorpToolsSettings();
         $tab = (string)($_GET['tab'] ?? 'general');
 
@@ -1585,9 +1975,57 @@ return function (ModuleRegistry $registry): void {
             $divisions = htmlspecialchars(implode(',', $settings['general']['holding_wallet_divisions'] ?? [1]));
             $label = htmlspecialchars((string)($settings['general']['holding_wallet_label'] ?? 'Holding Wallet'));
             $retention = htmlspecialchars((string)($settings['general']['retention_days'] ?? 30));
+            $corpContextId = (int)($settings['general']['corp_context_id'] ?? 0);
+            $allowSwitch = !empty($settings['general']['allow_context_switch']) ? 'checked' : '';
+            $allowedCorpIds = $settings['general']['corp_ids'] ?? [];
+            if (!is_array($allowedCorpIds)) $allowedCorpIds = [];
+            $allowedCorpIds = array_values(array_filter(array_map('intval', $allowedCorpIds), fn(int $id) => $id > 0));
+
+            $identityProfiles = $getCorpProfiles($getIdentityCorpIds());
+            $availableProfiles = $getCorpProfiles($getAvailableCorpIds());
+
+            $contextOptions = "<option value='0'>Select corp context</option>";
+            foreach ($availableProfiles as $profile) {
+                $pid = (int)($profile['id'] ?? 0);
+                $pLabel = htmlspecialchars((string)($profile['label'] ?? 'Corporation'));
+                $selected = $pid === $corpContextId ? 'selected' : '';
+                $contextOptions .= "<option value='{$pid}' {$selected}>{$pLabel}</option>";
+            }
+
+            $corpCheckboxes = '';
+            if (empty($identityProfiles)) {
+                $corpCheckboxes = "<div class='text-muted'>No corps found via site identity settings. Configure site identity to populate corp choices.</div>";
+            } else {
+                $useAll = empty($allowedCorpIds);
+                foreach ($identityProfiles as $profile) {
+                    $pid = (int)($profile['id'] ?? 0);
+                    $pLabel = htmlspecialchars((string)($profile['label'] ?? 'Corporation'));
+                    $checked = $useAll || in_array($pid, $allowedCorpIds, true) ? 'checked' : '';
+                    $corpCheckboxes .= "<div class='form-check'>
+                        <input class='form-check-input' type='checkbox' name='corp_ids[]' value='{$pid}' id='corp-id-{$pid}' {$checked}>
+                        <label class='form-check-label' for='corp-id-{$pid}'>{$pLabel}</label>
+                      </div>";
+                }
+                if ($useAll) {
+                    $corpCheckboxes .= "<div class='text-muted small mt-1'>All identity corps are currently allowed. Uncheck to restrict.</div>";
+                }
+            }
+
             $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
                 <input type='hidden' name='section' value='general'>
-                <label class='form-label'>Holding wallet divisions (comma-separated)</label>
+                <div class='fw-semibold mb-2'>Corp context</div>
+                <label class='form-label'>Canonical corp context</label>
+                <select class='form-select' name='corp_context_id'>{$contextOptions}</select>
+                <div class='form-text'>CorpTools dashboards default to this corp context and never infer it from login activity.</div>
+                <div class='form-check mt-2'>
+                  <input class='form-check-input' type='checkbox' name='allow_context_switch' value='1' id='allow-context-switch' {$allowSwitch}>
+                  <label class='form-check-label' for='allow-context-switch'>Allow directors to switch corp context (confirmation required)</label>
+                </div>
+                <div class='mt-3'>
+                  <div class='fw-semibold'>Allowed corp contexts</div>
+                  {$corpCheckboxes}
+                </div>
+                <label class='form-label mt-3'>Holding wallet divisions (comma-separated)</label>
                 <input class='form-control' name='holding_wallet_divisions' value='{$divisions}'>
                 <label class='form-label mt-3'>Holding wallet label</label>
                 <input class='form-control' name='holding_wallet_label' value='{$label}'>
@@ -1745,7 +2183,17 @@ return function (ModuleRegistry $registry): void {
         if ($section === 'general') {
             $divisions = array_values(array_filter(array_map('trim', explode(',', (string)($req->post['holding_wallet_divisions'] ?? '')))));
             $divisions = array_map('intval', $divisions);
+            $corpIds = $req->post['corp_ids'] ?? [];
+            if (!is_array($corpIds)) $corpIds = [];
+            $corpIds = array_values(array_filter(array_map('intval', $corpIds), fn(int $id) => $id > 0));
+            $corpContextId = (int)($req->post['corp_context_id'] ?? 0);
+            if ($corpContextId > 0 && !empty($corpIds) && !in_array($corpContextId, $corpIds, true)) {
+                $corpContextId = 0;
+            }
             $settings->updateSection('general', [
+                'corp_ids' => $corpIds,
+                'corp_context_id' => $corpContextId,
+                'allow_context_switch' => !empty($req->post['allow_context_switch']),
                 'holding_wallet_divisions' => $divisions ?: [1],
                 'holding_wallet_label' => trim((string)($req->post['holding_wallet_label'] ?? 'Holding Wallet')),
                 'retention_days' => (int)($req->post['retention_days'] ?? 30),
