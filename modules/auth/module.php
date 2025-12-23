@@ -80,6 +80,8 @@ return function (ModuleRegistry $registry): void {
         }
 
         $displayProfile = $primaryProfile ?? $p;
+        $charName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
+        $portrait = $p['character']['portrait']['px256x256'] ?? $p['character']['portrait']['px128x128'] ?? null;
 
         $charName = htmlspecialchars($displayProfile['character']['name'] ?? 'Unknown');
         $portrait = $displayProfile['character']['portrait']['px256x256']
