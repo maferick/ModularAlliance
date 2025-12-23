@@ -719,8 +719,8 @@ return function (ModuleRegistry $registry): void {
         $expiresAt = gmdate('Y-m-d H:i:s', time() + 3600);
 
         $app->db->run(
-            "INSERT INTO character_link_tokens (user_id, token_hash, token_prefix, expires_at)
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO module_charlink_states (user_id, token_hash, token_prefix, purpose, expires_at)
+             VALUES (?, ?, ?, 'link', ?)",
             [$uid, $tokenHash, $tokenPrefix, $expiresAt]
         );
 
@@ -750,6 +750,77 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/user/alts');
     });
 
+    $registry->route('POST', '/user/alts/make-main', function (Request $req) use ($app): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $newMainId = (int)($req->post['character_id'] ?? 0);
+        if ($newMainId <= 0) return Response::redirect('/user/alts');
+
+        $currentMain = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
+        $currentMainId = (int)($currentMain['character_id'] ?? 0);
+        $currentMainName = (string)($currentMain['character_name'] ?? 'Unknown');
+
+        if ($currentMainId === $newMainId) {
+            $_SESSION['charlink_flash'] = ['type' => 'info', 'message' => 'That character is already your main.'];
+            return Response::redirect('/user/alts');
+        }
+
+        $link = $app->db->one(
+            "SELECT character_id, character_name
+             FROM character_links
+             WHERE user_id=? AND character_id=? AND status='linked' LIMIT 1",
+            [$uid, $newMainId]
+        );
+
+        if (!$link) {
+            $_SESSION['charlink_flash'] = ['type' => 'danger', 'message' => 'Unable to promote: character is not linked to your account.'];
+            return Response::redirect('/user/alts');
+        }
+
+        $newMainName = (string)($link['character_name'] ?? 'Unknown');
+
+        $conflict = $app->db->one(
+            "SELECT id FROM eve_users WHERE character_id=? AND id<>? LIMIT 1",
+            [$newMainId, $uid]
+        );
+        if ($conflict) {
+            $_SESSION['charlink_flash'] = ['type' => 'danger', 'message' => 'Unable to promote: character is already the main for another account.'];
+            return Response::redirect('/user/alts');
+        }
+
+        $app->db->begin();
+        try {
+            $app->db->run(
+                "UPDATE eve_users SET character_id=?, character_name=? WHERE id=?",
+                [$newMainId, $newMainName, $uid]
+            );
+
+            $app->db->run(
+                "DELETE FROM character_links WHERE user_id=? AND character_id=?",
+                [$uid, $newMainId]
+            );
+
+            if ($currentMainId > 0) {
+                $app->db->run(
+                    "INSERT INTO character_links (user_id, character_id, character_name, status, linked_at, linked_by_user_id)
+                     VALUES (?, ?, ?, 'linked', NOW(), ?)
+                     ON DUPLICATE KEY UPDATE status='linked', character_name=VALUES(character_name), linked_at=NOW(), linked_by_user_id=VALUES(linked_by_user_id), revoked_at=NULL, revoked_by_user_id=NULL",
+                    [$uid, $currentMainId, $currentMainName, $uid]
+                );
+            }
+
+            $app->db->commit();
+            $_SESSION['charlink_flash'] = ['type' => 'success', 'message' => 'Main character updated.'];
+        } catch (\Throwable $e) {
+            $app->db->rollback();
+            $_SESSION['charlink_flash'] = ['type' => 'danger', 'message' => 'Failed to update main character.'];
+        }
+
+        return Response::redirect('/user/alts');
+    });
+
     $registry->route('POST', '/user/alts/token-delete', function (Request $req) use ($app): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
@@ -758,7 +829,7 @@ return function (ModuleRegistry $registry): void {
         $tokenId = (int)($req->post['token_id'] ?? 0);
         if ($tokenId > 0) {
             $app->db->run(
-                "DELETE FROM character_link_tokens WHERE id=? AND user_id=?",
+                "DELETE FROM module_charlink_states WHERE id=? AND user_id=? AND purpose='link'",
                 [$tokenId, $uid]
             );
         }
@@ -786,8 +857,8 @@ return function (ModuleRegistry $registry): void {
         );
         $tokens = $app->db->all(
             "SELECT id, token_prefix, expires_at, used_at, used_character_id
-             FROM character_link_tokens
-             WHERE user_id=?
+             FROM module_charlink_states
+             WHERE user_id=? AND purpose='link'
              ORDER BY created_at DESC
              LIMIT 50",
             [$uid]
@@ -843,10 +914,16 @@ return function (ModuleRegistry $registry): void {
                         <div class='text-muted small'>Linked {$linkedAt}</div>
                       </div>
                     </div>
-                    <form method='post' action='/user/alts/revoke' onsubmit=\"return confirm('Unlink {$linkName}?');\">
-                      <input type='hidden' name='character_id' value='{$linkId}'>
-                      <button class='btn btn-sm btn-outline-danger'>Unlink</button>
-                    </form>
+                    <div class='d-flex gap-2'>
+                      <form method='post' action='/user/alts/make-main' onsubmit=\"return confirm('Make {$linkName} your main character?');\">
+                        <input type='hidden' name='character_id' value='{$linkId}'>
+                        <button class='btn btn-sm btn-outline-primary'>Make main</button>
+                      </form>
+                      <form method='post' action='/user/alts/revoke' onsubmit=\"return confirm('Unlink {$linkName}?');\">
+                        <input type='hidden' name='character_id' value='{$linkId}'>
+                        <button class='btn btn-sm btn-outline-danger'>Unlink</button>
+                      </form>
+                    </div>
                   </div>
                 </div>
               </div>";
@@ -963,8 +1040,9 @@ return function (ModuleRegistry $registry): void {
 
         $tokens = $app->db->all(
             "SELECT t.id, t.token_prefix, t.expires_at, t.used_at, t.used_character_id, eu.character_name AS user_name
-             FROM character_link_tokens t
+             FROM module_charlink_states t
              JOIN eve_users eu ON eu.id = t.user_id
+             WHERE t.purpose='link'
              ORDER BY t.created_at DESC
              LIMIT 200"
         );
@@ -1087,7 +1165,7 @@ return function (ModuleRegistry $registry): void {
     $registry->route('POST', '/admin/charlink/token-revoke', function (Request $req) use ($app): Response {
         $tokenId = (int)($req->post['token_id'] ?? 0);
         if ($tokenId > 0) {
-            $app->db->run("DELETE FROM character_link_tokens WHERE id=?", [$tokenId]);
+            $app->db->run("DELETE FROM module_charlink_states WHERE id=? AND purpose='link'", [$tokenId]);
             $_SESSION['charlink_admin_flash'] = ['type' => 'info', 'message' => 'Token deleted.'];
         }
         return Response::redirect('/admin/charlink');

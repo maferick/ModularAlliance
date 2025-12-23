@@ -15,6 +15,7 @@ use App\Core\HttpClient;
 use App\Core\Layout;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
+use App\Core\Settings;
 use App\Core\Universe;
 use App\Http\Request;
 use App\Http\Response;
@@ -133,19 +134,58 @@ return function (ModuleRegistry $registry): void {
         return $profiles;
     };
 
-    $corpContext = function () use ($app, $getCorpProfiles): array {
-        $cid = (int)($_SESSION['character_id'] ?? 0);
-        $u = new Universe($app->db);
-        $profile = $cid > 0 ? $u->characterProfile($cid) : [];
-        $corpId = (int)($profile['corporation']['id'] ?? 0);
-
-        $cfg = $app->config['corptools'] ?? [];
-        $corpIds = $cfg['corp_ids'] ?? [];
-        if (!is_array($corpIds)) $corpIds = [];
-        $corpIds = array_values(array_filter($corpIds, fn($id) => is_numeric($id)));
-        if (empty($corpIds) && $corpId > 0) {
-            $corpIds = [$corpId];
+    $getCorpIds = function () use ($app): array {
+        $settings = new Settings($app->db);
+        $identityType = $settings->get('site.identity.type', 'corporation') ?? 'corporation';
+        $identityType = $identityType === 'alliance' ? 'alliance' : 'corporation';
+        $identityIdValue = $settings->get('site.identity.id', '0') ?? '0';
+        $identityId = (int)$identityIdValue;
+        if ($identityType !== 'corporation' || $identityId <= 0) {
+            return [];
         }
+        return [$identityId];
+    };
+
+    $getCorpToken = function (int $corpId, array $requiredScopes) use ($app, $hasScopes): array {
+        $rows = $app->db->all(
+            "SELECT character_id, access_token, scopes_json, expires_at
+             FROM eve_tokens"
+        );
+        $u = new Universe($app->db);
+
+        foreach ($rows as $row) {
+            $characterId = (int)($row['character_id'] ?? 0);
+            if ($characterId <= 0) continue;
+
+            $accessToken = (string)($row['access_token'] ?? '');
+            $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
+            if (!is_array($scopes)) $scopes = [];
+            $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
+            $expired = $expiresAt !== null && time() > $expiresAt;
+
+            if ($expired || $accessToken === '' || !$hasScopes($scopes, $requiredScopes)) {
+                continue;
+            }
+
+            $profile = $u->characterProfile($characterId);
+            $memberCorpId = (int)($profile['corporation']['id'] ?? 0);
+            if ($memberCorpId !== $corpId) {
+                continue;
+            }
+
+            return [
+                'character_id' => $characterId,
+                'access_token' => $accessToken,
+                'scopes' => $scopes,
+                'expired' => false,
+            ];
+        }
+
+        return ['character_id' => 0, 'access_token' => null, 'scopes' => [], 'expired' => true];
+    };
+
+    $corpContext = function () use ($getCorpIds, $getCorpProfiles): array {
+        $corpIds = $getCorpIds();
 
         $profiles = $getCorpProfiles($corpIds);
         $selected = (string)($_GET['corp'] ?? '');
@@ -157,15 +197,11 @@ return function (ModuleRegistry $registry): void {
         return [
             'profiles' => $profiles,
             'selected' => $corpProfile,
-            'character_profile' => $profile,
         ];
     };
 
-    $registry->cron('invoice_sync', 900, function (App $app) use ($tokenData) {
-        $cfg = $app->config['corptools'] ?? [];
-        $corpIds = $cfg['corp_ids'] ?? [];
-        if (!is_array($corpIds)) $corpIds = [];
-        $corpIds = array_values(array_filter($corpIds, fn($id) => is_numeric($id)));
+    $registry->cron('invoice_sync', 900, function (App $app) use ($tokenData, $getCorpIds) {
+        $corpIds = $getCorpIds();
         if (empty($corpIds)) return;
 
         $walletDivisions = $cfg['wallet_divisions'] ?? [1];
@@ -322,6 +358,7 @@ return function (ModuleRegistry $registry): void {
                     <div class='d-flex gap-2'>
                       <a class='btn btn-outline-light' href='/corptools/invoices'>Invoices</a>
                       <a class='btn btn-outline-light' href='/corptools/moons'>Moons</a>
+                      <a class='btn btn-outline-light' href='/corptools/members'>Members</a>
                       <a class='btn btn-outline-light' href='/corptools/industry'>Industry</a>
                       <a class='btn btn-outline-light' href='/corptools/notifications'>Notifications</a>
                     </div>
@@ -361,7 +398,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Corp Tools', $body), 200);
     }, ['right' => 'corptools.view']);
 
-    $registry->route('GET', '/corptools/invoices', function (Request $req) use ($app, $renderPage, $corpContext, $formatIsk, $tokenData, $hasScopes): Response {
+    $registry->route('GET', '/corptools/invoices', function (Request $req) use ($app, $renderPage, $corpContext, $formatIsk, $getCorpToken): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -386,9 +423,9 @@ return function (ModuleRegistry $registry): void {
             $params[] = $end . ' 23:59:59';
         }
 
-        $token = $tokenData($cid);
+        $token = $getCorpToken((int)$corp['id'], ['esi-wallet.read_corporation_wallets.v1']);
         $requiredScopes = ['esi-wallet.read_corporation_wallets.v1'];
-        $missingScopes = !$token['expired'] && $token['access_token'] && $hasScopes($token['scopes'], $requiredScopes) ? [] : $requiredScopes;
+        $missingScopes = !$token['expired'] && $token['access_token'] ? [] : $requiredScopes;
 
         $rows = $app->db->all(
             "SELECT entry_date, ref_type, amount, wallet_division
@@ -462,6 +499,154 @@ return function (ModuleRegistry $registry): void {
                   </div>";
 
         return Response::html($renderPage('Invoices', $body), 200);
+    }, ['right' => 'corptools.director']);
+
+    $registry->route('GET', '/corptools/members', function () use ($app, $renderPage, $corpContext, $getCorpToken): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $context = $corpContext();
+        $corp = $context['selected'];
+        if (!$corp) {
+            $body = "<h1>Members</h1><div class='alert alert-warning mt-3'>No corporation is configured.</div>";
+            return Response::html($renderPage('Members', $body), 200);
+        }
+
+        $corpId = (int)$corp['id'];
+
+        $membersScopes = ['esi-corporations.read_corporation_membership.v1'];
+        $rolesScopes = ['esi-corporations.read_corporation_roles.v1'];
+        $titlesScopes = ['esi-corporations.read_titles.v1'];
+
+        $membersToken = $getCorpToken($corpId, $membersScopes);
+        $rolesToken = $getCorpToken($corpId, $rolesScopes);
+        $titlesToken = $getCorpToken($corpId, $titlesScopes);
+
+        $client = new EsiClient(new HttpClient());
+        $cache = new EsiCache($app->db, $client);
+
+        $members = [];
+        if (!$membersToken['expired'] && $membersToken['access_token']) {
+            $members = $cache->getCachedAuth(
+                "corptools:members:{$corpId}",
+                "GET /latest/corporations/{$corpId}/members/",
+                600,
+                (string)$membersToken['access_token'],
+                [403, 404]
+            );
+            if (!is_array($members)) $members = [];
+        }
+
+        $roles = [];
+        if (!$rolesToken['expired'] && $rolesToken['access_token']) {
+            $roles = $cache->getCachedAuth(
+                "corptools:roles:{$corpId}",
+                "GET /latest/corporations/{$corpId}/roles/",
+                3600,
+                (string)$rolesToken['access_token'],
+                [403, 404]
+            );
+            if (!is_array($roles)) $roles = [];
+        }
+
+        $titles = [];
+        if (!$titlesToken['expired'] && $titlesToken['access_token']) {
+            $titles = $cache->getCachedAuth(
+                "corptools:titles:{$corpId}",
+                "GET /latest/corporations/{$corpId}/titles/",
+                3600,
+                (string)$titlesToken['access_token'],
+                [403, 404]
+            );
+            if (!is_array($titles)) $titles = [];
+        }
+
+        $membersRows = '';
+        $memberCount = is_array($members) ? count($members) : 0;
+        $membersPreview = array_slice($members, 0, 200);
+        foreach ($membersPreview as $memberId) {
+            $memberId = (int)$memberId;
+            if ($memberId <= 0) continue;
+            $membersRows .= "<tr><td>{$memberId}</td></tr>";
+        }
+        if ($membersRows === '') {
+            $membersRows = "<tr><td class='text-muted'>No member data available.</td></tr>";
+        }
+        $memberNote = $memberCount > count($membersPreview)
+            ? "<div class='text-muted small'>Showing first " . count($membersPreview) . " of {$memberCount} members.</div>"
+            : "<div class='text-muted small'>Total members: {$memberCount}</div>";
+
+        $rolesRows = '';
+        foreach (array_slice($roles, 0, 200) as $role) {
+            if (!is_array($role)) continue;
+            $charId = (int)($role['character_id'] ?? 0);
+            $rolesList = $role['roles'] ?? [];
+            $roleText = is_array($rolesList) ? implode(', ', $rolesList) : '';
+            $roleText = htmlspecialchars($roleText !== '' ? $roleText : '—');
+            $rolesRows .= "<tr><td>{$charId}</td><td>{$roleText}</td></tr>";
+        }
+        if ($rolesRows === '') {
+            $rolesRows = "<tr><td colspan='2' class='text-muted'>No role data available.</td></tr>";
+        }
+
+        $titlesRows = '';
+        foreach ($titles as $title) {
+            if (!is_array($title)) continue;
+            $titleId = (int)($title['title_id'] ?? 0);
+            $titleName = htmlspecialchars((string)($title['name'] ?? 'Untitled'));
+            $titlesRows .= "<tr><td>{$titleName}</td><td>{$titleId}</td></tr>";
+        }
+        if ($titlesRows === '') {
+            $titlesRows = "<tr><td colspan='2' class='text-muted'>No title data available.</td></tr>";
+        }
+
+        $membersMissing = (!$membersToken['expired'] && $membersToken['access_token']) ? '' :
+            "<div class='alert alert-warning'>Missing scopes: " . htmlspecialchars(implode(', ', $membersScopes)) . ". <a href='/charlink'>Link via Character Link Hub</a>.</div>";
+        $rolesMissing = (!$rolesToken['expired'] && $rolesToken['access_token']) ? '' :
+            "<div class='alert alert-warning'>Missing scopes: " . htmlspecialchars(implode(', ', $rolesScopes)) . ". <a href='/charlink'>Link via Character Link Hub</a>.</div>";
+        $titlesMissing = (!$titlesToken['expired'] && $titlesToken['access_token']) ? '' :
+            "<div class='alert alert-warning'>Missing scopes: " . htmlspecialchars(implode(', ', $titlesScopes)) . ". <a href='/charlink'>Link via Character Link Hub</a>.</div>";
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Members</h1>
+                      <div class='text-muted'>Corporation member roster, roles, and titles.</div>
+                    </div>
+                  </div>
+                  <div class='mt-3'>{$membersMissing}</div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Members</div>
+                    {$memberNote}
+                    <div class='table-responsive mt-2'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Character ID</th></tr></thead>
+                        <tbody>{$membersRows}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div class='mt-3'>{$rolesMissing}</div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Roles</div>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Character ID</th><th>Roles</th></tr></thead>
+                        <tbody>{$rolesRows}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div class='mt-3'>{$titlesMissing}</div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Titles</div>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Title</th><th>ID</th></tr></thead>
+                        <tbody>{$titlesRows}</tbody>
+                      </table>
+                    </div>
+                  </div>";
+
+        return Response::html($renderPage('Members', $body), 200);
     }, ['right' => 'corptools.director']);
 
     $registry->route('GET', '/corptools/moons', function () use ($app, $renderPage, $corpContext): Response {
@@ -590,7 +775,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/corptools/moons');
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/industry', function () use ($app, $renderPage, $corpContext, $tokenData, $hasScopes): Response {
+    $registry->route('GET', '/corptools/industry', function () use ($app, $renderPage, $corpContext, $getCorpToken): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -602,9 +787,9 @@ return function (ModuleRegistry $registry): void {
             return Response::html($renderPage('Industry', $body), 200);
         }
 
-        $token = $tokenData($cid);
         $requiredScopes = ['esi-corporations.read_structures.v1'];
-        $missingScopes = !$token['expired'] && $token['access_token'] && $hasScopes($token['scopes'], $requiredScopes) ? [] : $requiredScopes;
+        $token = $getCorpToken((int)$corp['id'], $requiredScopes);
+        $missingScopes = !$token['expired'] && $token['access_token'] ? [] : $requiredScopes;
 
         $structures = [];
         $staleNote = '';

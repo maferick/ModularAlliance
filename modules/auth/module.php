@@ -133,6 +133,76 @@ return function (ModuleRegistry $registry): void {
             $html .= "<div class='text-muted mb-3'>Signed in as {$currentName}.</div>";
         }
 
+        $getPortrait = function (int $characterId) use ($u): ?string {
+            $profile = $u->characterProfile($characterId);
+            return $profile['character']['portrait']['px128x128']
+                ?? $profile['character']['portrait']['px64x64']
+                ?? null;
+        };
+
+        $linked = [];
+        if ($uid > 0) {
+            $linked = $app->db->all(
+                "SELECT character_id, character_name, linked_at
+                 FROM character_links
+                 WHERE user_id=? AND status='linked'
+                 ORDER BY linked_at ASC",
+                [$uid]
+            );
+        }
+
+        $linkedCards = '';
+        if ($primaryCharacterId > 0) {
+            $portraitUrl = $getPortrait($primaryCharacterId);
+            $primaryNameSafe = htmlspecialchars($primaryName !== '' ? $primaryName : 'Unknown');
+            $badge = $primaryCharacterId === $cid
+                ? "<span class='badge bg-success ms-2'>Current</span>"
+                : "<span class='badge bg-primary ms-2'>Main</span>";
+
+            $linkedCards .= "<div class='col-md-6'>
+                <div class='card card-body'>
+                  <div class='d-flex align-items-center gap-3'>";
+            if ($portraitUrl) {
+                $linkedCards .= "<img src='" . htmlspecialchars($portraitUrl) . "' width='56' height='56' style='border-radius:10px;'>";
+            }
+            $linkedCards .= "<div>
+                      <div class='fw-semibold'>{$primaryNameSafe}{$badge}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>";
+        }
+
+        foreach ($linked as $link) {
+            $linkId = (int)($link['character_id'] ?? 0);
+            if ($linkId <= 0) continue;
+            $linkName = htmlspecialchars((string)($link['character_name'] ?? 'Unknown'));
+            $portraitUrl = $getPortrait($linkId);
+            $linkedAt = htmlspecialchars((string)($link['linked_at'] ?? ''));
+
+            $linkedCards .= "<div class='col-md-6'>
+                <div class='card card-body'>
+                  <div class='d-flex align-items-center gap-3'>";
+            if ($portraitUrl) {
+                $linkedCards .= "<img src='" . htmlspecialchars($portraitUrl) . "' width='56' height='56' style='border-radius:10px;'>";
+            }
+            $linkedCards .= "<div>
+                      <div class='fw-semibold'>{$linkName}</div>
+                      <div class='text-muted small'>Linked {$linkedAt}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>";
+        }
+
+        if ($linkedCards === '') {
+            $linkedCards = "<div class='col-12 text-muted'>No linked characters yet.</div>";
+        }
+
+        $html .= "<h2>Linked Characters</h2>
+                  <div class='text-muted mb-2'>Main character is shown first. Manage links in <a href='/user/alts'>Linked Characters</a>.</div>
+                  <div class='row g-3 mb-4'>{$linkedCards}</div>";
+
         $html .= "<h2>Corporation</h2>";
         $html .= "<div style='display:flex;gap:12px;align-items:center;margin:8px 0;'>";
         if ($corpIcon) $html .= "<img src='" . htmlspecialchars($corpIcon) . "' width='64' height='64' style='border-radius:10px;'>";
