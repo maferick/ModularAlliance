@@ -6,6 +6,7 @@ namespace App\Core;
 use App\Http\Request;
 use App\Http\Response;
 use App\Http\Router;
+use App\Core\AccessLog;
 
 final class App
 {
@@ -45,8 +46,31 @@ final class App
             $need = $meta['right'] ?? null;
             if ($need) {
                 $uid = (int)($_SESSION['user_id'] ?? 0);
-                if ($uid <= 0) return Response::redirect('/auth/login');
-                $rights->requireRight($uid, (string)$need);
+                if ($uid <= 0) {
+                    AccessLog::write([
+                        'method' => $req->method,
+                        'path' => $req->path,
+                        'status' => 302,
+                        'decision' => 'deny',
+                        'reason' => 'login_required',
+                        'right' => (string)$need,
+                    ]);
+                    return Response::redirect('/auth/login');
+                }
+
+                $hasRight = $rights->userHasRight($uid, (string)$need);
+                AccessLog::write([
+                    'method' => $req->method,
+                    'path' => $req->path,
+                    'status' => $hasRight ? 200 : 403,
+                    'decision' => $hasRight ? 'allow' : 'deny',
+                    'reason' => $hasRight ? 'right_granted' : 'missing_right',
+                    'right' => (string)$need,
+                ]);
+
+                if (!$hasRight) {
+                    return Response::text('403 Forbidden', 403);
+                }
             }
             return null;
         });
