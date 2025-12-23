@@ -201,4 +201,111 @@ final class EsiCache
             throw $e;
         }
     }
+
+    /**
+     * Authenticated cache helper using Bearer tokens.
+     *
+     * @param array<int, int> $ignoreStatus
+     */
+    public function getCachedAuth(
+        string $scopeKey,
+        string $urlKey,
+        int $ttlSeconds,
+        string $accessToken,
+        array $ignoreStatus = []
+    ): array {
+        $cacheKey = hash('sha256', $urlKey);
+        $rKey = 'esi:' . $scopeKey . ':' . $cacheKey;
+
+        if ($this->redis->enabled()) {
+            try {
+                $hit = $this->redis->getJson($rKey);
+                if (is_array($hit) && isset($hit['payload'], $hit['fetched'], $hit['ttl'])) {
+                    $fetched = (int)$hit['fetched'];
+                    $ttl = (int)$hit['ttl'];
+                    if ($fetched > 0 && $ttl > 0 && time() < ($fetched + $ttl)) {
+                        $decoded = json_decode((string)$hit['payload'], true);
+                        if (is_array($decoded)) return $decoded;
+                    }
+                }
+            } catch (\Throwable $ignore) {}
+        }
+
+        $row = $this->db->one(
+            "SELECT payload_json, fetched_at, ttl_seconds, status_code
+             FROM esi_cache
+             WHERE scope_key=? AND cache_key=?
+             LIMIT 1",
+            [$scopeKey, $cacheKey]
+        );
+
+        if ($row) {
+            $fetched = strtotime((string)$row['fetched_at']) ?: 0;
+            $ttl     = (int)$row['ttl_seconds'];
+            if (time() < ($fetched + $ttl)) {
+                $decoded = json_decode((string)$row['payload_json'], true);
+                if (is_array($decoded)) return $decoded;
+            }
+        }
+
+        try {
+            $path = $urlKey;
+            if (preg_match('/^(GET|POST|PUT|DELETE)\s+(.+)$/i', $path, $m)) {
+                $path = $m[2];
+            }
+            if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
+                $u = parse_url($path);
+                $path = ($u['path'] ?? '/');
+                if (!empty($u['query'])) $path .= '?' . $u['query'];
+            }
+
+            [$status, $data] = $this->esi->getWithStatus($path, $accessToken);
+            if ($status >= 200 && $status < 300 && is_array($data)) {
+                $payload = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                $this->db->run(
+                    "REPLACE INTO esi_cache (scope_key, cache_key, url, payload_json, fetched_at, ttl_seconds, status_code)
+                     VALUES (?, ?, ?, ?, NOW(), ?, ?)",
+                    [$scopeKey, $cacheKey, $urlKey, $payload, $ttlSeconds, $status]
+                );
+                if ($this->redis->enabled()) {
+                    try {
+                        $this->redis->setJson($rKey, [
+                            'payload' => $payload,
+                            'fetched' => time(),
+                            'ttl' => $ttlSeconds,
+                            'status' => $status,
+                        ], max(1, $ttlSeconds));
+                    } catch (\Throwable $ignore) {}
+                }
+                return $data;
+            }
+
+            if (in_array($status, $ignoreStatus, true)) {
+                $this->db->run(
+                    "REPLACE INTO esi_cache (scope_key, cache_key, url, payload_json, fetched_at, ttl_seconds, status_code)
+                     VALUES (?, ?, ?, ?, NOW(), ?, ?)",
+                    [$scopeKey, $cacheKey, $urlKey, json_encode([]), min($ttlSeconds, 300), $status]
+                );
+                return [];
+            }
+
+            throw new \RuntimeException("ESI HTTP {$status}");
+        } catch (\Throwable $e) {
+            try {
+                $this->db->run(
+                    "REPLACE INTO esi_cache (scope_key, cache_key, url, payload_json, fetched_at, ttl_seconds, status_code)
+                     VALUES (?, ?, ?, ?, NOW(), ?, ?)",
+                    [
+                        $scopeKey,
+                        $cacheKey,
+                        $urlKey,
+                        json_encode(['error' => $e->getMessage()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                        min($ttlSeconds, 300),
+                        599
+                    ]
+                );
+            } catch (\Throwable $ignore) {}
+            return [];
+        }
+    }
 }
