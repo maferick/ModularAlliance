@@ -35,6 +35,7 @@ final class Settings
                 'notifications' => false,
                 'roles' => true,
                 'skills' => true,
+                'skill_queue' => true,
                 'standings' => false,
                 'wallet' => true,
                 'activity' => false,
@@ -53,12 +54,14 @@ final class Settings
                 'wallet_divisions' => [1],
             ],
             'moons' => [
+                'enabled' => true,
                 'default_tax_rate' => 0,
             ],
             'indy' => [
                 'enabled' => true,
             ],
             'pinger' => [
+                'enabled' => true,
                 'webhook_url' => '',
                 'shared_secret' => '',
                 'dedupe_seconds' => 900,

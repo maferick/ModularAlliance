@@ -4,7 +4,7 @@ declare(strict_types=1);
 /*
 Module Name: Corp Tools
 Description: Corporation dashboards inspired by CorpTools.
-Version: 1.0.0
+Version: 1.1.0
 Module Slug: corptools
 */
 
@@ -26,17 +26,25 @@ use App\Corptools\Audit\Collectors\LocationCollector;
 use App\Corptools\Audit\Collectors\RolesCollector;
 use App\Corptools\Audit\Collectors\ShipCollector;
 use App\Corptools\Audit\Collectors\SkillsCollector;
+use App\Corptools\Audit\Collectors\SkillQueueCollector;
 use App\Corptools\Audit\Collectors\WalletCollector;
 use App\Corptools\Audit\SimpleCollector;
+use App\Corptools\Cron\JobRegistry;
+use App\Corptools\Cron\JobRunner;
 use App\Http\Request;
 use App\Http\Response;
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
+    $moduleVersion = '1.1.0';
 
     $registry->right('corptools.view', 'Access the CorpTools dashboards.');
     $registry->right('corptools.director', 'Access director-level corp dashboards.');
     $registry->right('corptools.admin', 'Manage CorpTools settings and integrations.');
+    $registry->right('corptools.audit.read', 'View CorpTools audit data.');
+    $registry->right('corptools.audit.write', 'Run CorpTools audit jobs.');
+    $registry->right('corptools.pinger.manage', 'Manage CorpTools pinger rules.');
+    $registry->right('corptools.cron.manage', 'Manage CorpTools cron jobs.');
 
     $registry->menu([
         'slug' => 'corptools',
@@ -46,6 +54,14 @@ return function (ModuleRegistry $registry): void {
         'area' => 'left',
         'right_slug' => 'corptools.view',
     ]);
+    $registry->menu([
+        'slug' => 'corptools.audit',
+        'title' => 'CorpTools Audit',
+        'url' => '/corptools/audit',
+        'sort_order' => 41,
+        'area' => 'left',
+        'right_slug' => 'corptools.audit.read',
+    ]);
 
     $registry->menu([
         'slug' => 'admin.corptools',
@@ -54,6 +70,22 @@ return function (ModuleRegistry $registry): void {
         'sort_order' => 45,
         'area' => 'admin_top',
         'right_slug' => 'corptools.admin',
+    ]);
+    $registry->menu([
+        'slug' => 'admin.corptools.status',
+        'title' => 'CorpTools Status',
+        'url' => '/admin/corptools/status',
+        'sort_order' => 46,
+        'area' => 'admin_top',
+        'right_slug' => 'corptools.admin',
+    ]);
+    $registry->menu([
+        'slug' => 'admin.corptools.cron',
+        'title' => 'CorpTools Cron',
+        'url' => '/admin/corptools/cron',
+        'sort_order' => 47,
+        'area' => 'admin_top',
+        'right_slug' => 'corptools.cron.manage',
     ]);
 
     $rights = new Rights($app->db);
@@ -80,6 +112,30 @@ return function (ModuleRegistry $registry): void {
 
     $formatIsk = function (float $amount): string {
         return number_format($amount, 2) . ' ISK';
+    };
+
+    $renderPagination = function (int $total, int $page, int $perPage, string $base, array $query): string {
+        $pages = (int)ceil($total / max(1, $perPage));
+        if ($pages <= 1) {
+            return '';
+        }
+        $page = max(1, min($page, $pages));
+        $buildUrl = function (int $target) use ($base, $query): string {
+            $query['page'] = $target;
+            return $base . '?' . http_build_query($query);
+        };
+        $items = '';
+        $prev = $page > 1 ? "<li class='page-item'><a class='page-link' href='" . htmlspecialchars($buildUrl($page - 1)) . "'>Prev</a></li>" : "<li class='page-item disabled'><span class='page-link'>Prev</span></li>";
+        $next = $page < $pages ? "<li class='page-item'><a class='page-link' href='" . htmlspecialchars($buildUrl($page + 1)) . "'>Next</a></li>" : "<li class='page-item disabled'><span class='page-link'>Next</span></li>";
+
+        $start = max(1, $page - 2);
+        $end = min($pages, $page + 2);
+        for ($i = $start; $i <= $end; $i++) {
+            $active = $i === $page ? 'active' : '';
+            $items .= "<li class='page-item {$active}'><a class='page-link' href='" . htmlspecialchars($buildUrl($i)) . "'>{$i}</a></li>";
+        }
+
+        return "<nav class='mt-3'><ul class='pagination pagination-sm'>{$prev}{$items}{$next}</ul></nav>";
     };
 
     $corptoolsSettings = new CorpToolsSettings($app->db);
@@ -319,6 +375,7 @@ return function (ModuleRegistry $registry): void {
             new LocationCollector(),
             new ShipCollector(),
             new SkillsCollector(),
+            new SkillQueueCollector(),
             new WalletCollector(),
             new RolesCollector(),
             new SimpleCollector('implants', ['esi-clones.read_implants.v1'], ['/latest/characters/{character_id}/implants/'], 1800),
@@ -409,10 +466,13 @@ return function (ModuleRegistry $registry): void {
         );
     };
 
-    $registry->cron('invoice_sync', 900, function (App $app) use ($tokenData, $getAvailableCorpIds, $getCorpToolsSettings) {
+    $runInvoiceSync = function (App $app, array $context = []) use ($tokenData, $getAvailableCorpIds, $getCorpToolsSettings): array {
         $settings = $getCorpToolsSettings();
+        if (empty($settings['invoices']['enabled'])) {
+            return ['message' => 'Invoices disabled'];
+        }
         $corpIds = $getAvailableCorpIds();
-        if (empty($corpIds)) return;
+        if (empty($corpIds)) return ['message' => 'No corp ids'];
 
         $walletDivisions = $settings['invoices']['wallet_divisions']
             ?? $settings['general']['holding_wallet_divisions']
@@ -498,18 +558,19 @@ return function (ModuleRegistry $registry): void {
                 }
             }
         }
-    });
+        return ['message' => 'Invoice sync complete'];
+    };
 
-    $registry->cron('audit_refresh', 3600, function (App $app) use (
+    $runAuditRefresh = function (App $app, array $context = []) use (
         $tokenData,
         $auditCollectors,
         $enabledAuditKeys,
         $updateMemberSummary,
         $getCorpToolsSettings
-    ) {
+    ): array {
         $settings = $getCorpToolsSettings();
         $enabledKeys = $enabledAuditKeys($settings);
-        if (empty($enabledKeys)) return;
+        if (empty($enabledKeys)) return ['message' => 'Audit scopes disabled'];
 
         $dispatcher = new AuditDispatcher($app->db);
         $universe = new Universe($app->db);
@@ -566,16 +627,21 @@ return function (ModuleRegistry $registry): void {
 
             $updateMemberSummary($userId, $mainCharacterId, $mainName);
         }
-    });
+        return ['message' => 'Audit refresh complete'];
+    };
 
-    $registry->cron('corp_audit_refresh', 3600, function (App $app) use ($getAvailableCorpIds, $getCorpToken, $getCorpToolsSettings) {
+    $runCorpAuditRefresh = function (App $app, array $context = []) use ($getAvailableCorpIds, $getCorpToken, $getCorpToolsSettings): array {
         $settings = $getCorpToolsSettings();
         $enabled = $settings['corp_audit'] ?? [];
+        if (empty(array_filter($enabled, fn($val) => !empty($val)))) {
+            return ['message' => 'Corp audit disabled'];
+        }
         $corpIds = $getAvailableCorpIds();
-        if (empty($corpIds)) return;
+        if (empty($corpIds)) return ['message' => 'No corp ids'];
 
         $client = new EsiClient(new HttpClient());
         $cache = new EsiCache($app->db, $client);
+        $universe = new Universe($app->db);
 
         $collectors = [
             'wallets' => [
@@ -633,6 +699,15 @@ return function (ModuleRegistry $registry): void {
                         json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                     ]
                 );
+                $app->db->run(
+                    "INSERT INTO module_corptools_corp_audit_snapshots (corp_id, category, data_json, fetched_at)
+                     VALUES (?, ?, ?, NOW())",
+                    [
+                        $corpId,
+                        $key,
+                        json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                    ]
+                );
 
                 if ($key === 'structures' && is_array($payload)) {
                     foreach ($payload as $structure) {
@@ -680,14 +755,20 @@ return function (ModuleRegistry $registry): void {
                      ON DUPLICATE KEY UPDATE data_json=VALUES(data_json), fetched_at=NOW()",
                     [$corpId, json_encode(['status' => 'scaffolded'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
                 );
+                $app->db->run(
+                    "INSERT INTO module_corptools_corp_audit_snapshots (corp_id, category, data_json, fetched_at)
+                     VALUES (?, 'metenox', ?, NOW())",
+                    [$corpId, json_encode(['status' => 'scaffolded'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
+                );
             }
         }
-    });
+        return ['message' => 'Corp audit refresh complete'];
+    };
 
-    $registry->cron('cleanup', 86400, function (App $app) use ($getCorpToolsSettings) {
+    $runCleanup = function (App $app, array $context = []) use ($getCorpToolsSettings): array {
         $settings = $getCorpToolsSettings();
         $retentionDays = (int)($settings['general']['retention_days'] ?? 30);
-        if ($retentionDays <= 0) return;
+        if ($retentionDays <= 0) return ['message' => 'Retention disabled'];
         $cutoff = date('Y-m-d H:i:s', time() - ($retentionDays * 86400));
 
         $app->db->run(
@@ -702,6 +783,61 @@ return function (ModuleRegistry $registry): void {
             "DELETE FROM module_corptools_pings WHERE received_at < ?",
             [$cutoff]
         );
+        $app->db->run(
+            "DELETE FROM module_corptools_character_audit_snapshots WHERE fetched_at < ?",
+            [$cutoff]
+        );
+        $app->db->run(
+            "DELETE FROM module_corptools_corp_audit_snapshots WHERE fetched_at < ?",
+            [$cutoff]
+        );
+        $app->db->run(
+            "DELETE FROM module_corptools_job_runs WHERE started_at < ?",
+            [$cutoff]
+        );
+        return ['message' => 'Cleanup complete'];
+    };
+
+    $jobDefinitions = [
+        [
+            'key' => 'corptools.invoice_sync',
+            'name' => 'Invoice Sync',
+            'description' => 'Pull wallet journal entries for invoice tracking.',
+            'schedule' => 900,
+            'handler' => $runInvoiceSync,
+        ],
+        [
+            'key' => 'corptools.audit_refresh',
+            'name' => 'Character Audit Refresh',
+            'description' => 'Refresh character audit snapshots and summaries.',
+            'schedule' => 3600,
+            'handler' => $runAuditRefresh,
+        ],
+        [
+            'key' => 'corptools.corp_audit_refresh',
+            'name' => 'Corp Audit Refresh',
+            'description' => 'Refresh corp audit snapshots for wallets/structures.',
+            'schedule' => 3600,
+            'handler' => $runCorpAuditRefresh,
+        ],
+        [
+            'key' => 'corptools.cleanup',
+            'name' => 'Retention Cleanup',
+            'description' => 'Clean audit snapshots, pings, and run logs.',
+            'schedule' => 86400,
+            'handler' => $runCleanup,
+        ],
+    ];
+
+    foreach ($jobDefinitions as $definition) {
+        JobRegistry::register($definition);
+    }
+    JobRegistry::sync($app->db);
+
+    $registry->cron('corptools_scheduler', 60, function (App $app) {
+        JobRegistry::sync($app->db);
+        $runner = new JobRunner($app->db, JobRegistry::definitionsByKey());
+        $runner->runDueJobs($app, ['trigger' => 'scheduler']);
     });
 
     $registry->route('POST', '/corptools/context-switch', function (Request $req) use ($corpContext, $hasRight): Response {
@@ -749,7 +885,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect($returnTo);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools', function () use ($app, $renderPage, $corpContext, $tokenData, $hasScopes, $formatIsk, $renderCorpContext): Response {
+    $registry->route('GET', '/corptools', function () use ($app, $renderPage, $corpContext, $tokenData, $hasScopes, $formatIsk, $renderCorpContext, $getCorpToolsSettings): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -765,6 +901,13 @@ return function (ModuleRegistry $registry): void {
         $corpLabel = htmlspecialchars((string)$corp['label']);
         $icon = $corp['icons']['px64x64'] ?? null;
         $token = $tokenData($cid);
+        $settings = $getCorpToolsSettings();
+        $auditEnabled = !empty(array_filter($settings['audit_scopes'] ?? [], fn($enabled) => !empty($enabled)));
+        $corpAuditEnabled = !empty(array_filter($settings['corp_audit'] ?? [], fn($enabled) => !empty($enabled)));
+        $invoiceEnabled = !empty($settings['invoices']['enabled']);
+        $moonsEnabled = !empty($settings['moons']['enabled']);
+        $indyEnabled = !empty($settings['indy']['enabled']);
+        $pingerEnabled = !empty($settings['pinger']['enabled']);
         $invoiceTotal = (float)($app->db->one(
             "SELECT COALESCE(SUM(amount),0) AS total
              FROM module_corptools_invoice_payments
@@ -809,6 +952,33 @@ return function (ModuleRegistry $registry): void {
 
         $iconHtml = $icon ? "<img src='" . htmlspecialchars((string)$icon) . "' width='48' height='48' style='border-radius:10px;'>" : '';
 
+        $tiles = [
+            ['label' => 'Audit', 'desc' => 'Character audit snapshots', 'url' => '/corptools/audit', 'enabled' => $auditEnabled],
+            ['label' => 'Corp Overview', 'desc' => 'At-a-glance KPIs and trends', 'url' => '/corptools/overview', 'enabled' => true],
+            ['label' => 'Notifications/Pings', 'desc' => 'Recent pings and alerts', 'url' => '/corptools/notifications', 'enabled' => $pingerEnabled],
+            ['label' => 'Invoices', 'desc' => 'Wallet journal invoice tracking', 'url' => '/corptools/invoices', 'enabled' => $invoiceEnabled],
+            ['label' => 'Moons', 'desc' => 'Moon extraction tracking', 'url' => '/corptools/moons', 'enabled' => $moonsEnabled],
+            ['label' => 'Indy Dash', 'desc' => 'Industry structures & services', 'url' => '/corptools/industry', 'enabled' => $indyEnabled],
+            ['label' => 'Corp Audit', 'desc' => 'Corp wallet/structure snapshots', 'url' => '/corptools/corp-audit', 'enabled' => $corpAuditEnabled],
+            ['label' => 'Members', 'desc' => 'Audit-driven filters', 'url' => '/corptools/members', 'enabled' => $corpAuditEnabled || $auditEnabled],
+        ];
+
+        $tilesHtml = '';
+        foreach ($tiles as $tile) {
+            if (empty($tile['enabled'])) {
+                continue;
+            }
+            $tilesHtml .= "<div class='col-md-3'>
+                <a class='card card-body h-100 text-decoration-none' href='" . htmlspecialchars($tile['url']) . "'>
+                  <div class='fw-semibold'>" . htmlspecialchars($tile['label']) . "</div>
+                  <div class='text-muted small mt-2'>" . htmlspecialchars($tile['desc']) . "</div>
+                </a>
+              </div>";
+        }
+        if ($tilesHtml === '') {
+            $tilesHtml = "<div class='col-12 text-muted'>No CorpTools modules are enabled yet. Configure settings in Admin → Corp Tools.</div>";
+        }
+
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-3'>
                     <div class='d-flex align-items-center gap-3'>
                       {$iconHtml}
@@ -816,16 +986,6 @@ return function (ModuleRegistry $registry): void {
                         <h1 class='mb-1'>Corp Tools</h1>
                         <div class='text-muted'>{$corpLabel}</div>
                       </div>
-                    </div>
-                    <div class='d-flex gap-2'>
-                      <a class='btn btn-outline-light' href='/corptools/characters'>My Characters</a>
-                      <a class='btn btn-outline-light' href='/corptools/overview'>At a Glance</a>
-                      <a class='btn btn-outline-light' href='/corptools/invoices'>Invoices</a>
-                      <a class='btn btn-outline-light' href='/corptools/moons'>Moons</a>
-                      <a class='btn btn-outline-light' href='/corptools/members'>Members</a>
-                      <a class='btn btn-outline-light' href='/corptools/industry'>Industry</a>
-                      <a class='btn btn-outline-light' href='/corptools/corp-audit'>Corp Audit</a>
-                      <a class='btn btn-outline-light' href='/corptools/notifications'>Notifications</a>
                     </div>
                   </div>
                   {$contextPanel}
@@ -856,13 +1016,14 @@ return function (ModuleRegistry $registry): void {
                       </div>
                     </div>
                   </div>
+                  <div class='row g-3 mt-3'>{$tilesHtml}</div>
                   <div class='card card-body mt-3'>
                     <div class='fw-semibold mb-2'>At a glance</div>
-                    <div class='text-muted'>Use the tabs above to drill into corp wallets, moon extractions, industry assets, and notifications.</div>
+                    <div class='text-muted'>Pick a tile to drill into audits, corp overviews, or notifications.</div>
                   </div>";
 
         return Response::html($renderPage('Corp Tools', $body), 200);
-    }, ['right' => 'corptools.view']);
+    }, ['right' => 'corptools.audit.read']);
 
     $registry->route('GET', '/corptools/characters', function () use ($app, $renderPage): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
@@ -907,8 +1068,7 @@ return function (ModuleRegistry $registry): void {
         };
 
         $statusCounts = ['ok' => 0, 'stale' => 0, 'partial' => 0, 'missing' => 0];
-        $linkedGroups = ['ok' => [], 'stale' => [], 'partial' => [], 'missing' => []];
-        $mainCard = '';
+        $filteredCards = [];
 
         foreach ($characters as $character) {
             $characterId = (int)($character['character_id'] ?? 0);
@@ -963,11 +1123,7 @@ return function (ModuleRegistry $registry): void {
                 </div>
               </div>";
 
-            if (!empty($character['is_main'])) {
-                $mainCard = $card;
-            } else {
-                $linkedGroups[$state['key']][] = $card;
-            }
+            $filteredCards[] = $card;
         }
 
         $totalCharacters = array_sum($statusCounts);
@@ -1021,28 +1177,18 @@ return function (ModuleRegistry $registry): void {
             </div>
           </form>";
 
-        $groupSections = '';
-        $groupLabels = [
-            'ok' => 'Audit OK',
-            'stale' => 'Stale audits',
-            'partial' => 'Partial audits',
-            'missing' => 'Missing scopes',
-        ];
-        foreach ($groupLabels as $key => $label) {
-            $cards = $linkedGroups[$key] ?? [];
-            $cardsHtml = $cards ? implode('', $cards) : "<div class='col-12 text-muted'>No characters in this group.</div>";
-            $groupSections .= "<div class='mt-3'>
-                <div class='fw-semibold mb-2'>{$label}</div>
-                <div class='row g-3'>{$cardsHtml}</div>
-              </div>";
-        }
-
-        $mainSection = $mainCard !== ''
-            ? "<div class='mt-3'>
-                <div class='fw-semibold mb-2'>Main character</div>
-                <div class='row g-3'>{$mainCard}</div>
-              </div>"
-            : "<div class='mt-3 text-muted'>Main character not found.</div>";
+        $page = max(1, (int)($_GET['page'] ?? 1));
+        $perPage = 12;
+        $totalFiltered = count($filteredCards);
+        $pageCards = array_slice($filteredCards, ($page - 1) * $perPage, $perPage);
+        $cardsHtml = $pageCards ? implode('', $pageCards) : "<div class='col-12 text-muted'>No characters matched the filters.</div>";
+        $pagination = $renderPagination(
+            $totalFiltered,
+            $page,
+            $perPage,
+            '/corptools/characters',
+            array_filter(['q' => $search, 'status' => $statusFilter])
+        );
 
         $bulkActions = "<div class='d-flex flex-wrap gap-2 mt-3'>
             <button class='btn btn-outline-primary'>Refresh audit for selected</button>
@@ -1071,12 +1217,12 @@ return function (ModuleRegistry $registry): void {
                   {$summaryCards}
                   <form method='post' action='/corptools/characters/audit'>
                     {$bulkActions}
-                    {$mainSection}
                     <div class='mt-4'>
-                      <div class='fw-semibold mb-1'>Linked characters (grouped by audit status)</div>
+                      <div class='fw-semibold mb-1'>Characters</div>
                       <div class='text-muted small'>Audit state reflects collected data, not just token presence.</div>
                     </div>
-                    {$groupSections}
+                    <div class='row g-3 mt-2'>{$cardsHtml}</div>
+                    {$pagination}
                   </form>
                   <div class='card card-body mt-3'>
                     <div class='fw-semibold mb-2'>Audit cadence</div>
@@ -1173,7 +1319,230 @@ return function (ModuleRegistry $registry): void {
         ];
 
         return Response::redirect('/corptools/characters');
-    }, ['right' => 'corptools.view']);
+    }, ['right' => 'corptools.audit.write']);
+
+    $registry->route('GET', '/corptools/audit', function (Request $req) use ($app, $renderPage, $getCorpToolsSettings, $renderPagination, $hasRight): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $settings = $getCorpToolsSettings();
+        $enabledScopes = array_keys(array_filter($settings['audit_scopes'] ?? [], fn($enabled) => !empty($enabled)));
+        $tabConfig = [
+            'location' => 'Location',
+            'ship' => 'Active Ship',
+            'wallet' => 'Wallet',
+            'skill_queue' => 'Skill Queue',
+        ];
+        $tabs = array_values(array_filter(array_keys($tabConfig), fn(string $key) => in_array($key, $enabledScopes, true)));
+
+        $primary = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
+        $mainId = (int)($primary['character_id'] ?? 0);
+        $mainName = (string)($primary['character_name'] ?? 'Unknown');
+
+        $links = $app->db->all(
+            "SELECT character_id, character_name FROM character_links WHERE user_id=? AND status='linked' ORDER BY linked_at ASC",
+            [$uid]
+        );
+
+        $characters = array_merge(
+            [['character_id' => $mainId, 'character_name' => $mainName, 'is_main' => true]],
+            array_map(fn($row) => [
+                'character_id' => (int)($row['character_id'] ?? 0),
+                'character_name' => (string)($row['character_name'] ?? 'Unknown'),
+                'is_main' => false,
+            ], $links)
+        );
+        $allCharacters = $characters;
+
+        $search = trim((string)($req->query['q'] ?? ''));
+        if ($search !== '') {
+            $characters = array_values(array_filter($characters, fn($char) => stripos((string)$char['character_name'], $search) !== false));
+        }
+
+        $page = max(1, (int)($req->query['page'] ?? 1));
+        $perPage = 25;
+        $totalCharacters = count($characters);
+        $pageCharacters = array_slice($characters, ($page - 1) * $perPage, $perPage);
+
+        $selectedId = (int)($req->query['character_id'] ?? $mainId);
+        $ownedIds = array_column($allCharacters, 'character_id');
+        if ($selectedId <= 0 || !in_array($selectedId, $ownedIds, true)) {
+            $selectedId = $mainId > 0 ? $mainId : (int)($ownedIds[0] ?? 0);
+        }
+
+        $activeTab = (string)($req->query['tab'] ?? ($tabs[0] ?? ''));
+        if (!in_array($activeTab, $tabs, true)) {
+            $activeTab = $tabs[0] ?? '';
+        }
+
+        $snapshots = [];
+        if ($selectedId > 0) {
+            $rows = $app->db->all(
+                "SELECT s.category, s.data_json, s.fetched_at
+                 FROM module_corptools_character_audit_snapshots s
+                 JOIN (
+                   SELECT category, MAX(fetched_at) AS max_fetched
+                   FROM module_corptools_character_audit_snapshots
+                   WHERE character_id=?
+                   GROUP BY category
+                 ) latest
+                   ON s.category = latest.category AND s.fetched_at = latest.max_fetched
+                 WHERE s.character_id=?",
+                [$selectedId, $selectedId]
+            );
+            foreach ($rows as $row) {
+                $snapshots[(string)$row['category']] = $row;
+            }
+        }
+
+        $u = new Universe($app->db);
+
+        $tabNav = '';
+        if (!empty($tabs)) {
+            $tabNav .= "<ul class='nav nav-tabs mt-3'>";
+            foreach ($tabs as $tabKey) {
+                $label = htmlspecialchars($tabConfig[$tabKey] ?? $tabKey);
+                $active = $tabKey === $activeTab ? 'active' : '';
+                $tabNav .= "<li class='nav-item'>
+                    <a class='nav-link {$active}' href='/corptools/audit?character_id={$selectedId}&tab={$tabKey}'>" . $label . "</a>
+                  </li>";
+            }
+            $tabNav .= "</ul>";
+        }
+
+        $content = "<div class='text-muted'>Enable audit scopes in admin to view details.</div>";
+        if ($activeTab !== '' && isset($snapshots[$activeTab])) {
+            $row = $snapshots[$activeTab];
+            $payloads = json_decode((string)($row['data_json'] ?? '[]'), true);
+            if (!is_array($payloads)) $payloads = [];
+            $fetchedAt = htmlspecialchars((string)($row['fetched_at'] ?? '—'));
+
+            if ($activeTab === 'location') {
+                $location = $payloads[0] ?? [];
+                $systemId = (int)($location['solar_system_id'] ?? 0);
+                $systemName = $systemId > 0 ? htmlspecialchars($u->name('system', $systemId)) : 'Unknown';
+                $content = "<div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Location Snapshot</div>
+                    <div>System: {$systemName}</div>
+                    <div class='text-muted small'>Fetched: {$fetchedAt}</div>
+                  </div>";
+            } elseif ($activeTab === 'ship') {
+                $ship = $payloads[0] ?? [];
+                $typeId = (int)($ship['ship_type_id'] ?? 0);
+                $shipName = $typeId > 0 ? htmlspecialchars($u->name('type', $typeId)) : 'Unknown';
+                $shipLabel = htmlspecialchars((string)($ship['ship_name'] ?? '—'));
+                $content = "<div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Active Ship Snapshot</div>
+                    <div>Ship type: {$shipName}</div>
+                    <div>Ship name: {$shipLabel}</div>
+                    <div class='text-muted small'>Fetched: {$fetchedAt}</div>
+                  </div>";
+            } elseif ($activeTab === 'wallet') {
+                $balance = $payloads[0] ?? 0;
+                $balanceText = htmlspecialchars(number_format((float)$balance, 2));
+                $content = "<div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Wallet Snapshot</div>
+                    <div>Balance: {$balanceText} ISK</div>
+                    <div class='text-muted small'>Fetched: {$fetchedAt}</div>
+                  </div>";
+            } elseif ($activeTab === 'skill_queue') {
+                $queue = $payloads[0] ?? [];
+                if (!is_array($queue)) $queue = [];
+                $rowsHtml = '';
+                foreach (array_slice($queue, 0, 5) as $entry) {
+                    if (!is_array($entry)) continue;
+                    $skillId = (int)($entry['skill_id'] ?? 0);
+                    $skillName = $skillId > 0 ? htmlspecialchars($u->name('type', $skillId)) : 'Unknown';
+                    $finish = htmlspecialchars((string)($entry['finish_date'] ?? '—'));
+                    $level = htmlspecialchars((string)($entry['finished_level'] ?? ''));
+                    $rowsHtml .= "<tr><td>{$skillName}</td><td>{$level}</td><td>{$finish}</td></tr>";
+                }
+                if ($rowsHtml === '') {
+                    $rowsHtml = "<tr><td colspan='3' class='text-muted'>No queue entries cached.</td></tr>";
+                }
+                $content = "<div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Skill Queue Snapshot</div>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Skill</th><th>Level</th><th>Finish</th></tr></thead>
+                        <tbody>{$rowsHtml}</tbody>
+                      </table>
+                    </div>
+                    <div class='text-muted small'>Fetched: {$fetchedAt}</div>
+                  </div>";
+            }
+        } elseif ($activeTab !== '') {
+            $content = "<div class='card card-body mt-3 text-muted'>No audit snapshot for this category yet. Run the audit job to populate.</div>";
+        }
+
+        $characterRows = '';
+        foreach ($pageCharacters as $char) {
+            $charId = (int)($char['character_id'] ?? 0);
+            if ($charId <= 0) continue;
+            $charName = htmlspecialchars((string)($char['character_name'] ?? 'Unknown'));
+            $badge = !empty($char['is_main']) ? "<span class='badge bg-primary ms-2'>Main</span>" : '';
+            $selected = $charId === $selectedId ? "table-primary" : '';
+            $characterRows .= "<tr class='{$selected}'>
+                <td>{$charName}{$badge}</td>
+                <td class='text-end'><a class='btn btn-sm btn-outline-light' href='/corptools/audit?character_id={$charId}&tab={$activeTab}'>Select</a></td>
+              </tr>";
+        }
+        if ($characterRows === '') {
+            $characterRows = "<tr><td colspan='2' class='text-muted'>No characters found.</td></tr>";
+        }
+
+        $pagination = $renderPagination(
+            $totalCharacters,
+            $page,
+            $perPage,
+            '/corptools/audit',
+            array_filter([
+                'q' => $search,
+                'character_id' => $selectedId,
+                'tab' => $activeTab,
+            ], fn($val) => $val !== '' && $val !== null)
+        );
+
+        $auditAction = '';
+        if ($hasRight('corptools.audit.write')) {
+            $auditAction = "<form method='post' action='/corptools/characters/audit' class='mt-3'>
+                <input type='hidden' name='character_ids[]' value='{$selectedId}'>
+                <button class='btn btn-sm btn-outline-primary'>Refresh audit now</button>
+              </form>";
+        }
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Audit</h1>
+                      <div class='text-muted'>Select a character and review the enabled audit domains.</div>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <form method='get' class='row g-2 align-items-end'>
+                      <div class='col-md-8'>
+                        <label class='form-label'>Search characters</label>
+                        <input class='form-control' name='q' value='" . htmlspecialchars($search) . "' placeholder='Search by name'>
+                      </div>
+                      <div class='col-md-4 d-flex gap-2'>
+                        <button class='btn btn-primary'>Search</button>
+                        <a class='btn btn-outline-secondary' href='/corptools/audit'>Reset</a>
+                      </div>
+                    </form>
+                    <div class='table-responsive mt-3'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Character</th><th></th></tr></thead>
+                        <tbody>{$characterRows}</tbody>
+                      </table>
+                    </div>
+                    {$pagination}
+                    {$auditAction}
+                  </div>
+                  {$tabNav}
+                  {$content}";
+
+        return Response::html($renderPage('Audit', $body), 200);
+    }, ['right' => 'corptools.audit.read']);
 
     $registry->route('GET', '/corptools/overview', function () use ($app, $renderPage, $formatIsk): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
@@ -1224,10 +1593,16 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('At a Glance', $body), 200);
     }, ['right' => 'corptools.view']);
 
-    $registry->route('GET', '/corptools/invoices', function (Request $req) use ($app, $renderPage, $corpContext, $formatIsk, $getCorpToken, $renderCorpContext): Response {
+    $registry->route('GET', '/corptools/invoices', function (Request $req) use ($app, $renderPage, $corpContext, $formatIsk, $getCorpToken, $renderCorpContext, $getCorpToolsSettings): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $settings = $getCorpToolsSettings();
+        if (empty($settings['invoices']['enabled'])) {
+            $body = "<h1>Invoices</h1><div class='alert alert-warning mt-3'>Invoices are disabled by administrators.</div>";
+            return Response::html($renderPage('Invoices', $body), 200);
+        }
 
         $context = $corpContext();
         $corp = $context['selected'];
@@ -1324,7 +1699,8 @@ return function (ModuleRegistry $registry): void {
                         <tbody>{$rowsHtml}</tbody>
                       </table>
                     </div>
-                  </div>";
+                  </div>
+                  {$pagination}";
 
         return Response::html($renderPage('Invoices', $body), 200);
     }, ['right' => 'corptools.director']);
@@ -1359,9 +1735,11 @@ return function (ModuleRegistry $registry): void {
 
         $locationSystemInput = (string)($req->query['location_system_id'] ?? '');
         $shipTypeInput = (string)($req->query['ship_type_id'] ?? '');
+        $nameInput = (string)($req->query['name'] ?? '');
 
         $filters = [
             'asset_presence' => (string)($req->query['asset_presence'] ?? ''),
+            'name' => $nameInput,
             'asset_value_min' => (string)($req->query['asset_value_min'] ?? $defaultAssetMin),
             'location_region_id' => (string)($req->query['location_region_id'] ?? ''),
             'location_system_id' => $resolveEntityId('system', $locationSystemInput),
@@ -1383,7 +1761,17 @@ return function (ModuleRegistry $registry): void {
 
         $builder = new MemberQueryBuilder();
         $query = $builder->build($filters);
-        $rows = $app->db->all($query['sql'] . ' LIMIT 200', $query['params']);
+        $page = max(1, (int)($req->query['page'] ?? 1));
+        $perPage = 50;
+        $countRow = $app->db->one(
+            "SELECT COUNT(*) AS total FROM (" . $query['sql'] . ") AS t",
+            $query['params']
+        );
+        $totalRows = (int)($countRow['total'] ?? 0);
+        $rows = $app->db->all(
+            $query['sql'] . ' LIMIT ? OFFSET ?',
+            array_merge($query['params'], [$perPage, ($page - 1) * $perPage])
+        );
 
         $u = new Universe($app->db);
         $rowsHtml = '';
@@ -1412,6 +1800,31 @@ return function (ModuleRegistry $registry): void {
             $rowsHtml = "<tr><td colspan='7' class='text-muted'>No members matched the filters yet.</td></tr>";
         }
 
+        $pagination = $renderPagination(
+            $totalRows,
+            $page,
+            $perPage,
+            '/corptools/members',
+            array_filter([
+                'name' => $nameInput,
+                'asset_presence' => $filters['asset_presence'],
+                'asset_value_min' => $filters['asset_value_min'],
+                'location_region_id' => $filters['location_region_id'],
+                'location_system_id' => $locationSystemInput,
+                'ship_type_id' => $shipTypeInput,
+                'corp_role' => $filters['corp_role'],
+                'corp_title' => $filters['corp_title'],
+                'highest_sp_min' => $filters['highest_sp_min'],
+                'audit_loaded' => $filters['audit_loaded'],
+                'skill_id' => $filters['skill_id'],
+                'asset_type_id' => $filters['asset_type_id'],
+                'asset_group_id' => $filters['asset_group_id'],
+                'asset_category_id' => $filters['asset_category_id'],
+                'last_login_since' => $filters['last_login_since'],
+                'corp_joined_since' => $filters['corp_joined_since'],
+            ], fn($val) => $val !== '' && $val !== null)
+        );
+
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>Members</h1>
@@ -1421,6 +1834,10 @@ return function (ModuleRegistry $registry): void {
                   {$contextPanel}
                   <form method='get' class='card card-body mt-3'>
                     <div class='row g-2'>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Member name</label>
+                        <input class='form-control' name='name' value='" . htmlspecialchars($nameInput) . "' placeholder='Search name'>
+                      </div>
                       <div class='col-md-3'>
                         <label class='form-label'>Assets</label>
                         <select class='form-select' name='asset_presence'>
@@ -1517,6 +1934,12 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
+        $settings = $getCorpToolsSettings();
+        if (empty($settings['moons']['enabled'])) {
+            $body = "<h1>Moon Tracking</h1><div class='alert alert-warning mt-3'>Moon tracking is disabled by administrators.</div>";
+            return Response::html($renderPage('Moon Tracking', $body), 200);
+        }
+
         $context = $corpContext();
         $corp = $context['selected'];
         $contextPanel = $renderCorpContext($context, '/corptools/moons');
@@ -1525,7 +1948,6 @@ return function (ModuleRegistry $registry): void {
             return Response::html($renderPage('Moon Tracking', $body), 200);
         }
 
-        $settings = $getCorpToolsSettings();
         $defaultTax = (float)($settings['moons']['default_tax_rate'] ?? 0);
 
         $rows = $app->db->all(
@@ -1620,6 +2042,11 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
+        $settings = $getCorpToolsSettings();
+        if (empty($settings['moons']['enabled'])) {
+            return Response::redirect('/corptools/moons');
+        }
+
         $context = $corpContext();
         $corp = $context['selected'];
         if (!$corp) return Response::redirect('/corptools/moons');
@@ -1631,7 +2058,6 @@ return function (ModuleRegistry $registry): void {
         $quantity = (float)($req->post['quantity'] ?? 0);
         $taxRate = (float)($req->post['tax_rate'] ?? 0);
         if ($taxRate <= 0) {
-            $settings = $getCorpToolsSettings();
             $taxRate = (float)($settings['moons']['default_tax_rate'] ?? 0);
         }
 
@@ -1647,10 +2073,16 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/corptools/moons');
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/industry', function () use ($app, $renderPage, $corpContext, $renderCorpContext): Response {
+    $registry->route('GET', '/corptools/industry', function () use ($app, $renderPage, $corpContext, $renderCorpContext, $getCorpToolsSettings): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $settings = $getCorpToolsSettings();
+        if (empty($settings['indy']['enabled'])) {
+            $body = "<h1>Industry</h1><div class='alert alert-warning mt-3'>Industry dashboards are disabled by administrators.</div>";
+            return Response::html($renderPage('Industry', $body), 200);
+        }
 
         $context = $corpContext();
         $corp = $context['selected'];
@@ -1724,10 +2156,16 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Industry', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/corp-audit', function () use ($app, $renderPage, $corpContext, $renderCorpContext): Response {
+    $registry->route('GET', '/corptools/corp-audit', function () use ($app, $renderPage, $corpContext, $renderCorpContext, $getCorpToolsSettings): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $settings = $getCorpToolsSettings();
+        if (empty(array_filter($settings['corp_audit'] ?? [], fn($enabled) => !empty($enabled)))) {
+            $body = "<h1>Corp Audit</h1><div class='alert alert-warning mt-3'>Corp audit is disabled by administrators.</div>";
+            return Response::html($renderPage('Corp Audit', $body), 200);
+        }
 
         $context = $corpContext();
         $corp = $context['selected'];
@@ -1852,6 +2290,9 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('POST', '/corptools/pinger', function (Request $req) use ($app, $getCorpToolsSettings): Response {
         $settings = $getCorpToolsSettings();
+        if (empty($settings['pinger']['enabled'])) {
+            return Response::text("Pinger disabled\n", 503);
+        }
         $secret = (string)($settings['pinger']['shared_secret'] ?? '');
         $provided = (string)($req->server['HTTP_X_CORPTOOLS_TOKEN'] ?? ($req->query['token'] ?? ''));
         if ($secret !== '' && hash_equals($secret, $provided) === false) {
@@ -1898,9 +2339,14 @@ return function (ModuleRegistry $registry): void {
             'module_corptools_character_summary',
             'module_corptools_member_summary',
             'module_corptools_character_audit',
+            'module_corptools_character_audit_snapshots',
             'module_corptools_pings',
             'module_corptools_industry_structures',
             'module_corptools_corp_audit',
+            'module_corptools_corp_audit_snapshots',
+            'module_corptools_jobs',
+            'module_corptools_job_runs',
+            'module_corptools_job_locks',
         ];
 
         $rowsHtml = '';
@@ -1938,12 +2384,521 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('CorpTools Health', $body), 200);
     }, ['right' => 'corptools.admin']);
 
+    $registry->route('GET', '/admin/corptools/status', function () use ($app, $renderPage, $moduleVersion): Response {
+        $tables = [
+            'module_corptools_settings',
+            'module_corptools_character_audit',
+            'module_corptools_character_audit_snapshots',
+            'module_corptools_corp_audit',
+            'module_corptools_corp_audit_snapshots',
+            'module_corptools_jobs',
+            'module_corptools_job_runs',
+        ];
+
+        $rowsHtml = '';
+        foreach ($tables as $table) {
+            $exists = $app->db->one("SHOW TABLES LIKE ?", [$table]);
+            $status = $exists ? "<span class='badge bg-success'>OK</span>" : "<span class='badge bg-danger'>Missing</span>";
+            $rowsHtml .= "<tr><td>{$table}</td><td>{$status}</td></tr>";
+        }
+
+        $jobRows = $app->db->all(
+            "SELECT job_key, last_run_at, last_status, last_duration_ms
+             FROM module_corptools_jobs
+             ORDER BY job_key ASC"
+        );
+        $jobCards = '';
+        foreach ($jobRows as $job) {
+            $jobKey = htmlspecialchars((string)($job['job_key'] ?? ''));
+            $lastRun = htmlspecialchars((string)($job['last_run_at'] ?? '—'));
+            $status = htmlspecialchars((string)($job['last_status'] ?? '—'));
+            $duration = htmlspecialchars((string)($job['last_duration_ms'] ?? 0));
+            $jobCards .= "<div class='col-md-4'>
+                <div class='card card-body'>
+                  <div class='fw-semibold'>{$jobKey}</div>
+                  <div class='text-muted small'>Last run: {$lastRun}</div>
+                  <div class='text-muted small'>Status: {$status}</div>
+                  <div class='text-muted small'>Duration: {$duration} ms</div>
+                </div>
+              </div>";
+        }
+        if ($jobCards === '') {
+            $jobCards = "<div class='col-12 text-muted'>No jobs registered yet. Run the scheduler once.</div>";
+        }
+
+        $successRows = $app->db->all(
+            "SELECT job_key, MAX(started_at) AS last_success
+             FROM module_corptools_job_runs
+             WHERE status='success'
+             GROUP BY job_key"
+        );
+        $successMap = [];
+        foreach ($successRows as $row) {
+            $successMap[(string)($row['job_key'] ?? '')] = (string)($row['last_success'] ?? '—');
+        }
+        $successTable = '';
+        foreach ($jobRows as $job) {
+            $jobKey = (string)($job['job_key'] ?? '');
+            $lastSuccess = htmlspecialchars($successMap[$jobKey] ?? '—');
+            $successTable .= "<tr><td>" . htmlspecialchars($jobKey) . "</td><td>{$lastSuccess}</td></tr>";
+        }
+        if ($successTable === '') {
+            $successTable = "<tr><td colspan='2' class='text-muted'>No successful runs yet.</td></tr>";
+        }
+
+        $queueDepthRow = $app->db->one(
+            "SELECT COUNT(*) AS total FROM module_corptools_pings WHERE processed_at IS NULL"
+        );
+        $queueDepth = (int)($queueDepthRow['total'] ?? 0);
+
+        $failures24 = (int)($app->db->one(
+            "SELECT COUNT(*) AS total
+             FROM module_corptools_job_runs
+             WHERE status='failed' AND started_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
+        )['total'] ?? 0);
+        $total24 = (int)($app->db->one(
+            "SELECT COUNT(*) AS total
+             FROM module_corptools_job_runs
+             WHERE started_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
+        )['total'] ?? 0);
+        $errorRate = $total24 > 0 ? round(($failures24 / $total24) * 100, 1) : null;
+
+        $recentFailures = $app->db->all(
+            "SELECT job_key, started_at, message
+             FROM module_corptools_job_runs
+             WHERE status='failed'
+             ORDER BY started_at DESC
+             LIMIT 5"
+        );
+        $failureRows = '';
+        foreach ($recentFailures as $failure) {
+            $jobKey = htmlspecialchars((string)($failure['job_key'] ?? ''));
+            $started = htmlspecialchars((string)($failure['started_at'] ?? ''));
+            $message = htmlspecialchars((string)($failure['message'] ?? ''));
+            $failureRows .= "<tr><td>{$jobKey}</td><td>{$started}</td><td>{$message}</td></tr>";
+        }
+        if ($failureRows === '') {
+            $failureRows = "<tr><td colspan='3' class='text-muted'>No recent failures.</td></tr>";
+        }
+
+        $errorRateText = $errorRate !== null ? "{$errorRate}%" : '—';
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>CorpTools Status</h1>
+                      <div class='text-muted'>Version {$moduleVersion} • Observability & health signals.</div>
+                    </div>
+                  </div>
+                  <div class='row g-3 mt-3'>
+                    <div class='col-md-3'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Pinger queue depth</div>
+                        <div class='fs-5 fw-semibold'>" . htmlspecialchars((string)$queueDepth) . "</div>
+                      </div>
+                    </div>
+                    <div class='col-md-3'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Failures (24h)</div>
+                        <div class='fs-5 fw-semibold'>" . htmlspecialchars((string)$failures24) . "</div>
+                      </div>
+                    </div>
+                    <div class='col-md-3'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Run error rate (24h)</div>
+                        <div class='fs-5 fw-semibold'>" . htmlspecialchars((string)$errorRateText) . "</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Schema status</div>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Table</th><th>Status</th></tr></thead>
+                        <tbody>{$rowsHtml}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Last successful sync</div>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Job</th><th>Last success</th></tr></thead>
+                        <tbody>{$successTable}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div class='row g-3 mt-3'>{$jobCards}</div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Recent failures</div>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Job</th><th>Started</th><th>Message</th></tr></thead>
+                        <tbody>{$failureRows}</tbody>
+                      </table>
+                    </div>
+                  </div>";
+
+        return Response::html($renderPage('CorpTools Status', $body), 200);
+    }, ['right' => 'corptools.admin']);
+
+    $registry->route('GET', '/admin/corptools/cron', function () use ($app, $renderPage): Response {
+        JobRegistry::sync($app->db);
+        $jobs = $app->db->all(
+            "SELECT job_key, name, schedule_seconds, is_enabled, last_run_at, next_run_at, last_status, last_duration_ms
+             FROM module_corptools_jobs
+             ORDER BY job_key ASC"
+        );
+
+        $rowsHtml = '';
+        foreach ($jobs as $job) {
+            $jobKey = htmlspecialchars((string)($job['job_key'] ?? ''));
+            $name = htmlspecialchars((string)($job['name'] ?? ''));
+            $schedule = htmlspecialchars((string)($job['schedule_seconds'] ?? 0));
+            $enabled = ((int)($job['is_enabled'] ?? 0) === 1) ? 'Enabled' : 'Disabled';
+            $lastRun = htmlspecialchars((string)($job['last_run_at'] ?? '—'));
+            $nextRun = htmlspecialchars((string)($job['next_run_at'] ?? '—'));
+            $status = htmlspecialchars((string)($job['last_status'] ?? '—'));
+            $duration = htmlspecialchars((string)($job['last_duration_ms'] ?? 0));
+
+            $toggleLabel = ((int)($job['is_enabled'] ?? 0) === 1) ? 'Disable' : 'Enable';
+
+            $rowsHtml .= "<tr>
+                <td>{$jobKey}</td>
+                <td>{$name}</td>
+                <td>{$schedule}s</td>
+                <td>{$enabled}</td>
+                <td>{$lastRun}</td>
+                <td>{$nextRun}</td>
+                <td>{$status}</td>
+                <td>{$duration} ms</td>
+                <td class='text-end'>
+                  <a class='btn btn-sm btn-outline-light' href='/admin/corptools/cron/job?job={$jobKey}'>Details</a>
+                  <form method='post' action='/admin/corptools/cron/toggle' class='d-inline'>
+                    <input type='hidden' name='job_key' value='{$jobKey}'>
+                    <input type='hidden' name='enabled' value='" . (((int)($job['is_enabled'] ?? 0) === 1) ? '0' : '1') . "'>
+                    <button class='btn btn-sm btn-outline-secondary'>{$toggleLabel}</button>
+                  </form>
+                </td>
+              </tr>";
+        }
+
+        if ($rowsHtml === '') {
+            $rowsHtml = "<tr><td colspan='9' class='text-muted'>No jobs registered yet.</td></tr>";
+        }
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Cron Job Manager</h1>
+                      <div class='text-muted'>View schedules, last runs, and manual controls.</div>
+                    </div>
+                    <div>
+                      <a class='btn btn-outline-light' href='/admin/corptools/cron/runs'>View Runs</a>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead>
+                          <tr>
+                            <th>Job</th>
+                            <th>Name</th>
+                            <th>Schedule</th>
+                            <th>Enabled</th>
+                            <th>Last Run</th>
+                            <th>Next Run</th>
+                            <th>Status</th>
+                            <th>Duration</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>{$rowsHtml}</tbody>
+                      </table>
+                    </div>
+                  </div>";
+
+        return Response::html($renderPage('Cron Job Manager', $body), 200);
+    }, ['right' => 'corptools.cron.manage']);
+
+    $registry->route('GET', '/admin/corptools/cron/job', function (Request $req) use ($app, $renderPage): Response {
+        $jobKey = (string)($req->query['job'] ?? '');
+        if ($jobKey === '') {
+            return Response::redirect('/admin/corptools/cron');
+        }
+        JobRegistry::sync($app->db);
+
+        $job = $app->db->one(
+            "SELECT job_key, name, description, schedule_seconds, is_enabled, last_run_at, next_run_at, last_status, last_duration_ms, last_message
+             FROM module_corptools_jobs WHERE job_key=? LIMIT 1",
+            [$jobKey]
+        );
+        if (!$job) {
+            return Response::redirect('/admin/corptools/cron');
+        }
+
+        $runs = $app->db->all(
+            "SELECT id, status, started_at, finished_at, duration_ms, message
+             FROM module_corptools_job_runs
+             WHERE job_key=?
+             ORDER BY started_at DESC
+             LIMIT 10",
+            [$jobKey]
+        );
+
+        $flash = $_SESSION['corptools_cron_flash'] ?? null;
+        unset($_SESSION['corptools_cron_flash']);
+        $flashHtml = '';
+        if (is_array($flash)) {
+            $type = htmlspecialchars((string)($flash['type'] ?? 'info'));
+            $message = htmlspecialchars((string)($flash['message'] ?? ''));
+            if ($message !== '') {
+                $flashHtml = "<div class='alert alert-{$type} mt-3'>{$message}</div>";
+            }
+        }
+
+        $runRows = '';
+        foreach ($runs as $run) {
+            $status = htmlspecialchars((string)($run['status'] ?? ''));
+            $started = htmlspecialchars((string)($run['started_at'] ?? ''));
+            $finished = htmlspecialchars((string)($run['finished_at'] ?? '—'));
+            $duration = htmlspecialchars((string)($run['duration_ms'] ?? 0));
+            $message = htmlspecialchars((string)($run['message'] ?? ''));
+            $runRows .= "<tr><td>{$status}</td><td>{$started}</td><td>{$finished}</td><td>{$duration} ms</td><td>{$message}</td></tr>";
+        }
+        if ($runRows === '') {
+            $runRows = "<tr><td colspan='5' class='text-muted'>No runs recorded.</td></tr>";
+        }
+
+        $enabled = ((int)($job['is_enabled'] ?? 0) === 1) ? 'Enabled' : 'Disabled';
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Job: " . htmlspecialchars((string)$job['name']) . "</h1>
+                      <div class='text-muted'>" . htmlspecialchars((string)$job['job_key']) . "</div>
+                    </div>
+                    <div class='d-flex gap-2'>
+                      <a class='btn btn-outline-light' href='/admin/corptools/cron'>Back to Jobs</a>
+                    </div>
+                  </div>
+                  {$flashHtml}
+                  <div class='card card-body mt-3'>
+                    <div class='text-muted'>Description: " . htmlspecialchars((string)($job['description'] ?? '')) . "</div>
+                    <div class='text-muted'>Schedule: " . htmlspecialchars((string)($job['schedule_seconds'] ?? 0)) . " seconds</div>
+                    <div class='text-muted'>Status: {$enabled} • Last run: " . htmlspecialchars((string)($job['last_run_at'] ?? '—')) . "</div>
+                    <div class='text-muted'>Last result: " . htmlspecialchars((string)($job['last_status'] ?? '—')) . "</div>
+                    <div class='text-muted'>Next run: " . htmlspecialchars((string)($job['next_run_at'] ?? '—')) . "</div>
+                  </div>
+                  <form method='post' action='/admin/corptools/cron/run' class='card card-body mt-3'>
+                    <input type='hidden' name='job_key' value='" . htmlspecialchars((string)$job['job_key']) . "'>
+                    <div class='fw-semibold mb-2'>Run now</div>
+                    <div class='form-check'>
+                      <input class='form-check-input' type='checkbox' name='verbose' value='1' id='job-verbose'>
+                      <label class='form-check-label' for='job-verbose'>Verbose output</label>
+                    </div>
+                    <div class='form-check'>
+                      <input class='form-check-input' type='checkbox' name='dry_run' value='1' id='job-dry-run'>
+                      <label class='form-check-label' for='job-dry-run'>Dry run (when supported)</label>
+                    </div>
+                    <button class='btn btn-outline-primary mt-3'>Run Job</button>
+                  </form>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Recent runs</div>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Status</th><th>Started</th><th>Finished</th><th>Duration</th><th>Message</th></tr></thead>
+                        <tbody>{$runRows}</tbody>
+                      </table>
+                    </div>
+                  </div>";
+
+        return Response::html($renderPage('Cron Job Detail', $body), 200);
+    }, ['right' => 'corptools.cron.manage']);
+
+    $registry->route('GET', '/admin/corptools/cron/runs', function (Request $req) use ($app, $renderPage, $renderPagination): Response {
+        $jobFilter = trim((string)($req->query['job'] ?? ''));
+        $statusFilter = trim((string)($req->query['status'] ?? ''));
+
+        $where = [];
+        $params = [];
+        if ($jobFilter !== '') {
+            $where[] = 'job_key = ?';
+            $params[] = $jobFilter;
+        }
+        if ($statusFilter !== '') {
+            $where[] = 'status = ?';
+            $params[] = $statusFilter;
+        }
+
+        $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+        $page = max(1, (int)($req->query['page'] ?? 1));
+        $perPage = 50;
+
+        $countRow = $app->db->one(
+            "SELECT COUNT(*) AS total FROM module_corptools_job_runs {$whereSql}",
+            $params
+        );
+        $totalRows = (int)($countRow['total'] ?? 0);
+
+        $runs = $app->db->all(
+            "SELECT id, job_key, status, started_at, finished_at, duration_ms, message
+             FROM module_corptools_job_runs
+             {$whereSql}
+             ORDER BY started_at DESC
+             LIMIT ? OFFSET ?",
+            array_merge($params, [$perPage, ($page - 1) * $perPage])
+        );
+
+        $rowsHtml = '';
+        foreach ($runs as $run) {
+            $jobKey = htmlspecialchars((string)($run['job_key'] ?? ''));
+            $status = htmlspecialchars((string)($run['status'] ?? ''));
+            $started = htmlspecialchars((string)($run['started_at'] ?? ''));
+            $finished = htmlspecialchars((string)($run['finished_at'] ?? '—'));
+            $duration = htmlspecialchars((string)($run['duration_ms'] ?? 0));
+            $message = htmlspecialchars((string)($run['message'] ?? ''));
+            $runId = (int)($run['id'] ?? 0);
+            $details = $runId > 0 ? "<a class='btn btn-sm btn-outline-light' href='/admin/corptools/cron/run-detail?id={$runId}'>Details</a>" : '';
+            $rowsHtml .= "<tr><td>{$jobKey}</td><td>{$status}</td><td>{$started}</td><td>{$finished}</td><td>{$duration} ms</td><td>{$message}</td><td>{$details}</td></tr>";
+        }
+        if ($rowsHtml === '') {
+            $rowsHtml = "<tr><td colspan='7' class='text-muted'>No runs match the filters.</td></tr>";
+        }
+
+        $pagination = $renderPagination(
+            $totalRows,
+            $page,
+            $perPage,
+            '/admin/corptools/cron/runs',
+            array_filter([
+                'job' => $jobFilter,
+                'status' => $statusFilter,
+            ], fn($val) => $val !== '')
+        );
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Cron Runs</h1>
+                      <div class='text-muted'>Execution logs with duration and status.</div>
+                    </div>
+                    <div>
+                      <a class='btn btn-outline-light' href='/admin/corptools/cron'>Back to Jobs</a>
+                    </div>
+                  </div>
+                  <form method='get' class='card card-body mt-3'>
+                    <div class='row g-2'>
+                      <div class='col-md-4'>
+                        <label class='form-label'>Job key</label>
+                        <input class='form-control' name='job' value='" . htmlspecialchars($jobFilter) . "'>
+                      </div>
+                      <div class='col-md-4'>
+                        <label class='form-label'>Status</label>
+                        <input class='form-control' name='status' value='" . htmlspecialchars($statusFilter) . "'>
+                      </div>
+                      <div class='col-md-4 d-flex align-items-end'>
+                        <button class='btn btn-primary me-2'>Filter</button>
+                        <a class='btn btn-outline-secondary' href='/admin/corptools/cron/runs'>Reset</a>
+                      </div>
+                    </div>
+                  </form>
+                  <div class='card card-body mt-3'>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Job</th><th>Status</th><th>Started</th><th>Finished</th><th>Duration</th><th>Message</th><th></th></tr></thead>
+                        <tbody>{$rowsHtml}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                  {$pagination}";
+
+        return Response::html($renderPage('Cron Runs', $body), 200);
+    }, ['right' => 'corptools.cron.manage']);
+
+    $registry->route('GET', '/admin/corptools/cron/run-detail', function (Request $req) use ($app, $renderPage): Response {
+        $runId = (int)($req->query['id'] ?? 0);
+        if ($runId <= 0) {
+            return Response::redirect('/admin/corptools/cron/runs');
+        }
+
+        $run = $app->db->one(
+            "SELECT job_key, status, started_at, finished_at, duration_ms, message, error_trace, meta_json
+             FROM module_corptools_job_runs WHERE id=? LIMIT 1",
+            [$runId]
+        );
+        if (!$run) {
+            return Response::redirect('/admin/corptools/cron/runs');
+        }
+
+        $meta = json_decode((string)($run['meta_json'] ?? '[]'), true);
+        $metaText = htmlspecialchars(json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        $traceText = htmlspecialchars((string)($run['error_trace'] ?? ''));
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Run Detail</h1>
+                      <div class='text-muted'>" . htmlspecialchars((string)($run['job_key'] ?? '')) . "</div>
+                    </div>
+                    <div>
+                      <a class='btn btn-outline-light' href='/admin/corptools/cron/runs'>Back to Runs</a>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='text-muted'>Status: " . htmlspecialchars((string)($run['status'] ?? '')) . "</div>
+                    <div class='text-muted'>Started: " . htmlspecialchars((string)($run['started_at'] ?? '')) . "</div>
+                    <div class='text-muted'>Finished: " . htmlspecialchars((string)($run['finished_at'] ?? '—')) . "</div>
+                    <div class='text-muted'>Duration: " . htmlspecialchars((string)($run['duration_ms'] ?? 0)) . " ms</div>
+                    <div class='text-muted'>Message: " . htmlspecialchars((string)($run['message'] ?? '')) . "</div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Meta</div>
+                    <pre class='small mb-0'>{$metaText}</pre>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Error Trace</div>
+                    <pre class='small mb-0'>" . ($traceText !== '' ? $traceText : '—') . "</pre>
+                  </div>";
+
+        return Response::html($renderPage('Run Detail', $body), 200);
+    }, ['right' => 'corptools.cron.manage']);
+
+    $registry->route('POST', '/admin/corptools/cron/run', function (Request $req) use ($app): Response {
+        $jobKey = (string)($req->post['job_key'] ?? '');
+        if ($jobKey === '') {
+            return Response::redirect('/admin/corptools/cron');
+        }
+        JobRegistry::sync($app->db);
+        $runner = new JobRunner($app->db, JobRegistry::definitionsByKey());
+        $result = $runner->runJob($app, $jobKey, [
+            'trigger' => 'manual',
+            'dry_run' => !empty($req->post['dry_run']),
+            'verbose' => !empty($req->post['verbose']),
+        ]);
+
+        $_SESSION['corptools_cron_flash'] = [
+            'type' => ($result['status'] ?? '') === 'failed' ? 'danger' : 'success',
+            'message' => ($result['message'] ?? 'Job executed'),
+        ];
+
+        return Response::redirect('/admin/corptools/cron/job?job=' . urlencode($jobKey));
+    }, ['right' => 'corptools.cron.manage']);
+
+    $registry->route('POST', '/admin/corptools/cron/toggle', function (Request $req) use ($app): Response {
+        $jobKey = (string)($req->post['job_key'] ?? '');
+        $enabled = !empty($req->post['enabled']) ? 1 : 0;
+        if ($jobKey !== '') {
+            $app->db->run(
+                "UPDATE module_corptools_jobs SET is_enabled=? WHERE job_key=?",
+                [$enabled, $jobKey]
+            );
+        }
+        return Response::redirect('/admin/corptools/cron');
+    }, ['right' => 'corptools.cron.manage']);
+
     $registry->route('GET', '/admin/corptools', function () use ($app, $renderPage, $getCorpToolsSettings, $getIdentityCorpIds, $getCorpProfiles, $getAvailableCorpIds): Response {
         $settings = $getCorpToolsSettings();
         $tab = (string)($_GET['tab'] ?? 'general');
 
         $tabs = [
             'general' => 'General',
+            'integrations' => 'Integrations',
             'audit' => 'Audit Scopes',
             'corp_audit' => 'Corp Audit',
             'invoices' => 'Invoices',
@@ -2014,7 +2969,7 @@ return function (ModuleRegistry $registry): void {
             $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
                 <input type='hidden' name='section' value='general'>
                 <div class='fw-semibold mb-2'>Corp context</div>
-                <label class='form-label'>Canonical corp context</label>
+                <label class='form-label'>Default corporation</label>
                 <select class='form-select' name='corp_context_id'>{$contextOptions}</select>
                 <div class='form-text'>CorpTools dashboards default to this corp context and never infer it from login activity.</div>
                 <div class='form-check mt-2'>
@@ -2033,6 +2988,21 @@ return function (ModuleRegistry $registry): void {
                 <input class='form-control' name='retention_days' value='{$retention}'>
                 <button class='btn btn-primary mt-3'>Save General Settings</button>
               </form>";
+        } elseif ($tab === 'integrations') {
+            $cfg = $app->config['eve_sso'] ?? [];
+            $clientId = (string)($cfg['client_id'] ?? '');
+            $clientSecret = (string)($cfg['client_secret'] ?? '');
+            $mask = function (string $value): string {
+                if ($value === '') return 'Not set';
+                $tail = substr($value, -4);
+                return str_repeat('•', max(0, strlen($value) - 4)) . $tail;
+            };
+            $sectionHtml = "<div class='card card-body mt-3'>
+                <div class='fw-semibold mb-2'>ESI Integration</div>
+                <div class='text-muted'>Client ID: " . htmlspecialchars($mask($clientId)) . "</div>
+                <div class='text-muted'>Client Secret: " . htmlspecialchars($mask($clientSecret)) . "</div>
+                <div class='text-muted small mt-2'>Credentials are managed in /var/www/config.php and reused by CorpTools.</div>
+              </div>";
         } elseif ($tab === 'audit') {
             $audit = $settings['audit_scopes'] ?? [];
             $rows = '';
@@ -2066,17 +3036,27 @@ return function (ModuleRegistry $registry): void {
                 <button class='btn btn-primary mt-3'>Save Corp Audit Settings</button>
               </form>";
         } elseif ($tab === 'invoices') {
+            $enabled = !empty($settings['invoices']['enabled']) ? 'checked' : '';
             $divisions = htmlspecialchars(implode(',', $settings['invoices']['wallet_divisions'] ?? [1]));
             $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
                 <input type='hidden' name='section' value='invoices'>
+                <div class='form-check mb-2'>
+                  <input class='form-check-input' type='checkbox' name='enabled' value='1' id='invoices-enabled' {$enabled}>
+                  <label class='form-check-label' for='invoices-enabled'>Enable invoice tracking</label>
+                </div>
                 <label class='form-label'>Wallet divisions (comma-separated)</label>
                 <input class='form-control' name='wallet_divisions' value='{$divisions}'>
                 <button class='btn btn-primary mt-3'>Save Invoice Settings</button>
               </form>";
         } elseif ($tab === 'moons') {
+            $enabled = !empty($settings['moons']['enabled']) ? 'checked' : '';
             $tax = htmlspecialchars((string)($settings['moons']['default_tax_rate'] ?? 0));
             $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
                 <input type='hidden' name='section' value='moons'>
+                <div class='form-check mb-2'>
+                  <input class='form-check-input' type='checkbox' name='enabled' value='1' id='moons-enabled' {$enabled}>
+                  <label class='form-check-label' for='moons-enabled'>Enable moon tracking</label>
+                </div>
                 <label class='form-label'>Default tax rate (%)</label>
                 <input class='form-control' name='default_tax_rate' value='{$tax}'>
                 <button class='btn btn-primary mt-3'>Save Moon Settings</button>
@@ -2092,10 +3072,18 @@ return function (ModuleRegistry $registry): void {
                 <button class='btn btn-primary mt-3'>Save Indy Settings</button>
               </form>";
         } elseif ($tab === 'pinger') {
+            if (!$hasRight('corptools.pinger.manage')) {
+                return Response::text('403 Forbidden', 403);
+            }
+            $enabled = !empty($settings['pinger']['enabled']) ? 'checked' : '';
             $webhook = htmlspecialchars((string)($settings['pinger']['webhook_url'] ?? ''));
             $secret = htmlspecialchars((string)($settings['pinger']['shared_secret'] ?? ''));
             $sectionHtml = "<form method='post' action='/admin/corptools/settings' class='card card-body mt-3'>
                 <input type='hidden' name='section' value='pinger'>
+                <div class='form-check mb-2'>
+                  <input class='form-check-input' type='checkbox' name='enabled' value='1' id='pinger-enabled' {$enabled}>
+                  <label class='form-check-label' for='pinger-enabled'>Enable pinger ingestion</label>
+                </div>
                 <label class='form-label'>Webhook URL</label>
                 <input class='form-control' name='webhook_url' value='{$webhook}' placeholder='https://...'>
                 <label class='form-label mt-3'>Shared secret (optional)</label>
@@ -2176,7 +3164,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Corp Tools Settings', $body), 200);
     }, ['right' => 'corptools.admin']);
 
-    $registry->route('POST', '/admin/corptools/settings', function (Request $req) use ($app): Response {
+    $registry->route('POST', '/admin/corptools/settings', function (Request $req) use ($app, $hasRight): Response {
         $section = (string)($req->post['section'] ?? 'general');
         $settings = new CorpToolsSettings($app->db);
 
@@ -2220,10 +3208,12 @@ return function (ModuleRegistry $registry): void {
             $divisions = array_values(array_filter(array_map('trim', explode(',', (string)($req->post['wallet_divisions'] ?? '')))));
             $divisions = array_map('intval', $divisions);
             $settings->updateSection('invoices', [
+                'enabled' => !empty($req->post['enabled']),
                 'wallet_divisions' => $divisions ?: [1],
             ]);
         } elseif ($section === 'moons') {
             $settings->updateSection('moons', [
+                'enabled' => !empty($req->post['enabled']),
                 'default_tax_rate' => (float)($req->post['default_tax_rate'] ?? 0),
             ]);
         } elseif ($section === 'indy') {
@@ -2231,7 +3221,11 @@ return function (ModuleRegistry $registry): void {
                 'enabled' => !empty($req->post['enabled']),
             ]);
         } elseif ($section === 'pinger') {
+            if (!$hasRight('corptools.pinger.manage')) {
+                return Response::text('403 Forbidden', 403);
+            }
             $settings->updateSection('pinger', [
+                'enabled' => !empty($req->post['enabled']),
                 'webhook_url' => trim((string)($req->post['webhook_url'] ?? '')),
                 'shared_secret' => trim((string)($req->post['shared_secret'] ?? '')),
             ]);
@@ -2258,5 +3252,5 @@ return function (ModuleRegistry $registry): void {
             );
         }
         return Response::redirect('/admin/corptools');
-    }, ['right' => 'corptools.admin']);
+    }, ['right' => 'corptools.pinger.manage']);
 };

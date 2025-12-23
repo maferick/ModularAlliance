@@ -119,6 +119,12 @@ final class Dispatcher
              ON DUPLICATE KEY UPDATE data_json=VALUES(data_json), updated_at=NOW()",
             [$userId, $characterId, $key, $payload]
         );
+        $this->db->run(
+            "INSERT INTO module_corptools_character_audit_snapshots
+             (user_id, character_id, category, data_json, fetched_at)
+             VALUES (?, ?, ?, ?, NOW())",
+            [$userId, $characterId, $key, $payload]
+        );
     }
 
     private function upsertCharacterSummary(int $userId, int $characterId, string $characterName, array $summary): void
