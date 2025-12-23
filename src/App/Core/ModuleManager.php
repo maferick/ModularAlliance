@@ -13,17 +13,28 @@ final class ModuleManager
         if (!is_dir($dir)) return;
 
         foreach (glob($dir . '/*/module.php') ?: [] as $file) {
-            $mod = require $file;
+            $slug = basename(dirname($file));
+            $header = $this->parseHeader($file);
 
-            if (!$mod instanceof ModuleInterface) continue;
+            $registry = new ModuleRegistry(
+                $app,
+                $header['slug'] ?? $slug,
+                $header['name'] ?? $slug,
+                $header['description'] ?? '',
+                $header['version'] ?? '0.0.0',
+            );
 
-            $manifest = $mod->manifest();
+            $result = require $file;
+            if (is_callable($result)) {
+                $result($registry);
+            }
+
+            $manifest = $registry->manifest();
             $this->manifests[] = $manifest->toArray();
 
             $this->registerRights($app, $manifest);
             $this->registerMenu($app, $manifest);
-
-            $mod->register($app);
+            $this->registerRoutes($app, $registry);
         }
     }
 
@@ -53,5 +64,61 @@ final class ModuleManager
             if (!is_array($item)) continue;
             $app->menu->register($item);
         }
+    }
+
+    private function registerRoutes(App $app, ModuleRegistry $registry): void
+    {
+        foreach ($registry->routes() as $route) {
+            $method = strtoupper((string)($route['method'] ?? ''));
+            $path = (string)($route['path'] ?? '');
+            $handler = $route['handler'] ?? null;
+            $meta = is_array($route['meta'] ?? null) ? $route['meta'] : [];
+
+            if ($path === '' || !is_callable($handler)) continue;
+
+            if ($method === 'GET') {
+                $app->router->get($path, $handler, $meta);
+            } elseif ($method === 'POST') {
+                $app->router->post($path, $handler, $meta);
+            }
+        }
+    }
+
+    /** @return array{name?:string, description?:string, version?:string, slug?:string} */
+    private function parseHeader(string $file): array
+    {
+        $contents = file_get_contents($file);
+        if ($contents === false) return [];
+
+        $headerBlock = null;
+        if (preg_match('/\A\s*<\?php\s*\/\*([\s\S]*?)\*\//', $contents, $matches)) {
+            $headerBlock = $matches[1];
+        } elseif (preg_match('/\A\s*\/\*([\s\S]*?)\*\//', $contents, $matches)) {
+            $headerBlock = $matches[1];
+        }
+
+        if ($headerBlock === null) return [];
+
+        $fields = [
+            'Module Name' => 'name',
+            'Plugin Name' => 'name',
+            'Description' => 'description',
+            'Version' => 'version',
+            'Module Slug' => 'slug',
+        ];
+
+        $out = [];
+        foreach (preg_split('/\R/', $headerBlock) as $line) {
+            $line = trim($line, " \t\n\r\0\x0B*");
+            if ($line === '') continue;
+            foreach ($fields as $label => $key) {
+                if (stripos($line, $label . ':') === 0) {
+                    $value = trim(substr($line, strlen($label) + 1));
+                    if ($value !== '') $out[$key] = $value;
+                }
+            }
+        }
+
+        return $out;
     }
 }
