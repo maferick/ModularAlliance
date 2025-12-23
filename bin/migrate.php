@@ -14,4 +14,11 @@ $m->ensureLogTable();
 echo "[MIGRATE] core: " . APP_ROOT . "/core/migrations\n";
 $m->applyDir('core', APP_ROOT . '/core/migrations');
 
+foreach (glob(APP_ROOT . '/modules/*/migrations') ?: [] as $dir) {
+    if (!is_dir($dir)) continue;
+    $slug = basename(dirname($dir));
+    echo "[MIGRATE] {$slug}: {$dir}\n";
+    $m->applyDir($slug, $dir);
+}
+
 echo "[OK] Migrations complete.\n";

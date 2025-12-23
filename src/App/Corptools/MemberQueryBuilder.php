@@ -27,6 +27,12 @@ final class MemberQueryBuilder
             }
         }
 
+        if (!empty($filters['name'])) {
+            $where[] = '(ms.main_character_name LIKE ? OR cs.character_name LIKE ?)';
+            $params[] = '%' . $filters['name'] . '%';
+            $params[] = '%' . $filters['name'] . '%';
+        }
+
         if (!empty($filters['asset_value_min'])) {
             $where[] = 'cs.assets_value >= ?';
             $params[] = (float)$filters['asset_value_min'];

@@ -12,23 +12,68 @@ php bin/migrate.php
 Relevant migrations:
 - `core/migrations/023_corptools_tables.sql`
 - `core/migrations/025_corptools_core_ecosystem.sql`
+- `modules/corptools/migrations/001_corptools_core.sql`
 
 2. Configure your corporation or alliance in **Admin → Settings** (`site.identity.type` + `site.identity.id`).
 
-3. Configure CorpTools in **Admin → Corp Tools**.
+3. Configure CorpTools in **Admin → Corp Tools** (default corporation, audit scopes, corp audit toggles, and feature enablement).
 
 ## Cron / Jobs
-Corp Tools uses the platform cron runner (`bin/cron.php`). Add a cron entry similar to:
+CorpTools uses a scheduler with persisted job definitions, execution logs, and locking. Run the scheduler every minute via CLI:
 
 ```bash
-* * * * * php /var/www/bin/cron.php
+* * * * * php /var/www/bin/console.php cron:run >> /var/log/modularalliance/corptools-cron.log 2>&1
 ```
+
+Jobs are managed in **Admin → CorpTools Cron** and logged in **Admin → CorpTools Cron → Runs**.
 
 Registered jobs:
 - `corptools.invoice_sync` — pulls wallet journals for invoice tracking
 - `corptools.audit_refresh` — refreshes character audits and summaries
 - `corptools.corp_audit_refresh` — refreshes corp-level audit dashboards
 - `corptools.cleanup` — retention cleanup for audit/pinger data
+
+## Ubuntu cron hook
+### Crontab (www-data)
+```bash
+* * * * * php /var/www/bin/console.php cron:run >> /var/log/modularalliance/corptools-cron.log 2>&1
+```
+
+### systemd service + timer
+`/etc/systemd/system/modularalliance-corptools.service`
+```ini
+[Unit]
+Description=ModularAlliance CorpTools Scheduler
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www
+ExecStart=/usr/bin/php /var/www/bin/console.php cron:run
+```
+
+`/etc/systemd/system/modularalliance-corptools.timer`
+```ini
+[Unit]
+Description=Run CorpTools scheduler every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable with:
+```bash
+systemctl daemon-reload
+systemctl enable --now modularalliance-corptools.timer
+```
+
+Log file recommendation:
+- `/var/log/modularalliance/corptools-cron.log` (writeable by `www-data`)
 
 ## Settings Overview
 CorpTools settings are stored in `module_corptools_settings` and configured via **Admin → Corp Tools**.
@@ -41,6 +86,17 @@ CorpTools settings are stored in `module_corptools_settings` and configured via 
 - **Indy Dash**: enable/disable industry dashboards
 - **Pinger**: webhook URL + optional shared secret
 - **Filters**: default filter baselines for member queries
+
+## Admin dashboards
+- **Status**: `/admin/corptools/status` for health signals and last successful syncs.
+- **Cron Job Manager**: `/admin/corptools/cron` for job schedules, logs, and manual runs.
+
+## Permissions
+Assign rights via Core Rights:
+- `corptools.admin` — manage settings & status
+- `corptools.audit.read` / `corptools.audit.write` — audit viewing + manual refresh
+- `corptools.pinger.manage` — manage pinger settings + rules
+- `corptools.cron.manage` — manage cron schedules & runs
 
 ## Audit Collectors (Scopes)
 Each audit domain is a discrete collector with its own scopes. Enable the collectors you need.
