@@ -1025,7 +1025,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Corp Tools', $body), 200);
     }, ['right' => 'corptools.audit.read']);
 
-    $registry->route('GET', '/corptools/characters', function () use ($app, $renderPage): Response {
+    $registry->route('GET', '/corptools/characters', function () use ($app, $renderPage, $renderPagination): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -2351,7 +2351,7 @@ return function (ModuleRegistry $registry): void {
 
         $rowsHtml = '';
         foreach ($tables as $table) {
-            $exists = $app->db->one("SHOW TABLES LIKE ?", [$table]);
+            $exists = $app->db->one("SHOW TABLES LIKE " . $app->db->pdo()->quote($table));
             $status = $exists ? "<span class='badge bg-success'>OK</span>" : "<span class='badge bg-danger'>Missing</span>";
             $rowsHtml .= "<tr><td>{$table}</td><td>{$status}</td></tr>";
         }
@@ -2397,7 +2397,7 @@ return function (ModuleRegistry $registry): void {
 
         $rowsHtml = '';
         foreach ($tables as $table) {
-            $exists = $app->db->one("SHOW TABLES LIKE ?", [$table]);
+            $exists = $app->db->one("SHOW TABLES LIKE " . $app->db->pdo()->quote($table));
             $status = $exists ? "<span class='badge bg-success'>OK</span>" : "<span class='badge bg-danger'>Missing</span>";
             $rowsHtml .= "<tr><td>{$table}</td><td>{$status}</td></tr>";
         }
@@ -2892,7 +2892,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/admin/corptools/cron');
     }, ['right' => 'corptools.cron.manage']);
 
-    $registry->route('GET', '/admin/corptools', function () use ($app, $renderPage, $getCorpToolsSettings, $getIdentityCorpIds, $getCorpProfiles, $getAvailableCorpIds): Response {
+    $registry->route('GET', '/admin/corptools', function () use ($app, $renderPage, $getCorpToolsSettings, $getIdentityCorpIds, $getCorpProfiles, $getAvailableCorpIds, $hasRight): Response {
         $settings = $getCorpToolsSettings();
         $tab = (string)($_GET['tab'] ?? 'general');
 
