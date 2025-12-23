@@ -71,6 +71,7 @@ return function (ModuleRegistry $registry): void {
         $primaryCharacterId = (int)($primary['character_id'] ?? 0);
         $primaryName = (string)($primary['character_name'] ?? '');
         $primaryPortrait = null;
+        $primaryProfile = null;
         if ($primaryCharacterId > 0) {
             $primaryProfile = $u->characterProfile($primaryCharacterId);
             $primaryPortrait = $primaryProfile['character']['portrait']['px256x256']
@@ -78,16 +79,26 @@ return function (ModuleRegistry $registry): void {
                 ?? null;
         }
 
+        $displayProfile = $primaryProfile ?? $p;
         $charName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
         $portrait = $p['character']['portrait']['px256x256'] ?? $p['character']['portrait']['px128x128'] ?? null;
 
-        $corpName = htmlspecialchars($p['corporation']['name'] ?? '—');
-        $corpTicker = htmlspecialchars($p['corporation']['ticker'] ?? '');
-        $corpIcon = $p['corporation']['icons']['px128x128'] ?? $p['corporation']['icons']['px64x64'] ?? null;
+        $charName = htmlspecialchars($displayProfile['character']['name'] ?? 'Unknown');
+        $portrait = $displayProfile['character']['portrait']['px256x256']
+            ?? $displayProfile['character']['portrait']['px128x128']
+            ?? null;
 
-        $allName = htmlspecialchars($p['alliance']['name'] ?? '—');
-        $allTicker = htmlspecialchars($p['alliance']['ticker'] ?? '');
-        $allIcon = $p['alliance']['icons']['px128x128'] ?? $p['alliance']['icons']['px64x64'] ?? null;
+        $corpName = htmlspecialchars($displayProfile['corporation']['name'] ?? '—');
+        $corpTicker = htmlspecialchars($displayProfile['corporation']['ticker'] ?? '');
+        $corpIcon = $displayProfile['corporation']['icons']['px128x128']
+            ?? $displayProfile['corporation']['icons']['px64x64']
+            ?? null;
+
+        $allName = htmlspecialchars($displayProfile['alliance']['name'] ?? '—');
+        $allTicker = htmlspecialchars($displayProfile['alliance']['ticker'] ?? '');
+        $allIcon = $displayProfile['alliance']['icons']['px128x128']
+            ?? $displayProfile['alliance']['icons']['px64x64']
+            ?? null;
 
         $html = "<h1>Profile</h1>";
 
@@ -113,6 +124,10 @@ return function (ModuleRegistry $registry): void {
         if ($portrait) $html .= "<img src='" . htmlspecialchars($portrait) . "' width='96' height='96' style='border-radius:10px;'>";
         $html .= "<div><div style='font-size:22px;font-weight:700;'>{$charName}</div></div>";
         $html .= "</div>";
+        if ($primaryCharacterId > 0 && $primaryCharacterId !== $cid) {
+            $currentName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
+            $html .= "<div class='text-muted mb-3'>Signed in as {$currentName}.</div>";
+        }
 
         $html .= "<h2>Corporation</h2>";
         $html .= "<div style='display:flex;gap:12px;align-items:center;margin:8px 0;'>";

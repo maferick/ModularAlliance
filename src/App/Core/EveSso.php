@@ -99,6 +99,39 @@ final class EveSso
         $linkFlash = null;
         $linkRedirect = null;
 
+        $pendingLinkUserId = $_SESSION['charlink_link_user'] ?? null;
+        if (is_numeric($pendingLinkUserId)) {
+            unset($_SESSION['charlink_link_user']);
+            $targetUserId = (int)$pendingLinkUserId;
+
+            $targetUser = $this->db->one("SELECT id FROM eve_users WHERE id=? LIMIT 1", [$targetUserId]);
+            if (!$targetUser) {
+                $linkFlash = ['type' => 'danger', 'message' => 'Unable to link character: target account not found.'];
+            } else {
+                $existingLink = $this->db->one(
+                    "SELECT user_id, status
+                     FROM character_links
+                     WHERE character_id=? LIMIT 1",
+                    [$characterId]
+                );
+
+                if ($existingLink && (string)($existingLink['status'] ?? '') === 'linked') {
+                    $linkedUserId = (int)$existingLink['user_id'];
+                    if ($linkedUserId !== $targetUserId) {
+                        $linkFlash = ['type' => 'danger', 'message' => 'This character is already linked to another account.'];
+                    } else {
+                        $linkFlash = ['type' => 'info', 'message' => 'This character is already linked to your account.'];
+                        $finalUserId = $targetUserId;
+                    }
+                } else {
+                    $this->db->run(
+                        "INSERT INTO character_links (user_id, character_id, character_name, status, linked_at, linked_by_user_id)
+                         VALUES (?, ?, ?, 'linked', NOW(), ?)
+                         ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), character_name=VALUES(character_name), status='linked', linked_at=NOW(), linked_by_user_id=VALUES(linked_by_user_id), revoked_at=NULL, revoked_by_user_id=NULL",
+                        [$targetUserId, $characterId, $characterName, $targetUserId]
+                    );
+                    $finalUserId = $targetUserId;
+                    $linkFlash = ['type' => 'success', 'message' => 'Character linked successfully.'];
         $pendingToken = $_SESSION['charlink_token'] ?? null;
         if (is_string($pendingToken) && $pendingToken !== '') {
             unset($_SESSION['charlink_token']);
