@@ -60,7 +60,15 @@ return function (ModuleRegistry $registry): void {
         return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
     };
 
-    $registry->route('POST', '/user/alts/link-start', function (): Response {
+    $registry->route('POST', '/user/alts/link-start', function () use ($app): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $_SESSION['charlink_link_user'] = $uid;
+        return Response::redirect('/auth/login');
+    });
+
     $registry->route('GET', '/charlink/activate', function (Request $req) use ($renderPage): Response {
         $token = $req->query['token'] ?? '';
         if (!is_string($token) || $token === '') {
@@ -78,8 +86,6 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
-        $_SESSION['charlink_link_user'] = $uid;
-        return Response::redirect('/auth/login');
         $rawToken = bin2hex(random_bytes(32));
         $tokenHash = hash('sha256', $rawToken);
         $tokenPrefix = substr($rawToken, 0, 8);
@@ -278,21 +284,14 @@ return function (ModuleRegistry $registry): void {
                       <h1 class='mb-1'>Linked Characters</h1>
                       <div class='text-muted'>Manage your alt characters and link new pilots.</div>
                     </div>
-                    <form method='post' action='/user/alts/link-start'>
-                      <button class='btn btn-primary'>Link New Character</button>
-                    </form>
-                  </div>
-                  <div class='mt-3'>{$flashHtml}</div>
-                  <div class='row g-3 mt-1'>{$cards}</div>
-                  <div class='card card-body mt-4'>
-                    <div class='fw-semibold'>How it works</div>
-                    <ol class='mb-0 mt-2'>
-                      <li>Click <strong>Link New Character</strong>.</li>
-                      <li>Log in with the character you want to link.</li>
-                      <li>Return here to confirm the character is linked.</li>
-                    <form method='post' action='/user/alts/token'>
-                      <button class='btn btn-primary'>Generate Link Token</button>
-                    </form>
+                    <div class='d-flex gap-2'>
+                      <form method='post' action='/user/alts/link-start'>
+                        <button class='btn btn-outline-primary'>Link New Character</button>
+                      </form>
+                      <form method='post' action='/user/alts/token'>
+                        <button class='btn btn-primary'>Generate Link Token</button>
+                      </form>
+                    </div>
                   </div>
                   <div class='mt-3'>{$flashHtml}{$tokenHtml}</div>
                   <div class='row g-3 mt-1'>{$cards}</div>
@@ -377,10 +376,6 @@ return function (ModuleRegistry $registry): void {
             $linkRows = "<tr><td colspan='5' class='text-muted'>No active links.</td></tr>";
         }
 
-        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
-                    <div>
-                      <h1 class='mb-1'>Character Linker</h1>
-                      <div class='text-muted'>Review linked characters.</div>
         $tokenRows = '';
         foreach ($tokens as $token) {
             $tokenId = (int)($token['id'] ?? 0);
