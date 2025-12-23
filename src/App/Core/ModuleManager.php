@@ -12,8 +12,31 @@ final class ModuleManager
         $dir = APP_ROOT . '/modules';
         if (!is_dir($dir)) return;
 
+        $disabled = [];
+        try {
+            $settings = new Settings($app->db);
+            $raw = $settings->get('plugins.disabled', '') ?? '';
+            if ($raw !== '') {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    foreach ($decoded as $slug) {
+                        if (is_string($slug) && $slug !== '') {
+                            $disabled[] = $slug;
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            $disabled = [];
+        }
+
+        $protected = ['auth', 'plugins'];
+
         foreach (glob($dir . '/*/module.php') ?: [] as $file) {
             $slug = basename(dirname($file));
+            if (in_array($slug, $disabled, true) && !in_array($slug, $protected, true)) {
+                continue;
+            }
             $header = $this->parseHeader($file);
 
             $registry = new ModuleRegistry(
