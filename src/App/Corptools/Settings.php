@@ -14,6 +14,8 @@ final class Settings
         return [
             'general' => [
                 'corp_ids' => [],
+                'corp_context_id' => 0,
+                'allow_context_switch' => false,
                 'holding_wallet_divisions' => [1],
                 'holding_wallet_label' => 'Holding Wallet',
                 'retention_days' => 30,
