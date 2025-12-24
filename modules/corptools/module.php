@@ -11,6 +11,8 @@ Module Slug: corptools
 use App\Core\App;
 use App\Core\EsiCache;
 use App\Core\EsiClient;
+use App\Core\EsiDateTime;
+use App\Core\EveSso;
 use App\Core\HttpClient;
 use App\Core\Layout;
 use App\Core\ModuleRegistry;
@@ -50,20 +52,111 @@ return function (ModuleRegistry $registry): void {
     $registry->right('corptools.cron.manage', 'Manage CorpTools cron jobs.');
 
     $registry->menu([
-        'slug' => 'corptools',
-        'title' => 'Corp Tools',
+        'slug' => 'corptools.member_tools',
+        'title' => 'Member Tools',
         'url' => '/corptools',
         'sort_order' => 40,
         'area' => 'left',
         'right_slug' => 'corptools.view',
     ]);
     $registry->menu([
-        'slug' => 'corptools.audit',
-        'title' => 'CorpTools Audit',
-        'url' => '/corptools/audit',
+        'slug' => 'corptools',
+        'title' => 'Dashboard',
+        'url' => '/corptools',
         'sort_order' => 41,
         'area' => 'left',
+        'parent_slug' => 'corptools.member_tools',
+        'right_slug' => 'corptools.view',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.characters',
+        'title' => 'My Characters',
+        'url' => '/corptools/characters',
+        'sort_order' => 42,
+        'area' => 'left',
+        'parent_slug' => 'corptools.member_tools',
+        'right_slug' => 'corptools.view',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.audit',
+        'title' => 'Character Audit',
+        'url' => '/corptools/audit',
+        'sort_order' => 43,
+        'area' => 'left',
+        'parent_slug' => 'corptools.member_tools',
         'right_slug' => 'corptools.audit.read',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.overview',
+        'title' => 'Overview',
+        'url' => '/corptools/overview',
+        'sort_order' => 44,
+        'area' => 'left',
+        'parent_slug' => 'corptools.member_tools',
+        'right_slug' => 'corptools.view',
+    ]);
+
+    $registry->menu([
+        'slug' => 'corptools.admin_tools',
+        'title' => 'Admin / HR Tools',
+        'url' => '/corptools/members',
+        'sort_order' => 50,
+        'area' => 'left',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.members',
+        'title' => 'Members',
+        'url' => '/corptools/members',
+        'sort_order' => 51,
+        'area' => 'left',
+        'parent_slug' => 'corptools.admin_tools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.corp_audit',
+        'title' => 'Corp Audit',
+        'url' => '/corptools/corp-audit',
+        'sort_order' => 52,
+        'area' => 'left',
+        'parent_slug' => 'corptools.admin_tools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.invoices',
+        'title' => 'Invoices',
+        'url' => '/corptools/invoices',
+        'sort_order' => 53,
+        'area' => 'left',
+        'parent_slug' => 'corptools.admin_tools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.moons',
+        'title' => 'Moons',
+        'url' => '/corptools/moons',
+        'sort_order' => 54,
+        'area' => 'left',
+        'parent_slug' => 'corptools.admin_tools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.industry',
+        'title' => 'Industry',
+        'url' => '/corptools/industry',
+        'sort_order' => 55,
+        'area' => 'left',
+        'parent_slug' => 'corptools.admin_tools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.notifications',
+        'title' => 'Notifications',
+        'url' => '/corptools/notifications',
+        'sort_order' => 56,
+        'area' => 'left',
+        'parent_slug' => 'corptools.admin_tools',
+        'right_slug' => 'corptools.director',
     ]);
 
     $registry->menu([
@@ -170,10 +263,27 @@ return function (ModuleRegistry $registry): void {
         return "<nav class='mt-3'><ul class='pagination pagination-sm'>{$prev}{$items}{$next}</ul></nav>";
     };
 
+    $csrfToken = function (string $key): string {
+        $token = bin2hex(random_bytes(16));
+        $_SESSION['csrf_tokens'][$key] = $token;
+        return $token;
+    };
+
+    $csrfCheck = function (string $key, ?string $token): bool {
+        $stored = $_SESSION['csrf_tokens'][$key] ?? null;
+        unset($_SESSION['csrf_tokens'][$key]);
+        return is_string($stored) && is_string($token) && hash_equals($stored, $token);
+    };
+
+    $parseEsiDatetimeToMysql = function (?string $value): ?string {
+        return EsiDateTime::parseEsiDatetimeToMysql($value);
+    };
+
     $corptoolsSettings = new CorpToolsSettings($app->db);
     $universeShared = new Universe($app->db);
     $scopePolicy = new ScopePolicy($app->db, $universeShared);
     $scopeAudit = new ScopeAuditService($app->db);
+    $sso = new EveSso($app->db, $app->config['eve_sso'] ?? []);
     $getCorpToolsSettings = function () use ($corptoolsSettings): array {
         return $corptoolsSettings->get();
     };
@@ -283,9 +393,9 @@ return function (ModuleRegistry $registry): void {
         return $getIdentityCorpIds();
     };
 
-    $getCorpToken = function (int $corpId, array $requiredScopes) use ($app, $hasScopes): array {
+    $getCorpToken = function (int $corpId, array $requiredScopes) use ($app, $hasScopes, $sso, $scopeAudit): array {
         $rows = $app->db->all(
-            "SELECT character_id, access_token, scopes_json, expires_at
+            "SELECT user_id, character_id, access_token, refresh_token, scopes_json, expires_at
              FROM eve_tokens"
         );
         $u = new Universe($app->db);
@@ -294,11 +404,34 @@ return function (ModuleRegistry $registry): void {
             $characterId = (int)($row['character_id'] ?? 0);
             if ($characterId <= 0) continue;
 
+            $userId = (int)($row['user_id'] ?? 0);
             $accessToken = (string)($row['access_token'] ?? '');
+            $refreshToken = (string)($row['refresh_token'] ?? '');
             $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
             if (!is_array($scopes)) $scopes = [];
             $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
             $expired = $expiresAt !== null && time() > $expiresAt;
+
+            if (($expired || $accessToken === '') && $refreshToken !== '') {
+                $refresh = $sso->refreshTokenForCharacter($userId, $characterId, $refreshToken);
+                if (($refresh['status'] ?? '') === 'success') {
+                    $accessToken = (string)($refresh['token']['access_token'] ?? '');
+                    $refreshToken = (string)($refresh['token']['refresh_token'] ?? $refreshToken);
+                    $scopes = $refresh['scopes'] ?? [];
+                    $expired = false;
+                    $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
+                        'status' => 'success',
+                        'context' => 'corp_token',
+                    ]);
+                } else {
+                    $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
+                        'status' => 'failed',
+                        'context' => 'corp_token',
+                        'message' => $refresh['message'] ?? 'Refresh failed.',
+                    ]);
+                    $expired = true;
+                }
+            }
 
             if ($expired || $accessToken === '' || !$hasScopes($scopes, $requiredScopes)) {
                 continue;
@@ -444,7 +577,7 @@ return function (ModuleRegistry $registry): void {
         return $enabled;
     };
 
-    $updateMemberSummary = function (int $userId, int $mainCharacterId, string $mainName) use ($app): void {
+    $updateMemberSummary = function (int $userId, int $mainCharacterId, string $mainName) use ($app, $parseEsiDatetimeToMysql): void {
         $mainSummary = $app->db->one(
             "SELECT corp_id, alliance_id FROM module_corptools_character_summary WHERE character_id=? LIMIT 1",
             [$mainCharacterId]
@@ -477,7 +610,7 @@ return function (ModuleRegistry $registry): void {
                     foreach ($history as $entry) {
                         if (!is_array($entry)) continue;
                         if ((int)($entry['corporation_id'] ?? 0) !== $corpId) continue;
-                        $corpJoinedAt = $entry['start_date'] ?? null;
+                        $corpJoinedAt = $parseEsiDatetimeToMysql($entry['start_date'] ?? null);
                     }
                 }
             }
@@ -511,7 +644,7 @@ return function (ModuleRegistry $registry): void {
         );
     };
 
-    $runInvoiceSync = function (App $app, array $context = []) use ($tokenData, $getAvailableCorpIds, $getCorpToolsSettings): array {
+    $runInvoiceSync = function (App $app, array $context = []) use ($tokenData, $getAvailableCorpIds, $getCorpToolsSettings, $parseEsiDatetimeToMysql, $scopeAudit): array {
         $settings = $getCorpToolsSettings();
         if (empty($settings['invoices']['enabled'])) {
             return ['message' => 'Invoices disabled'];
@@ -557,13 +690,22 @@ return function (ModuleRegistry $registry): void {
                 $division = (int)$division;
                 if ($division <= 0) continue;
 
-                $entries = $cache->getCachedAuth(
+                $response = $cache->getCachedAuthWithStatus(
                     "corptools:wallet:{$corpId}:{$division}",
                     "GET /latest/corporations/{$corpId}/wallets/{$division}/journal/",
                     300,
                     (string)$token['access_token'],
                     [403, 404]
                 );
+                if (($response['status'] ?? 200) >= 400) {
+                    $scopeAudit->logEvent('esi_error', null, $characterId, [
+                        'job' => 'invoice_sync',
+                        'corp_id' => $corpId,
+                        'division' => $division,
+                        'status' => $response['status'] ?? null,
+                    ]);
+                }
+                $entries = $response['data'] ?? [];
 
                 if (!is_array($entries)) continue;
 
@@ -574,32 +716,40 @@ return function (ModuleRegistry $registry): void {
                     $amount = (float)($entry['amount'] ?? 0);
                     $balance = (float)($entry['balance'] ?? 0);
                     $refType = (string)($entry['ref_type'] ?? '');
-                    $date = (string)($entry['date'] ?? '');
+                    $date = $parseEsiDatetimeToMysql($entry['date'] ?? null) ?? date('Y-m-d H:i:s');
                     $firstParty = (int)($entry['first_party_id'] ?? 0);
                     $secondParty = (int)($entry['second_party_id'] ?? 0);
                     $reason = (string)($entry['reason'] ?? '');
 
-                    $app->db->run(
-                        "INSERT INTO module_corptools_invoice_payments
-                         (corp_id, wallet_division, journal_id, ref_type, amount, balance, entry_date, first_party_id, second_party_id, reason, raw_json, created_at)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-                         ON DUPLICATE KEY UPDATE
-                           ref_type=VALUES(ref_type), amount=VALUES(amount), balance=VALUES(balance), entry_date=VALUES(entry_date),
-                           first_party_id=VALUES(first_party_id), second_party_id=VALUES(second_party_id), reason=VALUES(reason), raw_json=VALUES(raw_json)",
-                        [
-                            $corpId,
-                            $division,
-                            $journalId,
-                            $refType,
-                            $amount,
-                            $balance,
-                            $date,
-                            $firstParty,
-                            $secondParty,
-                            $reason,
-                            json_encode($entry, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-                        ]
-                    );
+                    try {
+                        $app->db->run(
+                            "INSERT INTO module_corptools_invoice_payments
+                             (corp_id, wallet_division, journal_id, ref_type, amount, balance, entry_date, first_party_id, second_party_id, reason, raw_json, created_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                             ON DUPLICATE KEY UPDATE
+                               ref_type=VALUES(ref_type), amount=VALUES(amount), balance=VALUES(balance), entry_date=VALUES(entry_date),
+                               first_party_id=VALUES(first_party_id), second_party_id=VALUES(second_party_id), reason=VALUES(reason), raw_json=VALUES(raw_json)",
+                            [
+                                $corpId,
+                                $division,
+                                $journalId,
+                                $refType,
+                                $amount,
+                                $balance,
+                                $date,
+                                $firstParty,
+                                $secondParty,
+                                $reason,
+                                json_encode($entry, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                            ]
+                        );
+                    } catch (\Throwable $e) {
+                        $scopeAudit->logEvent('db_error', null, $characterId, [
+                            'job' => 'invoice_sync',
+                            'journal_id' => $journalId,
+                            'message' => $e->getMessage(),
+                        ]);
+                    }
                 }
             }
         }
@@ -607,13 +757,13 @@ return function (ModuleRegistry $registry): void {
     };
 
     $runAuditRefresh = function (App $app, array $context = []) use (
-        $tokenData,
         $auditCollectors,
         $enabledAuditKeys,
         $updateMemberSummary,
         $getCorpToolsSettings,
-        $getEffectiveScopesForUser,
-        $scopeAudit
+        $scopePolicy,
+        $scopeAudit,
+        $sso
     ): array {
         $settings = $getCorpToolsSettings();
         $enabledKeys = $enabledAuditKeys($settings);
@@ -622,68 +772,250 @@ return function (ModuleRegistry $registry): void {
         $dispatcher = new AuditDispatcher($app->db);
         $universe = new Universe($app->db);
 
-        $users = $app->db->all("SELECT id, character_id, character_name FROM eve_users");
-        $links = $app->db->all(
-            "SELECT user_id, character_id, character_name FROM character_links WHERE status='linked'"
-        );
-        $linksByUser = [];
-        foreach ($links as $link) {
-            $linksByUser[(int)$link['user_id']][] = [
-                'character_id' => (int)($link['character_id'] ?? 0),
-                'character_name' => (string)($link['character_name'] ?? ''),
+        $batchSize = 50;
+        $offset = 0;
+        $now = time();
+        $refreshThreshold = 300;
+        $throttleMs = (int)($context['throttle_ms'] ?? 0);
+        $logLines = [];
+        $metrics = [
+            'users_processed' => 0,
+            'characters_processed' => 0,
+            'token_refreshed' => 0,
+            'token_refresh_failed' => 0,
+            'audits_run' => 0,
+            'audits_failed' => 0,
+        ];
+
+        $normalizeToken = function (?array $row) use ($now): array {
+            if (!$row) {
+                return ['access_token' => null, 'scopes' => [], 'expired' => true, 'expires_at' => null, 'refresh_token' => null];
+            }
+            $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
+            if (!is_array($scopes)) $scopes = [];
+            $expiresAt = $row['expires_at'] ? (string)$row['expires_at'] : null;
+            $expired = false;
+            if ($expiresAt) {
+                $expiresAtTs = strtotime($expiresAt);
+                if ($expiresAtTs !== false && $now > $expiresAtTs) {
+                    $expired = true;
+                }
+            } else {
+                $expired = true;
+            }
+            return [
+                'access_token' => (string)($row['access_token'] ?? ''),
+                'refresh_token' => (string)($row['refresh_token'] ?? ''),
+                'scopes' => $scopes,
+                'expired' => $expired,
+                'expires_at' => $expiresAt,
             ];
-        }
+        };
 
-        foreach ($users as $user) {
-            $userId = (int)($user['id'] ?? 0);
-            $mainCharacterId = (int)($user['character_id'] ?? 0);
-            $mainName = (string)($user['character_name'] ?? '');
-            if ($userId <= 0 || $mainCharacterId <= 0) continue;
-
-            $characters = array_merge(
-                [['character_id' => $mainCharacterId, 'character_name' => $mainName]],
-                $linksByUser[$userId] ?? []
+        while (true) {
+            $users = $app->db->all(
+                "SELECT id, character_id, character_name
+                 FROM eve_users
+                 ORDER BY id ASC
+                 LIMIT ? OFFSET ?",
+                [$batchSize, $offset]
             );
+            if (empty($users)) {
+                break;
+            }
 
-            $scopeSet = $getEffectiveScopesForUser($userId);
-            $requiredScopes = $scopeSet['required'] ?? [];
-            $optionalScopes = $scopeSet['optional'] ?? [];
-            $policyId = $scopeSet['policy']['id'] ?? null;
+            $offset += $batchSize;
+            $userIds = array_values(array_filter(array_map(fn($row) => (int)($row['id'] ?? 0), $users)));
+            if (empty($userIds)) {
+                continue;
+            }
 
-            foreach ($characters as $character) {
-                $characterId = (int)($character['character_id'] ?? 0);
-                if ($characterId <= 0) continue;
-                $token = $tokenData($characterId);
-
-                $profile = $universe->characterProfile($characterId);
-                $characterName = (string)($profile['character']['name'] ?? ($character['character_name'] ?? 'Unknown'));
-                $baseSummary = [
-                    'corp_id' => (int)($profile['corporation']['id'] ?? 0),
-                    'alliance_id' => (int)($profile['alliance']['id'] ?? 0),
-                    'is_main' => $characterId === $mainCharacterId ? 1 : 0,
+            $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+            $memberRows = $app->db->all(
+                "SELECT user_id, corp_id, alliance_id
+                 FROM module_corptools_member_summary
+                 WHERE user_id IN ({$placeholders})",
+                $userIds
+            );
+            $memberMap = [];
+            foreach ($memberRows as $row) {
+                $uid = (int)($row['user_id'] ?? 0);
+                if ($uid <= 0) continue;
+                $memberMap[$uid] = [
+                    'corp_id' => (int)($row['corp_id'] ?? 0),
+                    'alliance_id' => (int)($row['alliance_id'] ?? 0),
                 ];
+            }
 
-                $dispatcher->run(
-                    $userId,
-                    $characterId,
-                    $characterName,
-                    $token,
-                    $auditCollectors(),
-                    $enabledKeys,
-                    $baseSummary,
-                    $requiredScopes,
-                    $optionalScopes,
-                    is_numeric($policyId) ? (int)$policyId : null,
-                    $scopeAudit
+            $links = $app->db->all(
+                "SELECT user_id, character_id, character_name
+                 FROM character_links
+                 WHERE status='linked' AND user_id IN ({$placeholders})",
+                $userIds
+            );
+            $linksByUser = [];
+            foreach ($links as $link) {
+                $linksByUser[(int)$link['user_id']][] = [
+                    'character_id' => (int)($link['character_id'] ?? 0),
+                    'character_name' => (string)($link['character_name'] ?? ''),
+                ];
+            }
+
+            $characterIds = [];
+            foreach ($users as $user) {
+                $mainCharacterId = (int)($user['character_id'] ?? 0);
+                if ($mainCharacterId > 0) {
+                    $characterIds[$mainCharacterId] = true;
+                }
+                foreach ($linksByUser[(int)($user['id'] ?? 0)] ?? [] as $link) {
+                    $cid = (int)($link['character_id'] ?? 0);
+                    if ($cid > 0) {
+                        $characterIds[$cid] = true;
+                    }
+                }
+            }
+
+            $tokenRows = [];
+            if (!empty($characterIds)) {
+                $charIds = array_keys($characterIds);
+                $charPlaceholders = implode(',', array_fill(0, count($charIds), '?'));
+                $tokenRows = $app->db->all(
+                    "SELECT user_id, character_id, access_token, refresh_token, scopes_json, expires_at
+                     FROM eve_tokens
+                     WHERE character_id IN ({$charPlaceholders})",
+                    $charIds
                 );
             }
 
-            $updateMemberSummary($userId, $mainCharacterId, $mainName);
+            $tokensByCharacter = [];
+            foreach ($tokenRows as $row) {
+                $cid = (int)($row['character_id'] ?? 0);
+                if ($cid > 0) {
+                    $tokensByCharacter[$cid] = $row;
+                }
+            }
+
+            foreach ($users as $user) {
+                $userId = (int)($user['id'] ?? 0);
+                $mainCharacterId = (int)($user['character_id'] ?? 0);
+                $mainName = (string)($user['character_name'] ?? '');
+                if ($userId <= 0 || $mainCharacterId <= 0) continue;
+
+                $metrics['users_processed']++;
+
+                $characters = array_merge(
+                    [['character_id' => $mainCharacterId, 'character_name' => $mainName]],
+                    $linksByUser[$userId] ?? []
+                );
+
+                $corpId = (int)($memberMap[$userId]['corp_id'] ?? 0);
+                $allianceId = (int)($memberMap[$userId]['alliance_id'] ?? 0);
+                if ($corpId <= 0 && $mainCharacterId > 0) {
+                    $profile = $universe->characterProfile($mainCharacterId);
+                    $corpId = (int)($profile['corporation']['id'] ?? 0);
+                    $allianceId = (int)($profile['alliance']['id'] ?? 0);
+                }
+
+                $scopeSet = $scopePolicy->getEffectiveScopesForContext($userId, $corpId, $allianceId);
+                $requiredScopes = $scopeSet['required'] ?? [];
+                $optionalScopes = $scopeSet['optional'] ?? [];
+                $policyId = $scopeSet['policy']['id'] ?? null;
+
+                foreach ($characters as $character) {
+                    $characterId = (int)($character['character_id'] ?? 0);
+                    if ($characterId <= 0) continue;
+
+                    $metrics['characters_processed']++;
+                    $token = $normalizeToken($tokensByCharacter[$characterId] ?? null);
+                    $expiresAtTs = $token['expires_at'] ? strtotime((string)$token['expires_at']) : null;
+                    $needsRefresh = empty($token['access_token']) || ($expiresAtTs !== null && ($now + $refreshThreshold) >= $expiresAtTs);
+
+                    if ($needsRefresh && !empty($token['refresh_token'])) {
+                        $refresh = $sso->refreshTokenForCharacter($userId, $characterId, (string)$token['refresh_token']);
+                        if (($refresh['status'] ?? '') === 'success') {
+                            $metrics['token_refreshed']++;
+                            $token['access_token'] = (string)($refresh['token']['access_token'] ?? '');
+                            $token['refresh_token'] = (string)($refresh['token']['refresh_token'] ?? $token['refresh_token']);
+                            $token['scopes'] = $refresh['scopes'] ?? [];
+                            $token['expires_at'] = $refresh['expires_at'] ?? null;
+                            $token['expired'] = false;
+                            $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
+                                'status' => 'success',
+                                'expires_at' => $token['expires_at'],
+                            ]);
+                        } else {
+                            $metrics['token_refresh_failed']++;
+                            $token['refresh_failed'] = true;
+                            $token['refresh_error'] = (string)($refresh['message'] ?? 'Refresh failed.');
+                            $token['expired'] = true;
+                            $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
+                                'status' => 'failed',
+                                'message' => $token['refresh_error'],
+                            ]);
+                        }
+                    } elseif ($needsRefresh) {
+                        $metrics['token_refresh_failed']++;
+                        $token['refresh_failed'] = true;
+                        $token['refresh_error'] = 'No refresh token available.';
+                        $token['expired'] = true;
+                        $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
+                            'status' => 'failed',
+                            'message' => $token['refresh_error'],
+                        ]);
+                    }
+
+                    $profile = $universe->characterProfile($characterId);
+                    $characterName = (string)($profile['character']['name'] ?? ($character['character_name'] ?? 'Unknown'));
+                    $baseSummary = [
+                        'corp_id' => (int)($profile['corporation']['id'] ?? 0),
+                        'alliance_id' => (int)($profile['alliance']['id'] ?? 0),
+                        'is_main' => $characterId === $mainCharacterId ? 1 : 0,
+                    ];
+
+                    try {
+                        $dispatcher->run(
+                            $userId,
+                            $characterId,
+                            $characterName,
+                            $token,
+                            $auditCollectors(),
+                            $enabledKeys,
+                            $baseSummary,
+                            $requiredScopes,
+                            $optionalScopes,
+                            is_numeric($policyId) ? (int)$policyId : null,
+                            $scopeAudit
+                        );
+                        $metrics['audits_run']++;
+                    } catch (\Throwable $e) {
+                        $metrics['audits_failed']++;
+                        $scopeAudit->logEvent('db_error', $userId, $characterId, [
+                            'job' => 'audit_refresh',
+                            'message' => $e->getMessage(),
+                        ]);
+                        $logLines[] = "Audit failed for {$characterName}: " . $e->getMessage();
+                    }
+                    if ($throttleMs > 0) {
+                        usleep($throttleMs * 1000);
+                    }
+                }
+
+                $updateMemberSummary($userId, $mainCharacterId, $mainName);
+            }
         }
-        return ['message' => 'Audit refresh complete'];
+
+        $logLines[] = "Processed {$metrics['users_processed']} users, {$metrics['characters_processed']} characters.";
+        $logLines[] = "Audits run: {$metrics['audits_run']}, failed: {$metrics['audits_failed']}.";
+        $logLines[] = "Token refreshes: {$metrics['token_refreshed']}, failures: {$metrics['token_refresh_failed']}.";
+
+        return [
+            'message' => 'Audit refresh complete',
+            'metrics' => $metrics,
+            'log_lines' => array_slice($logLines, -20),
+        ];
     };
 
-    $runCorpAuditRefresh = function (App $app, array $context = []) use ($getAvailableCorpIds, $getCorpToken, $getCorpToolsSettings): array {
+    $runCorpAuditRefresh = function (App $app, array $context = []) use ($getAvailableCorpIds, $getCorpToken, $getCorpToolsSettings, $parseEsiDatetimeToMysql, $scopeAudit): array {
         $settings = $getCorpToolsSettings();
         $enabled = $settings['corp_audit'] ?? [];
         if (empty(array_filter($enabled, fn($val) => !empty($val)))) {
@@ -734,33 +1066,51 @@ return function (ModuleRegistry $registry): void {
                 if (empty($token['access_token']) || $token['expired']) continue;
 
                 $endpoint = str_replace('{corp_id}', (string)$corpId, $cfg['endpoint']);
-                $payload = $cache->getCachedAuth(
+                $response = $cache->getCachedAuthWithStatus(
                     "corptools:corp:{$corpId}",
                     "GET {$endpoint}",
                     (int)$cfg['ttl'],
                     (string)$token['access_token'],
                     [403, 404]
                 );
+                if (($response['status'] ?? 200) >= 400) {
+                    $scopeAudit->logEvent('esi_error', null, $token['character_id'] ?? null, [
+                        'job' => 'corp_audit_refresh',
+                        'corp_id' => $corpId,
+                        'endpoint' => $endpoint,
+                        'status' => $response['status'] ?? null,
+                    ]);
+                }
+                $payload = $response['data'] ?? [];
 
-                $app->db->run(
-                    "INSERT INTO module_corptools_corp_audit (corp_id, category, data_json, fetched_at)
-                     VALUES (?, ?, ?, NOW())
-                     ON DUPLICATE KEY UPDATE data_json=VALUES(data_json), fetched_at=NOW()",
-                    [
-                        $corpId,
-                        $key,
-                        json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-                    ]
-                );
-                $app->db->run(
-                    "INSERT INTO module_corptools_corp_audit_snapshots (corp_id, category, data_json, fetched_at)
-                     VALUES (?, ?, ?, NOW())",
-                    [
-                        $corpId,
-                        $key,
-                        json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-                    ]
-                );
+                try {
+                    $app->db->run(
+                        "INSERT INTO module_corptools_corp_audit (corp_id, category, data_json, fetched_at)
+                         VALUES (?, ?, ?, NOW())
+                         ON DUPLICATE KEY UPDATE data_json=VALUES(data_json), fetched_at=NOW()",
+                        [
+                            $corpId,
+                            $key,
+                            json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                        ]
+                    );
+                    $app->db->run(
+                        "INSERT INTO module_corptools_corp_audit_snapshots (corp_id, category, data_json, fetched_at)
+                         VALUES (?, ?, ?, NOW())",
+                        [
+                            $corpId,
+                            $key,
+                            json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                        ]
+                    );
+                } catch (\Throwable $e) {
+                    $scopeAudit->logEvent('db_error', null, $token['character_id'] ?? null, [
+                        'job' => 'corp_audit_refresh',
+                        'corp_id' => $corpId,
+                        'category' => $key,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
 
                 if ($key === 'structures' && is_array($payload)) {
                     foreach ($payload as $structure) {
@@ -777,26 +1127,36 @@ return function (ModuleRegistry $registry): void {
                             }
                         }
 
-                        $app->db->run(
-                            "INSERT INTO module_corptools_industry_structures
-                             (corp_id, structure_id, name, system_id, region_id, rigs_json, services_json, fuel_expires_at, state)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                             ON DUPLICATE KEY UPDATE
-                               name=VALUES(name), system_id=VALUES(system_id), region_id=VALUES(region_id),
-                               rigs_json=VALUES(rigs_json), services_json=VALUES(services_json),
-                               fuel_expires_at=VALUES(fuel_expires_at), state=VALUES(state)",
-                            [
-                                $corpId,
-                                $structureId,
-                                (string)($structure['name'] ?? ''),
-                                $systemId,
-                                $regionId,
-                                json_encode($structure['rigs'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-                                json_encode($structure['services'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-                                $structure['fuel_expires'] ?? null,
-                                (string)($structure['state'] ?? ''),
-                            ]
-                        );
+                        $fuelExpires = $parseEsiDatetimeToMysql($structure['fuel_expires'] ?? null);
+                        try {
+                            $app->db->run(
+                                "INSERT INTO module_corptools_industry_structures
+                                 (corp_id, structure_id, name, system_id, region_id, rigs_json, services_json, fuel_expires_at, state)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 ON DUPLICATE KEY UPDATE
+                                   name=VALUES(name), system_id=VALUES(system_id), region_id=VALUES(region_id),
+                                   rigs_json=VALUES(rigs_json), services_json=VALUES(services_json),
+                                   fuel_expires_at=VALUES(fuel_expires_at), state=VALUES(state)",
+                                [
+                                    $corpId,
+                                    $structureId,
+                                    (string)($structure['name'] ?? ''),
+                                    $systemId,
+                                    $regionId,
+                                    json_encode($structure['rigs'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                                    json_encode($structure['services'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                                    $fuelExpires,
+                                    (string)($structure['state'] ?? ''),
+                                ]
+                            );
+                        } catch (\Throwable $e) {
+                            $scopeAudit->logEvent('db_error', null, $token['character_id'] ?? null, [
+                                'job' => 'corp_audit_refresh',
+                                'corp_id' => $corpId,
+                                'structure_id' => $structureId,
+                                'message' => $e->getMessage(),
+                            ]);
+                        }
                     }
                 }
             }
@@ -1777,7 +2137,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Invoices', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/members', function (Request $req) use ($app, $renderPage, $corpContext, $getCorpToolsSettings, $renderCorpContext): Response {
+    $registry->route('GET', '/corptools/members', function (Request $req) use ($app, $renderPage, $corpContext, $getCorpToolsSettings, $renderCorpContext, $renderPagination): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -1793,6 +2153,10 @@ return function (ModuleRegistry $registry): void {
         $settings = $getCorpToolsSettings();
         $defaultAssetMin = (string)($settings['filters']['asset_value_min'] ?? '');
         $defaultAuditOnly = !empty($settings['filters']['audit_loaded_only']) ? '1' : '';
+        $queryParams = $req->query;
+        unset($queryParams['page']);
+        $useDefaults = empty(array_filter($queryParams, fn($val) => $val !== '' && $val !== null));
+        $defaultAuditStatus = $useDefaults ? 'needs_attention' : (string)($req->query['audit_status'] ?? '');
 
         $resolveEntityId = function (string $type, string $value) use ($app): string {
             $value = trim($value);
@@ -1812,6 +2176,7 @@ return function (ModuleRegistry $registry): void {
         $filters = [
             'asset_presence' => (string)($req->query['asset_presence'] ?? ''),
             'name' => $nameInput,
+            'corp_id' => (string)($corp['id'] ?? ''),
             'asset_value_min' => (string)($req->query['asset_value_min'] ?? $defaultAssetMin),
             'location_region_id' => (string)($req->query['location_region_id'] ?? ''),
             'location_system_id' => $resolveEntityId('system', $locationSystemInput),
@@ -1824,7 +2189,12 @@ return function (ModuleRegistry $registry): void {
             'home_station_id' => (string)($req->query['home_station_id'] ?? ''),
             'death_clone_location_id' => (string)($req->query['death_clone_location_id'] ?? ''),
             'jump_clone_location_id' => (string)($req->query['jump_clone_location_id'] ?? ''),
-            'audit_loaded' => (string)($req->query['audit_loaded'] ?? $defaultAuditOnly),
+            'audit_loaded' => (string)($req->query['audit_loaded'] ?? ($useDefaults ? '' : $defaultAuditOnly)),
+            'audit_status' => $defaultAuditStatus,
+            'token_status' => (string)($req->query['token_status'] ?? ''),
+            'missing_scopes' => (string)($req->query['missing_scopes'] ?? ''),
+            'missing_scope' => (string)($req->query['missing_scope'] ?? ''),
+            'last_audit_age' => (string)($req->query['last_audit_age'] ?? ''),
             'skill_id' => (string)($req->query['skill_id'] ?? ''),
             'asset_type_id' => (string)($req->query['asset_type_id'] ?? ''),
             'asset_group_id' => (string)($req->query['asset_group_id'] ?? ''),
@@ -1849,27 +2219,53 @@ return function (ModuleRegistry $registry): void {
         $rowsHtml = '';
         foreach ($rows as $row) {
             $name = htmlspecialchars((string)($row['main_character_name'] ?? $row['character_name'] ?? 'Unknown'));
-            $sp = number_format((int)($row['highest_sp'] ?? 0));
-            $audit = ((int)($row['audit_loaded'] ?? 0) === 1) ? 'Yes' : 'No';
+            $auditLoaded = ((int)($row['audit_loaded'] ?? 0) === 1) ? 'Loaded' : 'Missing';
             $systemId = (int)($row['location_system_id'] ?? 0);
             $systemName = $systemId > 0 ? htmlspecialchars($u->name('system', $systemId)) : '—';
             $shipTypeId = (int)($row['current_ship_type_id'] ?? 0);
             $shipName = $shipTypeId > 0 ? htmlspecialchars($u->name('type', $shipTypeId)) : '—';
-            $assets = (int)($row['assets_count'] ?? 0);
             $title = htmlspecialchars((string)($row['corp_title'] ?? '—'));
+            $lastAudit = htmlspecialchars((string)($row['last_audit_at'] ?? '—'));
+            $lastLogin = htmlspecialchars((string)($row['last_login_at'] ?? '—'));
+            $scopeStatus = (string)($row['scope_status'] ?? 'UNKNOWN');
+            $scopeBadge = match ($scopeStatus) {
+                'COMPLIANT' => 'bg-success',
+                'MISSING_SCOPES' => 'bg-warning text-dark',
+                'TOKEN_EXPIRED' => 'bg-secondary',
+                'TOKEN_INVALID' => 'bg-danger',
+                'TOKEN_REFRESH_FAILED' => 'bg-danger',
+                default => 'bg-dark',
+            };
+            $tokenStatus = match ($scopeStatus) {
+                'TOKEN_EXPIRED' => 'Expired',
+                'TOKEN_INVALID' => 'Invalid',
+                'TOKEN_REFRESH_FAILED' => 'Refresh failed',
+                'UNKNOWN' => 'Unknown',
+                default => 'Valid',
+            };
+            $missing = [];
+            if (!empty($row['missing_scopes_json'])) {
+                $missing = json_decode((string)$row['missing_scopes_json'], true);
+                if (!is_array($missing)) $missing = [];
+            }
+            $missingText = $missing ? htmlspecialchars(implode(', ', $missing)) : '—';
 
             $rowsHtml .= "<tr>
-                <td>{$name}</td>
-                <td>{$sp}</td>
-                <td>{$audit}</td>
+                <td>
+                  <div class='fw-semibold'>{$name}</div>
+                  <div class='text-muted small'>Last login: {$lastLogin}</div>
+                </td>
+                <td>{$title}</td>
+                <td><span class='badge {$scopeBadge}'>" . htmlspecialchars($scopeStatus) . "</span><div class='text-muted small'>{$auditLoaded}</div></td>
+                <td>{$tokenStatus}</td>
+                <td>{$missingText}</td>
+                <td>{$lastAudit}</td>
                 <td>{$systemName}</td>
                 <td>{$shipName}</td>
-                <td>{$assets}</td>
-                <td>{$title}</td>
               </tr>";
         }
         if ($rowsHtml === '') {
-            $rowsHtml = "<tr><td colspan='7' class='text-muted'>No members matched the filters yet.</td></tr>";
+            $rowsHtml = "<tr><td colspan='8' class='text-muted'>No members matched the filters yet.</td></tr>";
         }
 
         $pagination = $renderPagination(
@@ -1888,6 +2284,11 @@ return function (ModuleRegistry $registry): void {
                 'corp_title' => $filters['corp_title'],
                 'highest_sp_min' => $filters['highest_sp_min'],
                 'audit_loaded' => $filters['audit_loaded'],
+                'audit_status' => $filters['audit_status'],
+                'token_status' => $filters['token_status'],
+                'missing_scopes' => $filters['missing_scopes'],
+                'missing_scope' => $filters['missing_scope'],
+                'last_audit_age' => $filters['last_audit_age'],
                 'skill_id' => $filters['skill_id'],
                 'asset_type_id' => $filters['asset_type_id'],
                 'asset_group_id' => $filters['asset_group_id'],
@@ -1911,11 +2312,55 @@ return function (ModuleRegistry $registry): void {
                         <input class='form-control' name='name' value='" . htmlspecialchars($nameInput) . "' placeholder='Search name'>
                       </div>
                       <div class='col-md-3'>
+                        <label class='form-label'>Audit status</label>
+                        <select class='form-select' name='audit_status'>
+                          <option value=''>Any</option>
+                          <option value='needs_attention'" . ($filters['audit_status'] === 'needs_attention' ? ' selected' : '') . ">Needs attention</option>
+                          <option value='compliant'" . ($filters['audit_status'] === 'compliant' ? ' selected' : '') . ">Compliant</option>
+                          <option value='missing_scopes'" . ($filters['audit_status'] === 'missing_scopes' ? ' selected' : '') . ">Missing scopes</option>
+                          <option value='token_expired'" . ($filters['audit_status'] === 'token_expired' ? ' selected' : '') . ">Token expired</option>
+                          <option value='token_invalid'" . ($filters['audit_status'] === 'token_invalid' ? ' selected' : '') . ">Token invalid</option>
+                          <option value='token_refresh_failed'" . ($filters['audit_status'] === 'token_refresh_failed' ? ' selected' : '') . ">Token refresh failed</option>
+                          <option value='audit_missing'" . ($filters['audit_status'] === 'audit_missing' ? ' selected' : '') . ">Audit missing</option>
+                        </select>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Token status</label>
+                        <select class='form-select' name='token_status'>
+                          <option value=''>Any</option>
+                          <option value='valid'" . ($filters['token_status'] === 'valid' ? ' selected' : '') . ">Valid</option>
+                          <option value='expired'" . ($filters['token_status'] === 'expired' ? ' selected' : '') . ">Expired</option>
+                          <option value='invalid'" . ($filters['token_status'] === 'invalid' ? ' selected' : '') . ">Invalid</option>
+                          <option value='refresh_failed'" . ($filters['token_status'] === 'refresh_failed' ? ' selected' : '') . ">Refresh failed</option>
+                        </select>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Missing scopes</label>
+                        <select class='form-select' name='missing_scopes'>
+                          <option value=''>Any</option>
+                          <option value='1'" . ($filters['missing_scopes'] === '1' ? ' selected' : '') . ">Missing any</option>
+                        </select>
+                      </div>
+                      <div class='col-md-3'>
                         <label class='form-label'>Assets</label>
                         <select class='form-select' name='asset_presence'>
                           <option value=''>Any</option>
                           <option value='has'" . ($filters['asset_presence'] === 'has' ? ' selected' : '') . ">Has assets</option>
                           <option value='none'" . ($filters['asset_presence'] === 'none' ? ' selected' : '') . ">No assets</option>
+                        </select>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Missing scope (exact)</label>
+                        <input class='form-control' name='missing_scope' value='" . htmlspecialchars($filters['missing_scope']) . "' placeholder='esi-skills.read_skills.v1'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Last audit age</label>
+                        <select class='form-select' name='last_audit_age'>
+                          <option value=''>Any</option>
+                          <option value='7d'" . ($filters['last_audit_age'] === '7d' ? ' selected' : '') . ">Last 7 days</option>
+                          <option value='30d'" . ($filters['last_audit_age'] === '30d' ? ' selected' : '') . ">Last 30 days</option>
+                          <option value='30plus'" . ($filters['last_audit_age'] === '30plus' ? ' selected' : '') . ">Older than 30 days</option>
+                          <option value='never'" . ($filters['last_audit_age'] === 'never' ? ' selected' : '') . ">Never audited</option>
                         </select>
                       </div>
                       <div class='col-md-3'>
@@ -1985,18 +2430,20 @@ return function (ModuleRegistry $registry): void {
                         <thead>
                           <tr>
                             <th>Member</th>
-                            <th>Highest SP</th>
-                            <th>Audit</th>
+                            <th>Title</th>
+                            <th>Audit status</th>
+                            <th>Token</th>
+                            <th>Missing scopes</th>
+                            <th>Last audit</th>
                             <th>Location</th>
                             <th>Ship</th>
-                            <th>Assets</th>
-                            <th>Title</th>
                           </tr>
                         </thead>
                         <tbody>{$rowsHtml}</tbody>
                       </table>
                     </div>
-                  </div>";
+                  </div>
+                  {$pagination}";
 
         return Response::html($renderPage('Members', $body), 200);
     }, ['right' => 'corptools.director']);
@@ -2595,6 +3042,23 @@ return function (ModuleRegistry $registry): void {
             $scopeStatusTable = "<tr><td colspan='2' class='text-muted'>No scope status data yet.</td></tr>";
         }
 
+        $tokenRefreshFailures = (int)($app->db->one(
+            "SELECT COUNT(*) AS total FROM module_corptools_character_scope_status WHERE status='TOKEN_REFRESH_FAILED'"
+        )['total'] ?? 0);
+        $missingScopesTotal = (int)($app->db->one(
+            "SELECT COUNT(*) AS total FROM module_corptools_character_scope_status WHERE status='MISSING_SCOPES'"
+        )['total'] ?? 0);
+        $esiErrors24 = (int)($app->db->one(
+            "SELECT COUNT(*) AS total
+             FROM module_corptools_audit_events
+             WHERE event='esi_error' AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
+        )['total'] ?? 0);
+        $dbErrors24 = (int)($app->db->one(
+            "SELECT COUNT(*) AS total
+             FROM module_corptools_audit_events
+             WHERE event='db_error' AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
+        )['total'] ?? 0);
+
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>CorpTools Status</h1>
@@ -2654,6 +3118,32 @@ return function (ModuleRegistry $registry): void {
                     <div class='text-muted'>Last audit run: {$auditLastRun}</div>
                     <div class='text-muted'>Audit runs (24h): {$auditRuns24}</div>
                     <div class='text-muted'>Audit failures (24h): {$auditFailures24}</div>
+                    <div class='row g-2 mt-2'>
+                      <div class='col-md-3'>
+                        <div class='card card-body'>
+                          <div class='text-muted small'>Token refresh failures</div>
+                          <div class='fw-semibold'>{$tokenRefreshFailures}</div>
+                        </div>
+                      </div>
+                      <div class='col-md-3'>
+                        <div class='card card-body'>
+                          <div class='text-muted small'>Missing scopes</div>
+                          <div class='fw-semibold'>{$missingScopesTotal}</div>
+                        </div>
+                      </div>
+                      <div class='col-md-3'>
+                        <div class='card card-body'>
+                          <div class='text-muted small'>ESI errors (24h)</div>
+                          <div class='fw-semibold'>{$esiErrors24}</div>
+                        </div>
+                      </div>
+                      <div class='col-md-3'>
+                        <div class='card card-body'>
+                          <div class='text-muted small'>DB errors (24h)</div>
+                          <div class='fw-semibold'>{$dbErrors24}</div>
+                        </div>
+                      </div>
+                    </div>
                     <div class='table-responsive mt-3'>
                       <table class='table table-sm align-middle'>
                         <thead><tr><th>Status</th><th>Count</th></tr></thead>
@@ -2815,7 +3305,8 @@ return function (ModuleRegistry $registry): void {
                     SUM(status='COMPLIANT') AS compliant,
                     SUM(status='MISSING_SCOPES') AS missing_scopes,
                     SUM(status='TOKEN_EXPIRED') AS token_expired,
-                    SUM(status='TOKEN_INVALID') AS token_invalid
+                    SUM(status='TOKEN_INVALID') AS token_invalid,
+                    SUM(status='TOKEN_REFRESH_FAILED') AS token_refresh_failed
              FROM module_corptools_character_scope_status"
         );
         $summaryTotal = (int)($summaryRow['total'] ?? 0);
@@ -2823,6 +3314,7 @@ return function (ModuleRegistry $registry): void {
         $summaryMissing = (int)($summaryRow['missing_scopes'] ?? 0);
         $summaryExpired = (int)($summaryRow['token_expired'] ?? 0);
         $summaryInvalid = (int)($summaryRow['token_invalid'] ?? 0);
+        $summaryRefreshFailed = (int)($summaryRow['token_refresh_failed'] ?? 0);
         $summaryPct = $summaryTotal > 0 ? round(($summaryCompliant / $summaryTotal) * 100, 1) : 0;
 
         $pagination = $renderPagination(
@@ -2854,6 +3346,7 @@ return function (ModuleRegistry $registry): void {
             'MISSING_SCOPES' => 'Missing scopes',
             'TOKEN_EXPIRED' => 'Token expired',
             'TOKEN_INVALID' => 'Token invalid',
+            'TOKEN_REFRESH_FAILED' => 'Token refresh failed',
         ];
         $statusSelect = '';
         foreach ($statusOptions as $value => $label) {
@@ -2925,6 +3418,7 @@ return function (ModuleRegistry $registry): void {
                     'MISSING_SCOPES' => 'bg-warning text-dark',
                     'TOKEN_EXPIRED' => 'bg-secondary',
                     'TOKEN_INVALID' => 'bg-danger',
+                    'TOKEN_REFRESH_FAILED' => 'bg-danger',
                     default => 'bg-dark',
                 };
                 if ($status === 'COMPLIANT') {
@@ -3014,6 +3508,7 @@ return function (ModuleRegistry $registry): void {
                         <div class='text-muted small'>Token issues</div>
                         <div class='fs-6'>Expired: {$summaryExpired}</div>
                         <div class='fs-6'>Invalid: {$summaryInvalid}</div>
+                        <div class='fs-6'>Refresh failed: {$summaryRefreshFailed}</div>
                       </div>
                     </div>
                   </div>
@@ -3336,7 +3831,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Cron Job Manager', $body), 200);
     }, ['right' => 'corptools.cron.manage']);
 
-    $registry->route('GET', '/admin/corptools/cron/job', function (Request $req) use ($app, $renderPage): Response {
+    $registry->route('GET', '/admin/corptools/cron/job', function (Request $req) use ($app, $renderPage, $csrfToken): Response {
         $jobKey = (string)($req->query['job'] ?? '');
         if ($jobKey === '') {
             return Response::redirect('/admin/corptools/cron');
@@ -3387,6 +3882,7 @@ return function (ModuleRegistry $registry): void {
 
         $enabled = ((int)($job['is_enabled'] ?? 0) === 1) ? 'Enabled' : 'Disabled';
 
+        $csrf = $csrfToken('corptools_cron_run');
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>Job: " . htmlspecialchars((string)$job['name']) . "</h1>
@@ -3405,6 +3901,7 @@ return function (ModuleRegistry $registry): void {
                     <div class='text-muted'>Next run: " . htmlspecialchars((string)($job['next_run_at'] ?? '—')) . "</div>
                   </div>
                   <form method='post' action='/admin/corptools/cron/run' class='card card-body mt-3'>
+                    <input type='hidden' name='csrf_token' value='" . htmlspecialchars($csrf) . "'>
                     <input type='hidden' name='job_key' value='" . htmlspecialchars((string)$job['job_key']) . "'>
                     <div class='fw-semibold mb-2'>Run now</div>
                     <div class='form-check'>
@@ -3547,6 +4044,11 @@ return function (ModuleRegistry $registry): void {
         $meta = json_decode((string)($run['meta_json'] ?? '[]'), true);
         $metaText = htmlspecialchars(json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
         $traceText = htmlspecialchars((string)($run['error_trace'] ?? ''));
+        $logLines = [];
+        if (is_array($meta) && isset($meta['log_lines']) && is_array($meta['log_lines'])) {
+            $logLines = $meta['log_lines'];
+        }
+        $logText = $logLines ? htmlspecialchars(implode("\n", array_map('strval', $logLines))) : '—';
 
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
@@ -3569,6 +4071,10 @@ return function (ModuleRegistry $registry): void {
                     <pre class='small mb-0'>{$metaText}</pre>
                   </div>
                   <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Output</div>
+                    <pre class='small mb-0'>{$logText}</pre>
+                  </div>
+                  <div class='card card-body mt-3'>
                     <div class='fw-semibold mb-2'>Error Trace</div>
                     <pre class='small mb-0'>" . ($traceText !== '' ? $traceText : '—') . "</pre>
                   </div>";
@@ -3576,10 +4082,13 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Run Detail', $body), 200);
     }, ['right' => 'corptools.cron.manage']);
 
-    $registry->route('POST', '/admin/corptools/cron/run', function (Request $req) use ($app): Response {
+    $registry->route('POST', '/admin/corptools/cron/run', function (Request $req) use ($app, $csrfCheck): Response {
         $jobKey = (string)($req->post['job_key'] ?? '');
         if ($jobKey === '') {
             return Response::redirect('/admin/corptools/cron');
+        }
+        if (!$csrfCheck('corptools_cron_run', (string)($req->post['csrf_token'] ?? ''))) {
+            return Response::text('403 Forbidden', 403);
         }
         JobRegistry::sync($app->db);
         $runner = new JobRunner($app->db, JobRegistry::definitionsByKey());

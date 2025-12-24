@@ -85,24 +85,61 @@ final class Dispatcher
 
             $payloads = [];
             foreach ($collector->endpoints($characterId) as $endpoint) {
-                $payloads[] = $cache->getCachedAuth(
+                $response = $cache->getCachedAuthWithStatus(
                     "corptools:audit:{$characterId}",
                     "GET {$endpoint}",
                     $collector->ttlSeconds(),
                     (string)($token['access_token'] ?? ''),
                     [403, 404]
                 );
+                if ($scopeAudit && ($response['status'] ?? 200) >= 400) {
+                    $scopeAudit->logEvent('esi_error', $userId, $characterId, [
+                        'collector' => $key,
+                        'endpoint' => $endpoint,
+                        'status' => $response['status'] ?? null,
+                    ]);
+                }
+                $payloads[] = $response['data'] ?? [];
             }
 
-            $this->storeAuditPayload($userId, $characterId, $key, $payloads);
-            $summaryUpdates = array_merge($summaryUpdates, $collector->summarize($characterId, $payloads));
+            try {
+                $this->storeAuditPayload($userId, $characterId, $key, $payloads);
+                $summaryUpdates = array_merge($summaryUpdates, $collector->summarize($characterId, $payloads));
+            } catch (\Throwable $e) {
+                $summaryUpdates['audit_loaded'] = 0;
+                if ($scopeAudit) {
+                    $scopeAudit->logEvent('db_error', $userId, $characterId, [
+                        'collector' => $key,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+                continue;
+            }
 
             if ($key === 'assets') {
-                $this->storeAssets($userId, $characterId, $payloads[0] ?? [], $universe);
+                try {
+                    $this->storeAssets($userId, $characterId, $payloads[0] ?? [], $universe);
+                } catch (\Throwable $e) {
+                    if ($scopeAudit) {
+                        $scopeAudit->logEvent('db_error', $userId, $characterId, [
+                            'collector' => $key,
+                            'message' => $e->getMessage(),
+                        ]);
+                    }
+                }
             }
 
             if ($key === 'skills') {
-                $this->storeSkills($userId, $characterId, $payloads[0] ?? []);
+                try {
+                    $this->storeSkills($userId, $characterId, $payloads[0] ?? []);
+                } catch (\Throwable $e) {
+                    if ($scopeAudit) {
+                        $scopeAudit->logEvent('db_error', $userId, $characterId, [
+                            'collector' => $key,
+                            'message' => $e->getMessage(),
+                        ]);
+                    }
+                }
             }
 
             if ($key === 'location') {
@@ -117,7 +154,17 @@ final class Dispatcher
             }
         }
 
-        $this->upsertCharacterSummary($userId, $characterId, $characterName, $summaryUpdates);
+        try {
+            $this->upsertCharacterSummary($userId, $characterId, $characterName, $summaryUpdates);
+        } catch (\Throwable $e) {
+            if ($scopeAudit) {
+                $scopeAudit->logEvent('db_error', $userId, $characterId, [
+                    'collector' => 'summary',
+                    'message' => $e->getMessage(),
+                ]);
+            }
+            $summaryUpdates['audit_loaded'] = 0;
+        }
         $finalStatus = empty($missing) ? 'completed' : 'partial';
         $this->finishRun($runId, $finalStatus, empty($missing) ? '' : 'Missing scopes.');
         if ($scopeAudit) {

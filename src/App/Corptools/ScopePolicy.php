@@ -66,6 +66,11 @@ final class ScopePolicy
             $allianceId = (int)($profile['alliance']['id'] ?? 0);
         }
 
+        return $this->getEffectiveScopesForContext($userId, $corpId, $allianceId);
+    }
+
+    public function getEffectiveScopesForContext(int $userId, int $corpId, int $allianceId): array
+    {
         $policy = $this->getActivePolicyForContext($corpId, $allianceId);
         if (!$policy) {
             return [
