@@ -12,6 +12,8 @@ use App\Core\ModuleRegistry;
 use App\Core\Rights;
 use App\Core\Settings;
 use App\Core\Universe;
+use App\Corptools\ScopePolicy;
+use App\Corptools\Audit\ScopeAuditService;
 use App\Http\Request;
 use App\Http\Response;
 
@@ -23,6 +25,12 @@ return function (ModuleRegistry $registry): void {
         $override = $_SESSION['sso_scopes_override'] ?? null;
         if (is_array($override) && !empty($override)) {
             $cfg['scopes'] = array_values(array_unique(array_filter($override, 'is_string')));
+        } else {
+            $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+            $defaultPolicy = $scopePolicy->getDefaultPolicy();
+            if ($defaultPolicy && !empty($defaultPolicy['required_scopes'])) {
+                $cfg['scopes'] = $defaultPolicy['required_scopes'];
+            }
         }
         $sso = new EveSso($app->db, $cfg);
 
@@ -41,7 +49,43 @@ return function (ModuleRegistry $registry): void {
         try {
             $cfg = $app->config['eve_sso'] ?? [];
             $sso = new EveSso($app->db, $cfg);
-            $sso->handleCallback($code, $state);
+            $result = $sso->handleCallback($code, $state);
+
+            $userId = (int)($result['user_id'] ?? 0);
+            $characterId = (int)($result['character_id'] ?? 0);
+            if ($userId > 0 && $characterId > 0) {
+                $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+                $scopeSet = $scopePolicy->getEffectiveScopesForUser($userId);
+                $tokenRow = $app->db->one(
+                    "SELECT access_token, scopes_json, expires_at
+                     FROM eve_tokens
+                     WHERE character_id=? LIMIT 1",
+                    [$characterId]
+                );
+                $tokenScopes = json_decode((string)($tokenRow['scopes_json'] ?? '[]'), true);
+                if (!is_array($tokenScopes)) $tokenScopes = [];
+                $token = [
+                    'access_token' => (string)($tokenRow['access_token'] ?? ''),
+                    'scopes' => $tokenScopes,
+                    'expires_at' => $tokenRow['expires_at'] ?? null,
+                    'expired' => false,
+                ];
+                if (!empty($token['expires_at'])) {
+                    $expiresAt = strtotime((string)$token['expires_at']);
+                    if ($expiresAt !== false && time() > $expiresAt) {
+                        $token['expired'] = true;
+                    }
+                }
+                $scopeAudit = new ScopeAuditService($app->db);
+                $scopeAudit->evaluate(
+                    $userId,
+                    $characterId,
+                    $token,
+                    $scopeSet['required'] ?? [],
+                    $scopeSet['optional'] ?? [],
+                    $scopeSet['policy']['id'] ?? null
+                );
+            }
 
             $redirect = $_SESSION['charlink_redirect'] ?? null;
             if (is_string($redirect) && $redirect !== '') {
