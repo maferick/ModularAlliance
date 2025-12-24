@@ -84,6 +84,9 @@ final class JobRunner
                 if (isset($result['metrics'])) {
                     $meta['metrics'] = $result['metrics'];
                 }
+                if (isset($result['log_lines']) && is_array($result['log_lines'])) {
+                    $meta['log_lines'] = array_slice(array_map('strval', $result['log_lines']), -50);
+                }
             }
         } catch (\Throwable $e) {
             $status = 'failed';

@@ -280,6 +280,67 @@ final class EveSso
         ];
     }
 
+    public function refreshTokenForCharacter(int $userId, int $characterId, string $refreshToken): array
+    {
+        if ($refreshToken === '') {
+            return ['status' => 'failed', 'message' => 'Missing refresh token.'];
+        }
+
+        $meta = $this->getMetadata();
+        $clientId = (string)$this->cfg['client_id'];
+        $secret   = (string)$this->cfg['client_secret'];
+        $basic = base64_encode($clientId . ':' . $secret);
+
+        [$status, $body] = HttpClient::postForm(
+            $meta['token_endpoint'],
+            [
+                'grant_type' => 'refresh_token',
+                'refresh_token' => $refreshToken,
+            ],
+            ['Authorization: Basic ' . $basic],
+            15
+        );
+
+        $this->audit('sso.refresh_token_response', [
+            'http_status' => $status,
+            'body' => $body,
+            'character_id' => $characterId,
+        ]);
+
+        if ($status < 200 || $status >= 300) {
+            return ['status' => 'failed', 'message' => "Refresh failed (HTTP {$status}): " . substr($body, 0, 300)];
+        }
+
+        $token = json_decode($body, true);
+        if (!is_array($token) || empty($token['access_token'])) {
+            return ['status' => 'failed', 'message' => 'Invalid token JSON.'];
+        }
+
+        if (empty($token['refresh_token'])) {
+            $token['refresh_token'] = $refreshToken;
+        }
+
+        $jwtPayload = $this->decodeJwtPayload((string)$token['access_token']);
+        $this->upsertToken($userId, $characterId, $token, $jwtPayload);
+
+        $expiresAt = null;
+        if (!empty($jwtPayload['exp']) && is_numeric($jwtPayload['exp'])) {
+            $expiresAt = gmdate('Y-m-d H:i:s', (int)$jwtPayload['exp']);
+        }
+        $scopes = $jwtPayload['scp'] ?? [];
+        if (!is_array($scopes)) {
+            $scopes = [];
+        }
+
+        return [
+            'status' => 'success',
+            'token' => $token,
+            'jwt' => $jwtPayload,
+            'expires_at' => $expiresAt,
+            'scopes' => $scopes,
+        ];
+    }
+
     private function getMetadata(): array
     {
         $url = (string)$this->cfg['metadata_url'];

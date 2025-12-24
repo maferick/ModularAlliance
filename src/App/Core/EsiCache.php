@@ -214,6 +214,23 @@ final class EsiCache
         string $accessToken,
         array $ignoreStatus = []
     ): array {
+        $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus);
+        return $result['data'];
+    }
+
+    /**
+     * Authenticated cache helper using Bearer tokens with status visibility.
+     *
+     * @param array<int, int> $ignoreStatus
+     * @return array{status:int, data:array}
+     */
+    public function getCachedAuthWithStatus(
+        string $scopeKey,
+        string $urlKey,
+        int $ttlSeconds,
+        string $accessToken,
+        array $ignoreStatus = []
+    ): array {
         $cacheKey = hash('sha256', $urlKey);
         $rKey = 'esi:' . $scopeKey . ':' . $cacheKey;
 
@@ -225,7 +242,12 @@ final class EsiCache
                     $ttl = (int)$hit['ttl'];
                     if ($fetched > 0 && $ttl > 0 && time() < ($fetched + $ttl)) {
                         $decoded = json_decode((string)$hit['payload'], true);
-                        if (is_array($decoded)) return $decoded;
+                        if (is_array($decoded)) {
+                            return [
+                                'status' => (int)($hit['status'] ?? 200),
+                                'data' => $decoded,
+                            ];
+                        }
                     }
                 }
             } catch (\Throwable $ignore) {}
@@ -244,7 +266,12 @@ final class EsiCache
             $ttl     = (int)$row['ttl_seconds'];
             if (time() < ($fetched + $ttl)) {
                 $decoded = json_decode((string)$row['payload_json'], true);
-                if (is_array($decoded)) return $decoded;
+                if (is_array($decoded)) {
+                    return [
+                        'status' => (int)($row['status_code'] ?? 200),
+                        'data' => $decoded,
+                    ];
+                }
             }
         }
 
@@ -277,7 +304,7 @@ final class EsiCache
                         ], max(1, $ttlSeconds));
                     } catch (\Throwable $ignore) {}
                 }
-                return $data;
+                return ['status' => $status, 'data' => $data];
             }
 
             if (in_array($status, $ignoreStatus, true)) {
@@ -286,7 +313,7 @@ final class EsiCache
                      VALUES (?, ?, ?, ?, NOW(), ?, ?)",
                     [$scopeKey, $cacheKey, $urlKey, json_encode([]), min($ttlSeconds, 300), $status]
                 );
-                return [];
+                return ['status' => $status, 'data' => []];
             }
 
             throw new \RuntimeException("ESI HTTP {$status}");
@@ -305,7 +332,7 @@ final class EsiCache
                     ]
                 );
             } catch (\Throwable $ignore) {}
-            return [];
+            return ['status' => 599, 'data' => []];
         }
     }
 }

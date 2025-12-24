@@ -10,9 +10,11 @@ final class MemberQueryBuilder
     {
         $sql = "SELECT ms.*, cs.character_name, cs.assets_count, cs.assets_value, cs.location_system_id, cs.location_region_id,
                        cs.current_ship_type_id, cs.corp_roles_json, cs.corp_title, cs.home_station_id, cs.death_clone_location_id,
-                       cs.jump_clone_location_id, cs.total_sp
+                       cs.jump_clone_location_id, cs.total_sp, cs.last_audit_at,
+                       css.status AS scope_status, css.reason AS scope_reason, css.missing_scopes_json, css.token_expires_at, css.checked_at
                 FROM module_corptools_member_summary ms
-                JOIN module_corptools_character_summary cs ON cs.character_id = ms.main_character_id";
+                JOIN module_corptools_character_summary cs ON cs.character_id = ms.main_character_id
+                LEFT JOIN module_corptools_character_scope_status css ON css.character_id = cs.character_id";
 
         $joins = [];
         $where = [];
@@ -25,6 +27,16 @@ final class MemberQueryBuilder
             if ($filters['asset_presence'] === 'none') {
                 $where[] = 'cs.assets_count = 0';
             }
+        }
+
+        if (!empty($filters['corp_id'])) {
+            $where[] = 'ms.corp_id = ?';
+            $params[] = (int)$filters['corp_id'];
+        }
+
+        if (!empty($filters['alliance_id'])) {
+            $where[] = 'ms.alliance_id = ?';
+            $params[] = (int)$filters['alliance_id'];
         }
 
         if (!empty($filters['name'])) {
@@ -80,6 +92,75 @@ final class MemberQueryBuilder
 
         if (!empty($filters['audit_loaded'])) {
             $where[] = 'cs.audit_loaded = 1';
+        }
+
+        if (!empty($filters['audit_status'])) {
+            switch ($filters['audit_status']) {
+                case 'needs_attention':
+                    $where[] = "(cs.audit_loaded = 0 OR cs.last_audit_at IS NULL OR css.status IN ('MISSING_SCOPES','TOKEN_EXPIRED','TOKEN_INVALID','TOKEN_REFRESH_FAILED'))";
+                    break;
+                case 'compliant':
+                    $where[] = "css.status = 'COMPLIANT'";
+                    break;
+                case 'missing_scopes':
+                    $where[] = "css.status = 'MISSING_SCOPES'";
+                    break;
+                case 'token_expired':
+                    $where[] = "css.status = 'TOKEN_EXPIRED'";
+                    break;
+                case 'token_invalid':
+                    $where[] = "css.status = 'TOKEN_INVALID'";
+                    break;
+                case 'token_refresh_failed':
+                    $where[] = "css.status = 'TOKEN_REFRESH_FAILED'";
+                    break;
+                case 'audit_missing':
+                    $where[] = '(cs.audit_loaded = 0 OR cs.last_audit_at IS NULL)';
+                    break;
+            }
+        }
+
+        if (!empty($filters['token_status'])) {
+            switch ($filters['token_status']) {
+                case 'valid':
+                    $where[] = "css.status NOT IN ('TOKEN_EXPIRED','TOKEN_INVALID','TOKEN_REFRESH_FAILED')";
+                    break;
+                case 'expired':
+                    $where[] = "css.status = 'TOKEN_EXPIRED'";
+                    break;
+                case 'invalid':
+                    $where[] = "css.status = 'TOKEN_INVALID'";
+                    break;
+                case 'refresh_failed':
+                    $where[] = "css.status = 'TOKEN_REFRESH_FAILED'";
+                    break;
+            }
+        }
+
+        if (!empty($filters['missing_scopes'])) {
+            $where[] = 'JSON_LENGTH(css.missing_scopes_json) > 0';
+        }
+
+        if (!empty($filters['missing_scope'])) {
+            $where[] = "JSON_CONTAINS(css.missing_scopes_json, ?, '$')";
+            $params[] = json_encode((string)$filters['missing_scope']);
+        }
+
+        if (!empty($filters['last_audit_age'])) {
+            switch ($filters['last_audit_age']) {
+                case '7d':
+                    $where[] = 'cs.last_audit_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)';
+                    break;
+                case '30d':
+                    $where[] = 'cs.last_audit_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)';
+                    break;
+                case '30plus':
+                    $where[] = '(cs.last_audit_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY) OR cs.last_audit_at IS NULL)';
+                    break;
+                case 'never':
+                    $where[] = 'cs.last_audit_at IS NULL';
+                    break;
+            }
         }
 
         if (!empty($filters['highest_sp_min'])) {

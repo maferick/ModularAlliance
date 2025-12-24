@@ -28,6 +28,9 @@ final class ScopeAuditService
         if (empty($token['access_token'])) {
             $status = 'TOKEN_INVALID';
             $reason = 'No token on file.';
+        } elseif (!empty($token['refresh_failed'])) {
+            $status = 'TOKEN_REFRESH_FAILED';
+            $reason = (string)($token['refresh_error'] ?? 'Token refresh failed.');
         } elseif (!empty($token['expired'])) {
             $status = 'TOKEN_EXPIRED';
             $reason = 'Token expired.';
