@@ -12,6 +12,7 @@ use App\Core\Layout;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
 use App\Core\Universe;
+use App\Corptools\ScopePolicy;
 use App\Http\Request;
 use App\Http\Response;
 
@@ -249,7 +250,23 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
+        $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+        $scopeSet = $scopePolicy->getEffectiveScopesForUser($uid);
+        $requiredScopes = $scopeSet['required'] ?? [];
+        $optionalScopes = $scopeSet['optional'] ?? [];
+
         $targets = array_values(array_filter($loadTargets(), fn($t) => (int)($t['is_ignored'] ?? 0) !== 1));
+        $allowedTargets = [];
+        foreach ($targets as $target) {
+            $scopes = is_array($target['scopes'] ?? null) ? $target['scopes'] : [];
+            $scopes = array_values(array_unique(array_filter($scopes, 'is_string')));
+            if (empty($optionalScopes)) {
+                continue;
+            }
+            if (empty(array_diff($scopes, $optionalScopes))) {
+                $allowedTargets[] = $target;
+            }
+        }
 
         $linkRow = $app->db->one(
             "SELECT enabled_targets_json
@@ -266,6 +283,7 @@ return function (ModuleRegistry $registry): void {
         $tokenData = $tokenInfo($cid);
         $tokenScopes = $tokenData['scopes'];
         $tokenExpired = (bool)$tokenData['expired'];
+        $requiredMissing = array_values(array_diff($requiredScopes, $tokenScopes));
 
         $u = new Universe($app->db);
         $profile = $u->characterProfile($cid);
@@ -286,17 +304,23 @@ return function (ModuleRegistry $registry): void {
                 $flashHtml = "<div class='alert alert-{$type}'>{$message}</div>";
             }
         }
+        if ($tokenExpired) {
+            $flashHtml .= "<div class='alert alert-warning'>Your token is expired. Re-authorize to stay compliant.</div>";
+        } elseif (!empty($requiredMissing)) {
+            $missingText = htmlspecialchars(implode(', ', $requiredMissing));
+            $flashHtml .= "<div class='alert alert-danger'>Missing required scopes: {$missingText}</div>";
+        }
 
         $rowsHtml = '';
-        foreach ($targets as $target) {
+        foreach ($allowedTargets as $target) {
             $slug = (string)($target['slug'] ?? '');
             if ($slug === '') continue;
             $name = htmlspecialchars((string)($target['name'] ?? $slug));
             $desc = htmlspecialchars((string)($target['description'] ?? ''));
             $scopes = is_array($target['scopes'] ?? null) ? $target['scopes'] : [];
             $isEnabled = in_array($slug, $enabledTargets, true);
-            $requiredScopes = array_values(array_unique(array_filter($scopes, 'is_string')));
-            $missingScopes = array_values(array_diff($requiredScopes, $tokenScopes));
+            $targetRequiredScopes = array_values(array_unique(array_filter($scopes, 'is_string')));
+            $missingScopes = array_values(array_diff($targetRequiredScopes, $tokenScopes));
 
             $status = 'Not linked';
             $badgeClass = 'bg-secondary';
@@ -315,8 +339,8 @@ return function (ModuleRegistry $registry): void {
             }
 
             $scopeBadges = '';
-            if (!empty($requiredScopes)) {
-                foreach ($requiredScopes as $scope) {
+            if (!empty($targetRequiredScopes)) {
+                foreach ($targetRequiredScopes as $scope) {
                     $scopeBadges .= "<span class='badge bg-dark me-1'>" . htmlspecialchars($scope) . "</span>";
                 }
             } else {
@@ -343,16 +367,25 @@ return function (ModuleRegistry $registry): void {
               </div>";
         }
         if ($rowsHtml === '') {
-            $rowsHtml = "<div class='text-muted'>No link targets configured.</div>";
+            $rowsHtml = "<div class='text-muted'>No optional targets configured for your scope policy.</div>";
         }
 
         $portraitHtml = $portrait ? "<img src='" . htmlspecialchars($portrait) . "' width='64' height='64' style='border-radius:10px;'>" : '';
         $corpLabel = $corpTicker !== '' ? "{$corpName} [{$corpTicker}]" : $corpName;
 
+        $requiredBadges = '';
+        if (!empty($requiredScopes)) {
+            foreach ($requiredScopes as $scope) {
+                $requiredBadges .= "<span class='badge bg-dark me-1'>" . htmlspecialchars($scope) . "</span>";
+            }
+        } else {
+            $requiredBadges = "<span class='text-muted'>No required scopes configured.</span>";
+        }
+
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-3'>
                     <div>
                       <h1 class='mb-1'>Character Link Hub</h1>
-                      <div class='text-muted'>Select the features you want to enable for this character.</div>
+                      <div class='text-muted'>Required scopes are enforced by corp policy. Optional targets can be enabled below.</div>
                     </div>
                     <a class='btn btn-outline-light' href='/user/alts'>Manage linked characters</a>
                   </div>
@@ -365,12 +398,16 @@ return function (ModuleRegistry $registry): void {
                       </div>
                     </div>
                   </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Required scopes</div>
+                    <div>{$requiredBadges}</div>
+                  </div>
                   <div class='mt-3'>{$flashHtml}</div>
                   <form method='post' action='/charlink/link'>
                     {$rowsHtml}
                     <div class='d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3'>
-                      <div class='text-muted small'>Scopes will be requested via EVE SSO for the selected targets.</div>
-                      <button class='btn btn-primary'>Link / Update character</button>
+                      <div class='text-muted small'>Scopes will be requested via EVE SSO for required policy + optional targets.</div>
+                      <button class='btn btn-primary'>Re-authorize scopes</button>
                     </div>
                   </form>";
 
@@ -382,6 +419,11 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
+        $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+        $scopeSet = $scopePolicy->getEffectiveScopesForUser($uid);
+        $requiredScopes = $scopeSet['required'] ?? [];
+        $optionalScopes = $scopeSet['optional'] ?? [];
+
         $targets = $loadTargets();
         $allowed = [];
         $scopes = [];
@@ -391,17 +433,16 @@ return function (ModuleRegistry $registry): void {
             if ((int)($target['is_enabled'] ?? 1) !== 1 || (int)($target['is_ignored'] ?? 0) === 1) {
                 continue;
             }
-            $allowed[$slug] = $target;
+            $targetScopes = is_array($target['scopes'] ?? null) ? $target['scopes'] : [];
+            $targetScopes = array_values(array_unique(array_filter($targetScopes, 'is_string')));
+            if (!empty($optionalScopes) && empty(array_diff($targetScopes, $optionalScopes))) {
+                $allowed[$slug] = $target;
+            }
         }
 
         $selected = $req->post['targets'] ?? [];
         if (!is_array($selected)) $selected = [];
         $selected = array_values(array_unique(array_filter($selected, fn($s) => is_string($s) && isset($allowed[$s]))));
-
-        if (empty($selected)) {
-            $_SESSION['charlink_hub_flash'] = ['type' => 'warning', 'message' => 'Select at least one target to link.'];
-            return Response::redirect('/charlink');
-        }
 
         foreach ($selected as $slug) {
             $targetScopes = $allowed[$slug]['scopes'] ?? [];
@@ -414,7 +455,7 @@ return function (ModuleRegistry $registry): void {
             }
         }
 
-        $scopes = array_values(array_unique($scopes));
+        $scopes = array_values(array_unique(array_merge($requiredScopes, $scopes)));
         $_SESSION['sso_scopes_override'] = $scopes;
         $_SESSION['charlink_pending_targets'] = $selected;
         $_SESSION['charlink_redirect'] = '/charlink';

@@ -14,9 +14,27 @@ final class Dispatcher
     public function __construct(private Db $db) {}
 
     /** @param array<int, CollectorInterface> $collectors */
-    public function run(int $userId, int $characterId, string $characterName, array $token, array $collectors, array $enabledKeys, array $baseSummary = []): array
+    public function run(
+        int $userId,
+        int $characterId,
+        string $characterName,
+        array $token,
+        array $collectors,
+        array $enabledKeys,
+        array $baseSummary = [],
+        array $requiredScopes = [],
+        array $optionalScopes = [],
+        ?int $policyId = null,
+        ?ScopeAuditService $scopeAudit = null
+    ): array
     {
         $runId = $this->startRun($userId, $characterId, $token['scopes'] ?? []);
+        if ($scopeAudit) {
+            $scopeAudit->logEvent('audit_start', $userId, $characterId, [
+                'run_id' => $runId,
+                'required_scopes' => $requiredScopes,
+            ]);
+        }
         $client = new EsiClient(new HttpClient());
         $cache = new EsiCache($this->db, $client);
         $universe = new Universe($this->db);
@@ -27,6 +45,30 @@ final class Dispatcher
             'last_audit_at' => date('Y-m-d H:i:s'),
             'audit_loaded' => 1,
         ], $baseSummary);
+
+        if ($scopeAudit) {
+            $preflight = $scopeAudit->evaluate(
+                $userId,
+                $characterId,
+                $token,
+                $requiredScopes,
+                $optionalScopes,
+                $policyId
+            );
+            if ($preflight['status'] !== 'COMPLIANT') {
+                $summaryUpdates['audit_loaded'] = 0;
+                $this->upsertCharacterSummary($userId, $characterId, $characterName, $summaryUpdates);
+                $this->finishRun($runId, 'blocked', $preflight['reason']);
+                if ($scopeAudit) {
+                    $scopeAudit->logEvent('audit_blocked', $userId, $characterId, [
+                        'run_id' => $runId,
+                        'reason' => $preflight['reason'],
+                        'missing_scopes' => $preflight['missing_scopes'] ?? [],
+                    ]);
+                }
+                return ['missing' => $preflight['missing_scopes'] ?? []];
+            }
+        }
 
         foreach ($collectors as $collector) {
             $key = $collector->key();
@@ -76,7 +118,15 @@ final class Dispatcher
         }
 
         $this->upsertCharacterSummary($userId, $characterId, $characterName, $summaryUpdates);
-        $this->finishRun($runId, empty($missing));
+        $finalStatus = empty($missing) ? 'completed' : 'partial';
+        $this->finishRun($runId, $finalStatus, empty($missing) ? '' : 'Missing scopes.');
+        if ($scopeAudit) {
+            $scopeAudit->logEvent('audit_finish', $userId, $characterId, [
+                'run_id' => $runId,
+                'status' => $finalStatus,
+                'missing_collectors' => $missing,
+            ]);
+        }
 
         return ['missing' => $missing];
     }
@@ -100,13 +150,12 @@ final class Dispatcher
         return (int)($row['id'] ?? 0);
     }
 
-    private function finishRun(int $runId, bool $success): void
+    private function finishRun(int $runId, string $status, string $message): void
     {
         if ($runId <= 0) return;
-        $status = $success ? 'completed' : 'partial';
         $this->db->run(
-            "UPDATE module_corptools_audit_runs SET status=?, finished_at=NOW() WHERE id=?",
-            [$status, $runId]
+            "UPDATE module_corptools_audit_runs SET status=?, message=?, finished_at=NOW() WHERE id=?",
+            [$status, $message, $runId]
         );
     }
 

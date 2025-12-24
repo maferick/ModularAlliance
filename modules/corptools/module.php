@@ -18,6 +18,7 @@ use App\Core\Rights;
 use App\Core\Settings;
 use App\Core\Universe;
 use App\Corptools\MemberQueryBuilder;
+use App\Corptools\ScopePolicy;
 use App\Corptools\Settings as CorpToolsSettings;
 use App\Corptools\Audit\Dispatcher as AuditDispatcher;
 use App\Corptools\Audit\Collectors\AssetsCollector;
@@ -29,6 +30,7 @@ use App\Corptools\Audit\Collectors\SkillsCollector;
 use App\Corptools\Audit\Collectors\SkillQueueCollector;
 use App\Corptools\Audit\Collectors\WalletCollector;
 use App\Corptools\Audit\SimpleCollector;
+use App\Corptools\Audit\ScopeAuditService;
 use App\Corptools\Cron\JobRegistry;
 use App\Corptools\Cron\JobRunner;
 use App\Http\Request;
@@ -43,6 +45,7 @@ return function (ModuleRegistry $registry): void {
     $registry->right('corptools.admin', 'Manage CorpTools settings and integrations.');
     $registry->right('corptools.audit.read', 'View CorpTools audit data.');
     $registry->right('corptools.audit.write', 'Run CorpTools audit jobs.');
+    $registry->right('corptools.member_audit', 'Manage member audit dashboards.');
     $registry->right('corptools.pinger.manage', 'Manage CorpTools pinger rules.');
     $registry->right('corptools.cron.manage', 'Manage CorpTools cron jobs.');
 
@@ -80,10 +83,18 @@ return function (ModuleRegistry $registry): void {
         'right_slug' => 'corptools.admin',
     ]);
     $registry->menu([
+        'slug' => 'admin.corptools.member_audit',
+        'title' => 'Member Audit',
+        'url' => '/admin/corptools/member-audit',
+        'sort_order' => 47,
+        'area' => 'admin_top',
+        'right_slug' => 'corptools.member_audit',
+    ]);
+    $registry->menu([
         'slug' => 'admin.corptools.cron',
         'title' => 'CorpTools Cron',
         'url' => '/admin/corptools/cron',
-        'sort_order' => 47,
+        'sort_order' => 48,
         'area' => 'admin_top',
         'right_slug' => 'corptools.cron.manage',
     ]);
@@ -114,6 +125,27 @@ return function (ModuleRegistry $registry): void {
         return number_format($amount, 2) . ' ISK';
     };
 
+    $scopeCatalog = [
+        'esi-assets.read_assets.v1' => 'Character assets and inventory.',
+        'esi-clones.read_clones.v1' => 'Clone locations and jump clones.',
+        'esi-clones.read_implants.v1' => 'Implant inventory.',
+        'esi-contracts.read_character_contracts.v1' => 'Personal contracts.',
+        'esi-characters.read_contacts.v1' => 'Contact list.',
+        'esi-characters.read_corporation_roles.v1' => 'Corporation roles.',
+        'esi-characters.read_titles.v1' => 'Corporation titles.',
+        'esi-location.read_location.v1' => 'Current system location.',
+        'esi-location.read_ship_type.v1' => 'Active ship type.',
+        'esi-skills.read_skills.v1' => 'Skill sheet.',
+        'esi-skills.read_skillqueue.v1' => 'Skill queue.',
+        'esi-wallet.read_character_wallet.v1' => 'Wallet balance.',
+        'esi-characters.read_loyalty.v1' => 'Loyalty points.',
+        'esi-markets.read_character_orders.v1' => 'Market orders.',
+        'esi-industry.read_character_mining.v1' => 'Mining ledger.',
+        'esi-characters.read_notifications.v1' => 'Notifications feed.',
+        'esi-characters.read_standings.v1' => 'Standings.',
+        'esi-characters.read_statistics.v1' => 'Character statistics.',
+    ];
+
     $renderPagination = function (int $total, int $page, int $perPage, string $base, array $query): string {
         $pages = (int)ceil($total / max(1, $perPage));
         if ($pages <= 1) {
@@ -139,8 +171,19 @@ return function (ModuleRegistry $registry): void {
     };
 
     $corptoolsSettings = new CorpToolsSettings($app->db);
+    $universeShared = new Universe($app->db);
+    $scopePolicy = new ScopePolicy($app->db, $universeShared);
+    $scopeAudit = new ScopeAuditService($app->db);
     $getCorpToolsSettings = function () use ($corptoolsSettings): array {
         return $corptoolsSettings->get();
+    };
+
+    $getEffectiveScopesForUser = function (int $userId) use ($scopePolicy): array {
+        return $scopePolicy->getEffectiveScopesForUser($userId);
+    };
+
+    $getDefaultPolicy = function () use ($scopePolicy): ?array {
+        return $scopePolicy->getDefaultPolicy();
     };
 
     $tokenData = function (int $characterId) use ($app): array {
@@ -153,16 +196,18 @@ return function (ModuleRegistry $registry): void {
         $scopes = [];
         $accessToken = null;
         $expired = false;
+        $expiresAt = null;
         if ($row) {
             $accessToken = (string)($row['access_token'] ?? '');
             $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
             if (!is_array($scopes)) $scopes = [];
-            $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
-            if ($expiresAt !== null && time() > $expiresAt) {
+            $expiresAt = $row['expires_at'] ? (string)$row['expires_at'] : null;
+            $expiresAtTs = $expiresAt ? strtotime($expiresAt) : null;
+            if ($expiresAtTs !== null && time() > $expiresAtTs) {
                 $expired = true;
             }
         }
-        return ['access_token' => $accessToken, 'scopes' => $scopes, 'expired' => $expired];
+        return ['access_token' => $accessToken, 'scopes' => $scopes, 'expired' => $expired, 'expires_at' => $expiresAt];
     };
 
     $hasScopes = function (array $tokenScopes, array $requiredScopes): bool {
@@ -566,7 +611,9 @@ return function (ModuleRegistry $registry): void {
         $auditCollectors,
         $enabledAuditKeys,
         $updateMemberSummary,
-        $getCorpToolsSettings
+        $getCorpToolsSettings,
+        $getEffectiveScopesForUser,
+        $scopeAudit
     ): array {
         $settings = $getCorpToolsSettings();
         $enabledKeys = $enabledAuditKeys($settings);
@@ -598,13 +645,15 @@ return function (ModuleRegistry $registry): void {
                 $linksByUser[$userId] ?? []
             );
 
+            $scopeSet = $getEffectiveScopesForUser($userId);
+            $requiredScopes = $scopeSet['required'] ?? [];
+            $optionalScopes = $scopeSet['optional'] ?? [];
+            $policyId = $scopeSet['policy']['id'] ?? null;
+
             foreach ($characters as $character) {
                 $characterId = (int)($character['character_id'] ?? 0);
                 if ($characterId <= 0) continue;
                 $token = $tokenData($characterId);
-                if (empty($token['access_token']) || $token['expired']) {
-                    continue;
-                }
 
                 $profile = $universe->characterProfile($characterId);
                 $characterName = (string)($profile['character']['name'] ?? ($character['character_name'] ?? 'Unknown'));
@@ -621,7 +670,11 @@ return function (ModuleRegistry $registry): void {
                     $token,
                     $auditCollectors(),
                     $enabledKeys,
-                    $baseSummary
+                    $baseSummary,
+                    $requiredScopes,
+                    $optionalScopes,
+                    is_numeric($policyId) ? (int)$policyId : null,
+                    $scopeAudit
                 );
             }
 
@@ -1232,7 +1285,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('My Characters', $body), 200);
     }, ['right' => 'corptools.view']);
 
-    $registry->route('POST', '/corptools/characters/audit', function (Request $req) use ($app, $auditCollectors, $getCorpToolsSettings, $tokenData): Response {
+    $registry->route('POST', '/corptools/characters/audit', function (Request $req) use ($app, $auditCollectors, $getCorpToolsSettings, $tokenData, $getEffectiveScopesForUser, $scopeAudit): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -1275,6 +1328,10 @@ return function (ModuleRegistry $registry): void {
         $success = 0;
         $skipped = 0;
         $missingTokens = 0;
+        $scopeSet = $getEffectiveScopesForUser($uid);
+        $requiredScopes = $scopeSet['required'] ?? [];
+        $optionalScopes = $scopeSet['optional'] ?? [];
+        $policyId = $scopeSet['policy']['id'] ?? null;
 
         foreach ($selectedIds as $characterId) {
             if (!isset($owned[$characterId])) {
@@ -1283,9 +1340,9 @@ return function (ModuleRegistry $registry): void {
             }
 
             $token = $tokenData($characterId);
-            if ($token['expired'] || empty($token['access_token'])) {
+            $tokenMissing = $token['expired'] || empty($token['access_token']);
+            if ($tokenMissing) {
                 $missingTokens++;
-                continue;
             }
 
             $profile = $u->characterProfile($characterId);
@@ -1295,8 +1352,22 @@ return function (ModuleRegistry $registry): void {
                 'alliance_id' => (int)($profile['alliance']['id'] ?? 0),
             ];
 
-            $dispatch->run($uid, $characterId, $owned[$characterId], $token, $collectors, $enabled, $baseSummary);
-            $success++;
+            $dispatch->run(
+                $uid,
+                $characterId,
+                $owned[$characterId],
+                $token,
+                $collectors,
+                $enabled,
+                $baseSummary,
+                $requiredScopes,
+                $optionalScopes,
+                is_numeric($policyId) ? (int)$policyId : null,
+                $scopeAudit
+            );
+            if (!$tokenMissing) {
+                $success++;
+            }
         }
 
         $messages = [];
@@ -1356,6 +1427,7 @@ return function (ModuleRegistry $registry): void {
         $allCharacters = $characters;
 
         $search = trim((string)($req->query['q'] ?? ''));
+        $universe = new Universe($app->db);
         if ($search !== '') {
             $characters = array_values(array_filter($characters, fn($char) => stripos((string)$char['character_name'], $search) !== false));
         }
@@ -2338,6 +2410,10 @@ return function (ModuleRegistry $registry): void {
             'module_corptools_settings',
             'module_corptools_character_summary',
             'module_corptools_member_summary',
+            'corp_scope_policies',
+            'corp_scope_policy_overrides',
+            'module_corptools_character_scope_status',
+            'module_corptools_audit_events',
             'module_corptools_character_audit',
             'module_corptools_character_audit_snapshots',
             'module_corptools_pings',
@@ -2387,6 +2463,10 @@ return function (ModuleRegistry $registry): void {
     $registry->route('GET', '/admin/corptools/status', function () use ($app, $renderPage, $moduleVersion): Response {
         $tables = [
             'module_corptools_settings',
+            'corp_scope_policies',
+            'corp_scope_policy_overrides',
+            'module_corptools_character_scope_status',
+            'module_corptools_audit_events',
             'module_corptools_character_audit',
             'module_corptools_character_audit_snapshots',
             'module_corptools_corp_audit',
@@ -2483,6 +2563,38 @@ return function (ModuleRegistry $registry): void {
 
         $errorRateText = $errorRate !== null ? "{$errorRate}%" : '—';
 
+        $auditLast = $app->db->one(
+            "SELECT MAX(finished_at) AS last_finished
+             FROM module_corptools_audit_runs"
+        );
+        $auditLastRun = htmlspecialchars((string)($auditLast['last_finished'] ?? '—'));
+        $auditRuns24 = (int)($app->db->one(
+            "SELECT COUNT(*) AS total
+             FROM module_corptools_audit_runs
+             WHERE started_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
+        )['total'] ?? 0);
+        $auditFailures24 = (int)($app->db->one(
+            "SELECT COUNT(*) AS total
+             FROM module_corptools_audit_runs
+             WHERE status IN ('partial', 'blocked') AND started_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
+        )['total'] ?? 0);
+
+        $scopeStatusRows = $app->db->all(
+            "SELECT status, COUNT(*) AS total
+             FROM module_corptools_character_scope_status
+             GROUP BY status
+             ORDER BY total DESC"
+        );
+        $scopeStatusTable = '';
+        foreach ($scopeStatusRows as $row) {
+            $status = htmlspecialchars((string)($row['status'] ?? 'unknown'));
+            $count = (int)($row['total'] ?? 0);
+            $scopeStatusTable .= "<tr><td>{$status}</td><td>{$count}</td></tr>";
+        }
+        if ($scopeStatusTable === '') {
+            $scopeStatusTable = "<tr><td colspan='2' class='text-muted'>No scope status data yet.</td></tr>";
+        }
+
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>CorpTools Status</h1>
@@ -2536,10 +2648,615 @@ return function (ModuleRegistry $registry): void {
                         <tbody>{$failureRows}</tbody>
                       </table>
                     </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Audit Health</div>
+                    <div class='text-muted'>Last audit run: {$auditLastRun}</div>
+                    <div class='text-muted'>Audit runs (24h): {$auditRuns24}</div>
+                    <div class='text-muted'>Audit failures (24h): {$auditFailures24}</div>
+                    <div class='table-responsive mt-3'>
+                      <table class='table table-sm align-middle'>
+                        <thead><tr><th>Status</th><th>Count</th></tr></thead>
+                        <tbody>{$scopeStatusTable}</tbody>
+                      </table>
+                    </div>
                   </div>";
 
         return Response::html($renderPage('CorpTools Status', $body), 200);
     }, ['right' => 'corptools.admin']);
+
+    $registry->route('GET', '/admin/corptools/member-audit', function (Request $req) use ($app, $renderPage, $renderPagination): Response {
+        $search = trim((string)($req->query['q'] ?? ''));
+        $corpInput = trim((string)($req->query['corp_id'] ?? ''));
+        $allianceInput = trim((string)($req->query['alliance_id'] ?? ''));
+        $groupInput = trim((string)($req->query['group_id'] ?? ''));
+        $statusFilter = trim((string)($req->query['status'] ?? ''));
+
+        $corpId = ctype_digit($corpInput) ? (int)$corpInput : 0;
+        $allianceId = ctype_digit($allianceInput) ? (int)$allianceInput : 0;
+        $groupId = ctype_digit($groupInput) ? (int)$groupInput : 0;
+
+        $params = [];
+        $where = [];
+        $where[] = "u.id > 0";
+        if ($search !== '') {
+            $where[] = "(u.character_name LIKE ? OR EXISTS (SELECT 1 FROM character_links cl WHERE cl.user_id=u.id AND cl.character_name LIKE ?))";
+            $params[] = '%' . $search . '%';
+            $params[] = '%' . $search . '%';
+        }
+        if ($corpId > 0) {
+            $where[] = "ms.corp_id = ?";
+            $params[] = $corpId;
+        }
+        if ($allianceId > 0) {
+            $where[] = "ms.alliance_id = ?";
+            $params[] = $allianceId;
+        }
+        if ($groupId > 0) {
+            $where[] = "EXISTS (SELECT 1 FROM eve_user_groups ug WHERE ug.user_id=u.id AND ug.group_id=?)";
+            $params[] = $groupId;
+        }
+        if ($statusFilter !== '') {
+            $where[] = "EXISTS (SELECT 1 FROM module_corptools_character_scope_status css WHERE css.user_id=u.id AND css.status=?)";
+            $params[] = $statusFilter;
+        }
+
+        $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+        $page = max(1, (int)($req->query['page'] ?? 1));
+        $perPage = 25;
+
+        $countRow = $app->db->one(
+            "SELECT COUNT(*) AS total
+             FROM eve_users u
+             LEFT JOIN module_corptools_member_summary ms ON ms.user_id=u.id
+             {$whereSql}",
+            $params
+        );
+        $totalRows = (int)($countRow['total'] ?? 0);
+
+        $rows = $app->db->all(
+            "SELECT u.id AS user_id,
+                    u.character_id AS main_character_id,
+                    u.character_name AS main_character_name,
+                    ms.corp_id,
+                    ms.alliance_id,
+                    ms.highest_sp,
+                    ms.last_login_at,
+                    ms.audit_loaded
+             FROM eve_users u
+             LEFT JOIN module_corptools_member_summary ms ON ms.user_id=u.id
+             {$whereSql}
+             ORDER BY u.character_name ASC
+             LIMIT ? OFFSET ?",
+            array_merge($params, [$perPage, ($page - 1) * $perPage])
+        );
+
+        $userIds = array_values(array_filter(array_map(fn($row) => (int)($row['user_id'] ?? 0), $rows)));
+        $placeholders = $userIds ? implode(',', array_fill(0, count($userIds), '?')) : '';
+
+        $linkMap = [];
+        if ($userIds) {
+            $links = $app->db->all(
+                "SELECT user_id, character_id, character_name
+                 FROM character_links
+                 WHERE status='linked' AND user_id IN ({$placeholders})",
+                $userIds
+            );
+            foreach ($links as $link) {
+                $uid = (int)($link['user_id'] ?? 0);
+                if ($uid <= 0) continue;
+                $linkMap[$uid][] = [
+                    'character_id' => (int)($link['character_id'] ?? 0),
+                    'character_name' => (string)($link['character_name'] ?? 'Unknown'),
+                ];
+            }
+        }
+
+        $scopeMap = [];
+        if ($userIds) {
+            $scopeRows = $app->db->all(
+                "SELECT css.user_id, css.character_id, css.status, css.reason, css.missing_scopes_json, css.checked_at,
+                        cs.character_name, cs.last_audit_at, cs.current_ship_name, cs.location_system_id
+                 FROM module_corptools_character_scope_status css
+                 LEFT JOIN module_corptools_character_summary cs ON cs.character_id=css.character_id
+                 WHERE css.user_id IN ({$placeholders})",
+                $userIds
+            );
+            foreach ($scopeRows as $row) {
+                $uid = (int)($row['user_id'] ?? 0);
+                $cid = (int)($row['character_id'] ?? 0);
+                if ($uid <= 0 || $cid <= 0) continue;
+                $scopeMap[$uid][$cid] = $row;
+            }
+        }
+
+        $corpIds = [];
+        $allianceIds = [];
+        foreach ($rows as $row) {
+            $corp = (int)($row['corp_id'] ?? 0);
+            $alliance = (int)($row['alliance_id'] ?? 0);
+            if ($corp > 0) $corpIds[$corp] = true;
+            if ($alliance > 0) $allianceIds[$alliance] = true;
+        }
+
+        $corpProfiles = [];
+        $allianceProfiles = [];
+        if (!empty($corpIds) || !empty($allianceIds)) {
+            $client = new EsiClient(new HttpClient());
+            $cache = new EsiCache($app->db, $client);
+            if (!empty($corpIds)) {
+                foreach (array_keys($corpIds) as $corp) {
+                    $corpData = $cache->getCached(
+                        "corp:{$corp}",
+                        "GET /latest/corporations/{$corp}/",
+                        3600,
+                        fn() => $client->get("/latest/corporations/{$corp}/")
+                    );
+                    $name = (string)($corpData['name'] ?? 'Unknown');
+                    $ticker = (string)($corpData['ticker'] ?? '');
+                    $corpProfiles[$corp] = $ticker !== '' ? "{$name} [{$ticker}]" : $name;
+                }
+            }
+            if (!empty($allianceIds)) {
+                foreach (array_keys($allianceIds) as $alliance) {
+                    $allianceData = $cache->getCached(
+                        "alliance:{$alliance}",
+                        "GET /latest/alliances/{$alliance}/",
+                        3600,
+                        fn() => $client->get("/latest/alliances/{$alliance}/")
+                    );
+                    $allianceProfiles[$alliance] = (string)($allianceData['name'] ?? 'Unknown');
+                }
+            }
+        }
+
+        $summaryRow = $app->db->one(
+            "SELECT COUNT(*) AS total,
+                    SUM(status='COMPLIANT') AS compliant,
+                    SUM(status='MISSING_SCOPES') AS missing_scopes,
+                    SUM(status='TOKEN_EXPIRED') AS token_expired,
+                    SUM(status='TOKEN_INVALID') AS token_invalid
+             FROM module_corptools_character_scope_status"
+        );
+        $summaryTotal = (int)($summaryRow['total'] ?? 0);
+        $summaryCompliant = (int)($summaryRow['compliant'] ?? 0);
+        $summaryMissing = (int)($summaryRow['missing_scopes'] ?? 0);
+        $summaryExpired = (int)($summaryRow['token_expired'] ?? 0);
+        $summaryInvalid = (int)($summaryRow['token_invalid'] ?? 0);
+        $summaryPct = $summaryTotal > 0 ? round(($summaryCompliant / $summaryTotal) * 100, 1) : 0;
+
+        $pagination = $renderPagination(
+            $totalRows,
+            $page,
+            $perPage,
+            '/admin/corptools/member-audit',
+            array_filter([
+                'q' => $search,
+                'corp_id' => $corpInput,
+                'alliance_id' => $allianceInput,
+                'group_id' => $groupInput,
+                'status' => $statusFilter,
+            ], fn($val) => $val !== '' && $val !== null)
+        );
+
+        $groupRows = $app->db->all("SELECT id, name FROM groups ORDER BY name ASC");
+        $groupOptions = "<option value=''>All groups</option>";
+        foreach ($groupRows as $group) {
+            $gid = (int)($group['id'] ?? 0);
+            $gname = htmlspecialchars((string)($group['name'] ?? 'Group'));
+            $selected = $gid === $groupId ? 'selected' : '';
+            $groupOptions .= "<option value='{$gid}' {$selected}>{$gname}</option>";
+        }
+
+        $statusOptions = [
+            '' => 'Any status',
+            'COMPLIANT' => 'Compliant',
+            'MISSING_SCOPES' => 'Missing scopes',
+            'TOKEN_EXPIRED' => 'Token expired',
+            'TOKEN_INVALID' => 'Token invalid',
+        ];
+        $statusSelect = '';
+        foreach ($statusOptions as $value => $label) {
+            $selected = $statusFilter === $value ? 'selected' : '';
+            $statusSelect .= "<option value='" . htmlspecialchars($value) . "' {$selected}>" . htmlspecialchars($label) . "</option>";
+        }
+
+        $flashLinks = $_SESSION['member_audit_links'] ?? null;
+        unset($_SESSION['member_audit_links']);
+        $linkHtml = '';
+        if (is_array($flashLinks) && !empty($flashLinks)) {
+            $linksRows = '';
+            foreach ($flashLinks as $entry) {
+                $userLabel = htmlspecialchars((string)($entry['user'] ?? 'User'));
+                $url = htmlspecialchars((string)($entry['url'] ?? '#'));
+                $linksRows .= "<tr><td>{$userLabel}</td><td><a href='{$url}'>{$url}</a></td></tr>";
+            }
+            $linkHtml = "<div class='card card-body mt-3'>
+                <div class='fw-semibold mb-2'>Generated re-auth links</div>
+                <div class='table-responsive'>
+                  <table class='table table-sm align-middle'>
+                    <thead><tr><th>Member</th><th>Link</th></tr></thead>
+                    <tbody>{$linksRows}</tbody>
+                  </table>
+                </div>
+              </div>";
+        }
+
+        $rowsHtml = '';
+        foreach ($rows as $row) {
+            $userId = (int)($row['user_id'] ?? 0);
+            if ($userId <= 0) continue;
+            $mainName = htmlspecialchars((string)($row['main_character_name'] ?? 'Unknown'));
+            $corpId = (int)($row['corp_id'] ?? 0);
+            $allianceId = (int)($row['alliance_id'] ?? 0);
+            $corpLabel = $corpId > 0 ? htmlspecialchars($corpProfiles[$corpId] ?? (string)$corpId) : '—';
+            $allianceLabel = $allianceId > 0 ? htmlspecialchars($allianceProfiles[$allianceId] ?? (string)$allianceId) : '—';
+
+            $characters = [];
+            $mainCharacterId = (int)($row['main_character_id'] ?? 0);
+            if ($mainCharacterId > 0) {
+                $characters[] = ['character_id' => $mainCharacterId, 'character_name' => (string)($row['main_character_name'] ?? 'Unknown'), 'is_main' => true];
+            }
+            foreach ($linkMap[$userId] ?? [] as $link) {
+                $characters[] = ['character_id' => (int)$link['character_id'], 'character_name' => (string)$link['character_name'], 'is_main' => false];
+            }
+
+            $detailRows = '';
+            $compliantCount = 0;
+            $totalCount = 0;
+            foreach ($characters as $char) {
+                $cid = (int)($char['character_id'] ?? 0);
+                $name = htmlspecialchars((string)($char['character_name'] ?? 'Unknown'));
+                $scope = $scopeMap[$userId][$cid] ?? null;
+                $status = $scope ? (string)($scope['status'] ?? 'UNKNOWN') : 'UNKNOWN';
+                $reason = htmlspecialchars((string)($scope['reason'] ?? 'No scope data'));
+                $missing = [];
+                if ($scope && !empty($scope['missing_scopes_json'])) {
+                    $missing = json_decode((string)$scope['missing_scopes_json'], true);
+                    if (!is_array($missing)) $missing = [];
+                }
+                $missingText = $missing ? htmlspecialchars(implode(', ', $missing)) : '—';
+                $lastAudit = htmlspecialchars((string)($scope['last_audit_at'] ?? '—'));
+                $systemId = (int)($scope['location_system_id'] ?? 0);
+                $location = $systemId > 0 ? htmlspecialchars($universe->name('system', $systemId)) : '—';
+                $ship = htmlspecialchars((string)($scope['current_ship_name'] ?? '—'));
+                $badgeClass = match ($status) {
+                    'COMPLIANT' => 'bg-success',
+                    'MISSING_SCOPES' => 'bg-warning text-dark',
+                    'TOKEN_EXPIRED' => 'bg-secondary',
+                    'TOKEN_INVALID' => 'bg-danger',
+                    default => 'bg-dark',
+                };
+                if ($status === 'COMPLIANT') {
+                    $compliantCount++;
+                }
+                $totalCount++;
+                $detailRows .= "<tr>
+                    <td>" . ($char['is_main'] ? "<span class='badge bg-primary me-1'>Main</span>" : "<span class='badge bg-secondary me-1'>Alt</span>") . "{$name}</td>
+                    <td><span class='badge {$badgeClass}'>" . htmlspecialchars($status) . "</span></td>
+                    <td>{$reason}</td>
+                    <td>{$missingText}</td>
+                    <td>{$lastAudit}</td>
+                    <td>{$location}</td>
+                    <td>{$ship}</td>
+                  </tr>";
+            }
+            if ($detailRows === '') {
+                $detailRows = "<tr><td colspan='7' class='text-muted'>No linked characters.</td></tr>";
+            }
+            $compliance = $totalCount > 0 ? "{$compliantCount}/{$totalCount}" : '0/0';
+            $collapseId = "member-{$userId}";
+
+            $rowsHtml .= "<div class='card card-body mb-3'>
+                <div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                  <div>
+                    <div class='fw-semibold'>{$mainName}</div>
+                    <div class='text-muted small'>Corp: {$corpLabel} • Alliance: {$allianceLabel}</div>
+                  </div>
+                  <div class='text-end'>
+                    <div class='text-muted small'>Compliance {$compliance}</div>
+                    <div class='form-check'>
+                      <input class='form-check-input' type='checkbox' name='user_ids[]' value='{$userId}' id='member-select-{$userId}'>
+                      <label class='form-check-label small' for='member-select-{$userId}'>Select</label>
+                    </div>
+                    <button class='btn btn-sm btn-outline-light mt-2' type='button' data-bs-toggle='collapse' data-bs-target='#{$collapseId}'>Details</button>
+                  </div>
+                </div>
+                <div class='collapse mt-3' id='{$collapseId}'>
+                  <div class='table-responsive'>
+                    <table class='table table-sm align-middle'>
+                      <thead><tr><th>Character</th><th>Status</th><th>Reason</th><th>Missing scopes</th><th>Last audit</th><th>Location</th><th>Ship</th></tr></thead>
+                      <tbody>{$detailRows}</tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>";
+        }
+        if ($rowsHtml === '') {
+            $rowsHtml = "<div class='text-muted'>No members matched the filters.</div>";
+        }
+
+        $exportUrl = '/admin/corptools/member-audit/export?' . http_build_query(array_filter([
+            'q' => $search,
+            'corp_id' => $corpInput,
+            'alliance_id' => $allianceInput,
+            'group_id' => $groupInput,
+            'status' => $statusFilter,
+        ], fn($val) => $val !== '' && $val !== null));
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Member Audit</h1>
+                      <div class='text-muted'>Admin/HR compliance dashboard for scope policy.</div>
+                    </div>
+                  </div>
+                  <div class='row g-3 mt-3'>
+                    <div class='col-md-3'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Characters tracked</div>
+                        <div class='fs-5 fw-semibold'>{$summaryTotal}</div>
+                      </div>
+                    </div>
+                    <div class='col-md-3'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Compliance rate</div>
+                        <div class='fs-5 fw-semibold'>{$summaryPct}%</div>
+                      </div>
+                    </div>
+                    <div class='col-md-3'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Missing scopes</div>
+                        <div class='fs-5 fw-semibold'>{$summaryMissing}</div>
+                      </div>
+                    </div>
+                    <div class='col-md-3'>
+                      <div class='card card-body'>
+                        <div class='text-muted small'>Token issues</div>
+                        <div class='fs-6'>Expired: {$summaryExpired}</div>
+                        <div class='fs-6'>Invalid: {$summaryInvalid}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <form method='get' class='card card-body mt-3'>
+                    <div class='row g-2'>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Member name</label>
+                        <input class='form-control' name='q' value='" . htmlspecialchars($search) . "' placeholder='Search main'>
+                      </div>
+                      <div class='col-md-2'>
+                        <label class='form-label'>Corp ID</label>
+                        <input class='form-control' name='corp_id' value='" . htmlspecialchars($corpInput) . "' placeholder='Corp ID'>
+                      </div>
+                      <div class='col-md-2'>
+                        <label class='form-label'>Alliance ID</label>
+                        <input class='form-control' name='alliance_id' value='" . htmlspecialchars($allianceInput) . "' placeholder='Alliance ID'>
+                      </div>
+                      <div class='col-md-2'>
+                        <label class='form-label'>Group</label>
+                        <select class='form-select' name='group_id'>{$groupOptions}</select>
+                      </div>
+                      <div class='col-md-2'>
+                        <label class='form-label'>Status</label>
+                        <select class='form-select' name='status'>{$statusSelect}</select>
+                      </div>
+                      <div class='col-md-1 d-flex align-items-end'>
+                        <button class='btn btn-primary'>Filter</button>
+                      </div>
+                    </div>
+                  </form>
+                  <form method='post' action='/admin/corptools/member-audit/action' class='mt-3'>
+                    <div class='d-flex flex-wrap gap-2 mb-2'>
+                      <button class='btn btn-outline-primary' name='action' value='audit'>Trigger audit for selected</button>
+                      <button class='btn btn-outline-warning' name='action' value='reauth'>Generate re-auth links</button>
+                      <a class='btn btn-outline-secondary' href='{$exportUrl}'>Export CSV</a>
+                    </div>
+                    {$rowsHtml}
+                  </form>
+                  {$pagination}
+                  {$linkHtml}";
+
+        return Response::html($renderPage('Member Audit', $body), 200);
+    }, ['right' => 'corptools.member_audit']);
+
+    $registry->route('POST', '/admin/corptools/member-audit/action', function (Request $req) use ($app, $auditCollectors, $tokenData, $getEffectiveScopesForUser, $scopeAudit, $updateMemberSummary): Response {
+        $action = (string)($req->post['action'] ?? '');
+        $selected = $req->post['user_ids'] ?? [];
+        if (!is_array($selected)) $selected = [];
+        $userIds = array_values(array_filter(array_map('intval', $selected), fn(int $id) => $id > 0));
+
+        if (empty($userIds)) {
+            $_SESSION['member_audit_links'] = [];
+            return Response::redirect('/admin/corptools/member-audit');
+        }
+
+        if ($action === 'reauth') {
+            $links = [];
+            foreach ($userIds as $userId) {
+                $token = bin2hex(random_bytes(16));
+                $tokenHash = hash('sha256', $token);
+                $prefix = substr($token, 0, 8);
+                $app->db->run(
+                    "INSERT INTO module_charlink_states
+                     (user_id, token_hash, token_prefix, purpose, created_at, expires_at)
+                     VALUES (?, ?, ?, 'reauth', NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY))",
+                    [$userId, $tokenHash, $prefix]
+                );
+                $userRow = $app->db->one("SELECT character_name FROM eve_users WHERE id=? LIMIT 1", [$userId]);
+                $userName = (string)($userRow['character_name'] ?? "User {$userId}");
+                $links[] = [
+                    'user' => $userName,
+                    'url' => "/corptools/reauth?token={$token}",
+                ];
+            }
+            $_SESSION['member_audit_links'] = $links;
+            return Response::redirect('/admin/corptools/member-audit');
+        }
+
+        $dispatcher = new AuditDispatcher($app->db);
+        $collectors = $auditCollectors();
+        $settings = (new CorpToolsSettings($app->db))->get();
+        $enabled = array_keys(array_filter($settings['audit_scopes'] ?? [], fn($enabled) => !empty($enabled)));
+        $universe = new Universe($app->db);
+
+        foreach ($userIds as $userId) {
+            $userRow = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$userId]);
+            $mainId = (int)($userRow['character_id'] ?? 0);
+            $mainName = (string)($userRow['character_name'] ?? 'Unknown');
+            if ($mainId <= 0) continue;
+
+            $characters = [
+                ['character_id' => $mainId, 'character_name' => $mainName],
+            ];
+            $links = $app->db->all(
+                "SELECT character_id, character_name FROM character_links WHERE user_id=? AND status='linked'",
+                [$userId]
+            );
+            foreach ($links as $link) {
+                $cid = (int)($link['character_id'] ?? 0);
+                if ($cid <= 0) continue;
+                $characters[] = ['character_id' => $cid, 'character_name' => (string)($link['character_name'] ?? 'Unknown')];
+            }
+
+            $scopeSet = $getEffectiveScopesForUser($userId);
+            $requiredScopes = $scopeSet['required'] ?? [];
+            $optionalScopes = $scopeSet['optional'] ?? [];
+            $policyId = $scopeSet['policy']['id'] ?? null;
+
+            foreach ($characters as $character) {
+                $characterId = (int)($character['character_id'] ?? 0);
+                if ($characterId <= 0) continue;
+                $token = $tokenData($characterId);
+                $profile = $universe->characterProfile($characterId);
+                $baseSummary = [
+                    'is_main' => $characterId === $mainId ? 1 : 0,
+                    'corp_id' => (int)($profile['corporation']['id'] ?? 0),
+                    'alliance_id' => (int)($profile['alliance']['id'] ?? 0),
+                ];
+                $dispatcher->run(
+                    $userId,
+                    $characterId,
+                    (string)($profile['character']['name'] ?? $character['character_name']),
+                    $token,
+                    $collectors,
+                    $enabled,
+                    $baseSummary,
+                    $requiredScopes,
+                    $optionalScopes,
+                    is_numeric($policyId) ? (int)$policyId : null,
+                    $scopeAudit
+                );
+            }
+
+            $updateMemberSummary($userId, $mainId, $mainName);
+        }
+
+        return Response::redirect('/admin/corptools/member-audit');
+    }, ['right' => 'corptools.member_audit']);
+
+    $registry->route('GET', '/admin/corptools/member-audit/export', function (Request $req) use ($app): Response {
+        $search = trim((string)($req->query['q'] ?? ''));
+        $corpInput = trim((string)($req->query['corp_id'] ?? ''));
+        $allianceInput = trim((string)($req->query['alliance_id'] ?? ''));
+        $groupInput = trim((string)($req->query['group_id'] ?? ''));
+        $statusFilter = trim((string)($req->query['status'] ?? ''));
+
+        $corpId = ctype_digit($corpInput) ? (int)$corpInput : 0;
+        $allianceId = ctype_digit($allianceInput) ? (int)$allianceInput : 0;
+        $groupId = ctype_digit($groupInput) ? (int)$groupInput : 0;
+
+        $params = [];
+        $where = [];
+        $where[] = "u.id > 0";
+        if ($search !== '') {
+            $where[] = "(u.character_name LIKE ? OR EXISTS (SELECT 1 FROM character_links cl WHERE cl.user_id=u.id AND cl.character_name LIKE ?))";
+            $params[] = '%' . $search . '%';
+            $params[] = '%' . $search . '%';
+        }
+        if ($corpId > 0) {
+            $where[] = "ms.corp_id = ?";
+            $params[] = $corpId;
+        }
+        if ($allianceId > 0) {
+            $where[] = "ms.alliance_id = ?";
+            $params[] = $allianceId;
+        }
+        if ($groupId > 0) {
+            $where[] = "EXISTS (SELECT 1 FROM eve_user_groups ug WHERE ug.user_id=u.id AND ug.group_id=?)";
+            $params[] = $groupId;
+        }
+        if ($statusFilter !== '') {
+            $where[] = "EXISTS (SELECT 1 FROM module_corptools_character_scope_status css WHERE css.user_id=u.id AND css.status=?)";
+            $params[] = $statusFilter;
+        }
+
+        $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+        $rows = $app->db->all(
+            "SELECT u.id AS user_id, u.character_name AS main_character_name, ms.corp_id, ms.alliance_id, ms.highest_sp
+             FROM eve_users u
+             LEFT JOIN module_corptools_member_summary ms ON ms.user_id=u.id
+             {$whereSql}
+             ORDER BY u.character_name ASC",
+            $params
+        );
+
+        $lines = ["user_id,main_character,corp_id,alliance_id,highest_sp"];
+        foreach ($rows as $row) {
+            $lines[] = implode(',', [
+                (int)($row['user_id'] ?? 0),
+                '"' . str_replace('"', '""', (string)($row['main_character_name'] ?? '')) . '"',
+                (int)($row['corp_id'] ?? 0),
+                (int)($row['alliance_id'] ?? 0),
+                (int)($row['highest_sp'] ?? 0),
+            ]);
+        }
+
+        $body = implode("\n", $lines);
+        return new Response($body, 200, [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename=\"member_audit.csv\"',
+        ]);
+    }, ['right' => 'corptools.member_audit']);
+
+    $registry->route('GET', '/corptools/reauth', function (Request $req) use ($app, $scopePolicy): Response {
+        $token = (string)($req->query['token'] ?? '');
+        if ($token === '') {
+            return Response::text('Missing token', 400);
+        }
+        $tokenHash = hash('sha256', $token);
+        $row = $app->db->one(
+            "SELECT id, user_id, expires_at, used_at
+             FROM module_charlink_states
+             WHERE token_hash=? AND purpose='reauth' LIMIT 1",
+            [$tokenHash]
+        );
+        if (!$row) {
+            return Response::text('Invalid or expired token.', 403);
+        }
+        $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
+        if (!empty($row['used_at'])) {
+            return Response::text('This re-auth link has already been used.', 403);
+        }
+        if ($expiresAt !== null && time() > $expiresAt) {
+            return Response::text('This re-auth link has expired.', 403);
+        }
+
+        $userId = (int)($row['user_id'] ?? 0);
+        if ($userId <= 0) {
+            return Response::text('Invalid user for re-auth.', 403);
+        }
+
+        $scopeSet = $scopePolicy->getEffectiveScopesForUser($userId);
+        $requiredScopes = $scopeSet['required'] ?? [];
+        $_SESSION['sso_scopes_override'] = $requiredScopes;
+        $_SESSION['charlink_redirect'] = '/corptools/characters';
+
+        $app->db->run(
+            "UPDATE module_charlink_states SET used_at=NOW() WHERE id=?",
+            [(int)($row['id'] ?? 0)]
+        );
+
+        return Response::redirect('/auth/login');
+    }, ['public' => true]);
 
     $registry->route('GET', '/admin/corptools/cron', function () use ($app, $renderPage): Response {
         JobRegistry::sync($app->db);
@@ -2892,13 +3609,14 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/admin/corptools/cron');
     }, ['right' => 'corptools.cron.manage']);
 
-    $registry->route('GET', '/admin/corptools', function () use ($app, $renderPage, $getCorpToolsSettings, $getIdentityCorpIds, $getCorpProfiles, $getAvailableCorpIds, $hasRight): Response {
+    $registry->route('GET', '/admin/corptools', function () use ($app, $renderPage, $getCorpToolsSettings, $getIdentityCorpIds, $getCorpProfiles, $getAvailableCorpIds, $hasRight, $scopePolicy, $scopeCatalog): Response {
         $settings = $getCorpToolsSettings();
         $tab = (string)($_GET['tab'] ?? 'general');
 
         $tabs = [
             'general' => 'General',
             'integrations' => 'Integrations',
+            'scope_policy' => 'Scope Policy',
             'audit' => 'Audit Scopes',
             'corp_audit' => 'Corp Audit',
             'invoices' => 'Invoices',
@@ -3002,6 +3720,239 @@ return function (ModuleRegistry $registry): void {
                 <div class='text-muted'>Client ID: " . htmlspecialchars($mask($clientId)) . "</div>
                 <div class='text-muted'>Client Secret: " . htmlspecialchars($mask($clientSecret)) . "</div>
                 <div class='text-muted small mt-2'>Credentials are managed in /var/www/config.php and reused by CorpTools.</div>
+              </div>";
+        } elseif ($tab === 'scope_policy') {
+            $flash = $_SESSION['corptools_scope_flash'] ?? null;
+            unset($_SESSION['corptools_scope_flash']);
+            $flashHtml = '';
+            if (is_array($flash)) {
+                $type = htmlspecialchars((string)($flash['type'] ?? 'info'));
+                $message = htmlspecialchars((string)($flash['message'] ?? ''));
+                if ($message !== '') {
+                    $flashHtml = "<div class='alert alert-{$type} mt-3'>{$message}</div>";
+                }
+            }
+
+            $policies = $scopePolicy->listPolicies();
+            $policyId = (int)($_GET['policy_id'] ?? 0);
+            $selectedPolicy = null;
+            foreach ($policies as $policy) {
+                if ((int)($policy['id'] ?? 0) === $policyId) {
+                    $selectedPolicy = $policy;
+                    break;
+                }
+            }
+            if (!$selectedPolicy && !empty($policies)) {
+                $selectedPolicy = $policies[0];
+                $policyId = (int)($selectedPolicy['id'] ?? 0);
+            }
+
+            $required = $selectedPolicy ? $scopePolicy->normalizeScopes($selectedPolicy['required_scopes_json'] ?? null) : [];
+            $optional = $selectedPolicy ? $scopePolicy->normalizeScopes($selectedPolicy['optional_scopes_json'] ?? null) : [];
+
+            $policyRows = '';
+            foreach ($policies as $policy) {
+                $pid = (int)($policy['id'] ?? 0);
+                $name = htmlspecialchars((string)($policy['name'] ?? 'Policy'));
+                $applies = htmlspecialchars((string)($policy['applies_to'] ?? 'all_users'));
+                $active = !empty($policy['is_active']) ? "<span class='badge bg-success'>Active</span>" : "<span class='badge bg-secondary'>Inactive</span>";
+                $policyRows .= "<tr>
+                    <td>{$name}</td>
+                    <td>{$applies}</td>
+                    <td>{$active}</td>
+                    <td class='text-end'><a class='btn btn-sm btn-outline-light' href='/admin/corptools?tab=scope_policy&policy_id={$pid}'>Edit</a></td>
+                  </tr>";
+            }
+            if ($policyRows === '') {
+                $policyRows = "<tr><td colspan='4' class='text-muted'>No policies defined yet.</td></tr>";
+            }
+
+            $groupRows = $app->db->all("SELECT id, name FROM groups ORDER BY name ASC");
+            $groupOptions = "<option value=''>Select group</option>";
+            foreach ($groupRows as $group) {
+                $gid = (int)($group['id'] ?? 0);
+                $gname = htmlspecialchars((string)($group['name'] ?? 'Group'));
+                if ($gid <= 0) continue;
+                $groupOptions .= "<option value='{$gid}'>{$gname} (ID {$gid})</option>";
+            }
+
+            $overrideRows = '';
+            if ($policyId > 0) {
+                $overrides = $app->db->all(
+                    "SELECT id, target_type, target_id, required_scopes_json, optional_scopes_json
+                     FROM corp_scope_policy_overrides
+                     WHERE policy_id=?
+                     ORDER BY updated_at DESC, id DESC",
+                    [$policyId]
+                );
+
+                foreach ($overrides as $override) {
+                    $oid = (int)($override['id'] ?? 0);
+                    $type = (string)($override['target_type'] ?? '');
+                    $targetId = (int)($override['target_id'] ?? 0);
+                    $targetLabel = '';
+                    if ($type === 'user') {
+                        $userRow = $app->db->one("SELECT character_name FROM eve_users WHERE id=? LIMIT 1", [$targetId]);
+                        $userName = (string)($userRow['character_name'] ?? 'User');
+                        $targetLabel = htmlspecialchars($userName) . " (User #{$targetId})";
+                    } else {
+                        $groupRow = $app->db->one("SELECT name FROM groups WHERE id=? LIMIT 1", [$targetId]);
+                        $groupName = (string)($groupRow['name'] ?? 'Group');
+                        $targetLabel = htmlspecialchars($groupName) . " (Group #{$targetId})";
+                    }
+                    $requiredLabel = htmlspecialchars(implode(', ', $scopePolicy->normalizeScopes($override['required_scopes_json'] ?? null)));
+                    $optionalLabel = htmlspecialchars(implode(', ', $scopePolicy->normalizeScopes($override['optional_scopes_json'] ?? null)));
+                    if ($requiredLabel === '') $requiredLabel = '—';
+                    if ($optionalLabel === '') $optionalLabel = '—';
+                    $overrideRows .= "<tr>
+                        <td>{$type}</td>
+                        <td>{$targetLabel}</td>
+                        <td>{$requiredLabel}</td>
+                        <td>{$optionalLabel}</td>
+                        <td class='text-end'>
+                          <form method='post' action='/admin/corptools/scope-policy/override/delete' onsubmit=\"return confirm('Delete this override?');\">
+                            <input type='hidden' name='override_id' value='{$oid}'>
+                            <input type='hidden' name='policy_id' value='{$policyId}'>
+                            <button class='btn btn-sm btn-outline-danger'>Delete</button>
+                          </form>
+                        </td>
+                      </tr>";
+                }
+            }
+            if ($overrideRows === '') {
+                $overrideRows = "<tr><td colspan='5' class='text-muted'>No overrides configured.</td></tr>";
+            }
+
+            $renderScopeOptions = function (array $selected, string $name, string $prefix) use ($scopeCatalog): string {
+                $options = '';
+                foreach ($scopeCatalog as $scope => $desc) {
+                    $checked = in_array($scope, $selected, true) ? 'checked' : '';
+                    $label = htmlspecialchars($scope);
+                    $descText = htmlspecialchars($desc);
+                    $options .= "<div class='form-check'>
+                        <input class='form-check-input' type='checkbox' name='{$name}[]' value='{$label}' id='{$prefix}-{$label}' {$checked}>
+                        <label class='form-check-label' for='{$prefix}-{$label}'>{$label} <span class='text-muted small'>— {$descText}</span></label>
+                      </div>";
+                }
+                return $options;
+            };
+
+            $requiredOptions = $renderScopeOptions($required, 'required_scopes', 'req');
+            $optionalOptions = $renderScopeOptions($optional, 'optional_scopes', 'opt');
+            $overrideRequiredOptions = $renderScopeOptions([], 'override_required_scopes', 'ovr-req');
+            $overrideOptionalOptions = $renderScopeOptions([], 'override_optional_scopes', 'ovr-opt');
+
+            $impactRows = $app->db->one(
+                "SELECT COUNT(*) AS total,
+                        SUM(status='COMPLIANT') AS compliant,
+                        SUM(status='MISSING_SCOPES') AS missing_scopes,
+                        SUM(status='TOKEN_EXPIRED') AS token_expired,
+                        SUM(status='TOKEN_INVALID') AS token_invalid
+                 FROM module_corptools_character_scope_status"
+            );
+            $impactTotal = (int)($impactRows['total'] ?? 0);
+            $impactMissing = (int)($impactRows['missing_scopes'] ?? 0);
+            $impactExpired = (int)($impactRows['token_expired'] ?? 0);
+            $impactInvalid = (int)($impactRows['token_invalid'] ?? 0);
+
+            $nameValue = htmlspecialchars((string)($selectedPolicy['name'] ?? ''));
+            $descValue = htmlspecialchars((string)($selectedPolicy['description'] ?? ''));
+            $appliesTo = (string)($selectedPolicy['applies_to'] ?? 'all_users');
+            $activeChecked = !empty($selectedPolicy['is_active']) ? 'checked' : '';
+
+            $sectionHtml = "{$flashHtml}<div class='card card-body mt-3'>
+                <div class='fw-semibold mb-2'>Impact analysis</div>
+                <div class='text-muted small'>Based on the latest scope checks.</div>
+                <div class='row g-2 mt-2'>
+                  <div class='col-md-3'><div class='card card-body'><div class='text-muted small'>Characters tracked</div><div class='fw-semibold'>{$impactTotal}</div></div></div>
+                  <div class='col-md-3'><div class='card card-body'><div class='text-muted small'>Missing scopes</div><div class='fw-semibold'>{$impactMissing}</div></div></div>
+                  <div class='col-md-3'><div class='card card-body'><div class='text-muted small'>Token expired</div><div class='fw-semibold'>{$impactExpired}</div></div></div>
+                  <div class='col-md-3'><div class='card card-body'><div class='text-muted small'>Token invalid</div><div class='fw-semibold'>{$impactInvalid}</div></div></div>
+                </div>
+              </div>
+              <form method='post' action='/admin/corptools/scope-policy/save' class='card card-body mt-3'>
+                <input type='hidden' name='policy_id' value='{$policyId}'>
+                <div class='row g-2'>
+                  <div class='col-md-6'>
+                    <label class='form-label'>Policy name</label>
+                    <input class='form-control' name='name' value='{$nameValue}' required>
+                  </div>
+                  <div class='col-md-6'>
+                    <label class='form-label'>Applies to</label>
+                    <select class='form-select' name='applies_to'>
+                      <option value='all_users'" . ($appliesTo === 'all_users' ? ' selected' : '') . ">All users</option>
+                      <option value='corp_members'" . ($appliesTo === 'corp_members' ? ' selected' : '') . ">Corp members</option>
+                      <option value='alliance_members'" . ($appliesTo === 'alliance_members' ? ' selected' : '') . ">Alliance members</option>
+                    </select>
+                  </div>
+                </div>
+                <label class='form-label mt-3'>Description</label>
+                <textarea class='form-control' name='description' rows='2'>{$descValue}</textarea>
+                <div class='form-check mt-3'>
+                  <input class='form-check-input' type='checkbox' name='is_active' value='1' id='policy-active' {$activeChecked}>
+                  <label class='form-check-label' for='policy-active'>Set as active policy</label>
+                </div>
+                <div class='row g-3 mt-3'>
+                  <div class='col-md-6'>
+                    <div class='fw-semibold mb-1'>Required scopes</div>
+                    {$requiredOptions}
+                  </div>
+                  <div class='col-md-6'>
+                    <div class='fw-semibold mb-1'>Optional scopes</div>
+                    {$optionalOptions}
+                  </div>
+                </div>
+                <button class='btn btn-primary mt-3'>Save Scope Policy</button>
+              </form>
+              <div class='card card-body mt-3'>
+                <div class='fw-semibold mb-2'>Existing policies</div>
+                <div class='table-responsive'>
+                  <table class='table table-sm align-middle'>
+                    <thead><tr><th>Name</th><th>Applies to</th><th>Status</th><th></th></tr></thead>
+                    <tbody>{$policyRows}</tbody>
+                  </table>
+                </div>
+              </div>
+              <div class='card card-body mt-3'>
+                <div class='fw-semibold mb-2'>Policy overrides</div>
+                <div class='text-muted small'>Overrides add scopes for specific users or groups without altering the base policy.</div>
+                <form method='post' action='/admin/corptools/scope-policy/override' class='row g-2 mt-2'>
+                  <input type='hidden' name='policy_id' value='{$policyId}'>
+                  <div class='col-md-3'>
+                    <label class='form-label'>Target type</label>
+                    <select class='form-select' name='target_type'>
+                      <option value='user'>User</option>
+                      <option value='group'>Group</option>
+                    </select>
+                  </div>
+                  <div class='col-md-4'>
+                    <label class='form-label'>User ID</label>
+                    <input class='form-control' name='target_user_id' placeholder='User ID'>
+                    <div class='form-text'>Use for per-user overrides.</div>
+                  </div>
+                  <div class='col-md-5'>
+                    <label class='form-label'>Group</label>
+                    <select class='form-select' name='target_group_id'>{$groupOptions}</select>
+                    <div class='form-text'>Use for HR/director groups.</div>
+                  </div>
+                  <div class='col-12'>
+                    <div class='fw-semibold mt-2'>Override required scopes</div>
+                    {$overrideRequiredOptions}
+                  </div>
+                  <div class='col-12'>
+                    <div class='fw-semibold mt-2'>Override optional scopes</div>
+                    {$overrideOptionalOptions}
+                  </div>
+                  <div class='col-12'>
+                    <button class='btn btn-outline-light mt-2'>Add override</button>
+                  </div>
+                </form>
+                <div class='table-responsive mt-3'>
+                  <table class='table table-sm align-middle'>
+                    <thead><tr><th>Type</th><th>Target</th><th>Required scopes</th><th>Optional scopes</th><th></th></tr></thead>
+                    <tbody>{$overrideRows}</tbody>
+                  </table>
+                </div>
               </div>";
         } elseif ($tab === 'audit') {
             $audit = $settings['audit_scopes'] ?? [];
@@ -3237,6 +4188,101 @@ return function (ModuleRegistry $registry): void {
         }
 
         return Response::redirect('/admin/corptools?tab=' . urlencode($section));
+    }, ['right' => 'corptools.admin']);
+
+    $registry->route('POST', '/admin/corptools/scope-policy/save', function (Request $req) use ($app, $scopePolicy): Response {
+        $policyId = (int)($req->post['policy_id'] ?? 0);
+        $name = trim((string)($req->post['name'] ?? ''));
+        $description = trim((string)($req->post['description'] ?? ''));
+        $appliesTo = (string)($req->post['applies_to'] ?? 'all_users');
+        $isActive = !empty($req->post['is_active']) ? 1 : 0;
+        $required = $req->post['required_scopes'] ?? [];
+        $optional = $req->post['optional_scopes'] ?? [];
+        if (!is_array($required)) $required = [];
+        if (!is_array($optional)) $optional = [];
+        $required = array_values(array_unique(array_filter($required, 'is_string')));
+        $optional = array_values(array_unique(array_filter($optional, 'is_string')));
+
+        if ($name === '') {
+            $_SESSION['corptools_scope_flash'] = ['type' => 'warning', 'message' => 'Policy name is required.'];
+            return Response::redirect('/admin/corptools?tab=scope_policy');
+        }
+
+        $payloadRequired = json_encode($required, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $payloadOptional = json_encode($optional, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        if ($policyId > 0) {
+            $app->db->run(
+                "UPDATE corp_scope_policies
+                 SET name=?, description=?, applies_to=?, required_scopes_json=?, optional_scopes_json=?, is_active=?
+                 WHERE id=?",
+                [$name, $description, $appliesTo, $payloadRequired, $payloadOptional, $isActive, $policyId]
+            );
+        } else {
+            $app->db->run(
+                "INSERT INTO corp_scope_policies
+                 (name, description, applies_to, required_scopes_json, optional_scopes_json, is_active, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())",
+                [$name, $description, $appliesTo, $payloadRequired, $payloadOptional, $isActive]
+            );
+            $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
+            $policyId = (int)($row['id'] ?? 0);
+        }
+
+        if ($isActive === 1 && $policyId > 0) {
+            $app->db->run(
+                "UPDATE corp_scope_policies SET is_active=0 WHERE applies_to=? AND id<>?",
+                [$appliesTo, $policyId]
+            );
+        }
+
+        $_SESSION['corptools_scope_flash'] = ['type' => 'success', 'message' => 'Scope policy saved.'];
+        return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . $policyId);
+    }, ['right' => 'corptools.admin']);
+
+    $registry->route('POST', '/admin/corptools/scope-policy/override', function (Request $req) use ($app): Response {
+        $policyId = (int)($req->post['policy_id'] ?? 0);
+        $targetType = (string)($req->post['target_type'] ?? 'user');
+        $targetUserId = (int)($req->post['target_user_id'] ?? 0);
+        $targetGroupId = (int)($req->post['target_group_id'] ?? 0);
+        $required = $req->post['override_required_scopes'] ?? [];
+        $optional = $req->post['override_optional_scopes'] ?? [];
+        if (!is_array($required)) $required = [];
+        if (!is_array($optional)) $optional = [];
+        $required = array_values(array_unique(array_filter($required, 'is_string')));
+        $optional = array_values(array_unique(array_filter($optional, 'is_string')));
+
+        $targetId = $targetType === 'group' ? $targetGroupId : $targetUserId;
+        if ($policyId <= 0 || $targetId <= 0) {
+            $_SESSION['corptools_scope_flash'] = ['type' => 'warning', 'message' => 'Select a valid override target.'];
+            return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . $policyId);
+        }
+
+        $app->db->run(
+            "INSERT INTO corp_scope_policy_overrides
+             (policy_id, target_type, target_id, required_scopes_json, optional_scopes_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
+            [
+                $policyId,
+                $targetType === 'group' ? 'group' : 'user',
+                $targetId,
+                json_encode($required, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                json_encode($optional, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            ]
+        );
+
+        $_SESSION['corptools_scope_flash'] = ['type' => 'success', 'message' => 'Scope override added.'];
+        return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . $policyId);
+    }, ['right' => 'corptools.admin']);
+
+    $registry->route('POST', '/admin/corptools/scope-policy/override/delete', function (Request $req) use ($app): Response {
+        $overrideId = (int)($req->post['override_id'] ?? 0);
+        $policyId = (int)($req->post['policy_id'] ?? 0);
+        if ($overrideId > 0) {
+            $app->db->run("DELETE FROM corp_scope_policy_overrides WHERE id=?", [$overrideId]);
+        }
+        $_SESSION['corptools_scope_flash'] = ['type' => 'success', 'message' => 'Scope override removed.'];
+        return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . $policyId);
     }, ['right' => 'corptools.admin']);
 
     $registry->route('POST', '/admin/corptools/rules', function (Request $req) use ($app): Response {

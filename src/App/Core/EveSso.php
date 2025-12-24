@@ -364,7 +364,10 @@ final class EveSso
             $expiresAt = gmdate('Y-m-d H:i:s', (int)$jwtPayload['exp']);
         }
 
-        $scopes = $jwtPayload['scp'] ?? null;
+        $scopes = $jwtPayload['scp'] ?? [];
+        if (!is_array($scopes)) {
+            $scopes = [];
+        }
 
         $this->db->run(
             "REPLACE INTO eve_tokens (user_id, character_id, access_token, refresh_token, expires_at, scopes_json, token_json)
@@ -375,7 +378,7 @@ final class EveSso
                 (string)$token['access_token'],
                 (string)($token['refresh_token'] ?? ''),
                 $expiresAt,
-                json_encode($scopes),
+                json_encode($scopes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                 json_encode($token),
             ]
         );
