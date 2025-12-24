@@ -3155,7 +3155,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('CorpTools Status', $body), 200);
     }, ['right' => 'corptools.admin']);
 
-    $registry->route('GET', '/admin/corptools/member-audit', function (Request $req) use ($app, $renderPage, $renderPagination): Response {
+    $registry->route('GET', '/admin/corptools/member-audit', function (Request $req) use ($app, $renderPage, $renderPagination, $universeShared): Response {
         $search = trim((string)($req->query['q'] ?? ''));
         $corpInput = trim((string)($req->query['corp_id'] ?? ''));
         $allianceInput = trim((string)($req->query['alliance_id'] ?? ''));
@@ -3332,6 +3332,7 @@ return function (ModuleRegistry $registry): void {
         );
 
         $groupRows = $app->db->all("SELECT id, name FROM groups ORDER BY name ASC");
+        $universe = $universeShared;
         $groupOptions = "<option value=''>All groups</option>";
         foreach ($groupRows as $group) {
             $gid = (int)($group['id'] ?? 0);
