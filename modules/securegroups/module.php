@@ -241,10 +241,14 @@ return function (ModuleRegistry $registry): void {
         $result = ['pass' => false, 'message' => 'Unknown filter', 'evidence' => ['type' => $type]];
         if ($type === 'alt_corp') {
             $corpId = (int)($config['corp_id'] ?? 0);
+            $exemptUserIds = $config['exempt_user_ids'] ?? [];
+            if (!is_array($exemptUserIds)) $exemptUserIds = [];
             $exemptions = $config['exemptions'] ?? [];
             if (!is_array($exemptions)) $exemptions = [];
             $charIds = $getLinkedCharacterIds($userId);
-            if (empty($charIds) || $corpId <= 0) {
+            if (in_array($userId, $exemptUserIds, true)) {
+                $result = ['pass' => true, 'message' => 'User exempted from corp filter.', 'evidence' => ['corp_id' => $corpId]];
+            } elseif (empty($charIds) || $corpId <= 0) {
                 $result = ['pass' => false, 'message' => 'Missing corp or character data', 'evidence' => ['corp_id' => $corpId]];
             } else {
                 $placeholders = implode(',', array_fill(0, count($charIds), '?'));
@@ -267,16 +271,20 @@ return function (ModuleRegistry $registry): void {
                     $result = [
                         'pass' => $hit,
                         'message' => $hit ? 'Account has character in required corp.' : 'No character in required corp.',
-                        'evidence' => ['corp_id' => $corpId, 'exemptions' => $exemptions],
+                        'evidence' => ['corp_id' => $corpId, 'exemptions' => $exemptions, 'exempt_user_ids' => $exemptUserIds],
                     ];
                 }
             }
         } elseif ($type === 'alt_alliance') {
             $allianceId = (int)($config['alliance_id'] ?? 0);
+            $exemptUserIds = $config['exempt_user_ids'] ?? [];
+            if (!is_array($exemptUserIds)) $exemptUserIds = [];
             $exemptions = $config['exemptions'] ?? [];
             if (!is_array($exemptions)) $exemptions = [];
             $charIds = $getLinkedCharacterIds($userId);
-            if (empty($charIds) || $allianceId <= 0) {
+            if (in_array($userId, $exemptUserIds, true)) {
+                $result = ['pass' => true, 'message' => 'User exempted from alliance filter.', 'evidence' => ['alliance_id' => $allianceId]];
+            } elseif (empty($charIds) || $allianceId <= 0) {
                 $result = ['pass' => false, 'message' => 'Missing alliance or character data', 'evidence' => ['alliance_id' => $allianceId]];
             } else {
                 $placeholders = implode(',', array_fill(0, count($charIds), '?'));
@@ -299,7 +307,7 @@ return function (ModuleRegistry $registry): void {
                     $result = [
                         'pass' => $hit,
                         'message' => $hit ? 'Account has character in required alliance.' : 'No character in required alliance.',
-                        'evidence' => ['alliance_id' => $allianceId, 'exemptions' => $exemptions],
+                        'evidence' => ['alliance_id' => $allianceId, 'exemptions' => $exemptions, 'exempt_user_ids' => $exemptUserIds],
                     ];
                 }
             }
@@ -766,23 +774,40 @@ return function (ModuleRegistry $registry): void {
         }
 
         $canApply = (int)($group['allow_applications'] ?? 0) === 1;
+        $autoGroup = (int)($group['auto_group'] ?? 0) === 1;
         $status = (string)($membership['status'] ?? 'PENDING');
+        $source = (string)($membership['source'] ?? 'AUTO');
+        $reason = (string)($membership['reason'] ?? '—');
+        $lastEvaluated = (string)($membership['last_evaluated_at'] ?? '—');
         $groupSlug = (string)($group['key_slug'] ?? $slug ?? '');
+        $hasPending = $app->db->one(
+            "SELECT id FROM module_secgroups_requests WHERE group_id=? AND user_id=? AND status='PENDING' LIMIT 1",
+            [$gid, $uid]
+        ) !== null;
+        $isMember = $status === 'IN';
         $applyForm = '';
-        if ($canApply) {
+        if ($canApply && !$isMember && !$hasPending) {
             $applyForm = "<form method='post' action='/securegroups/group/" . htmlspecialchars($groupSlug) . "/apply' class='d-inline'>
                 <button class='btn btn-sm btn-success'>Apply</button>
               </form>";
-            $applyForm .= " <form method='post' action='/securegroups/group/" . htmlspecialchars($groupSlug) . "/withdraw' class='d-inline'>
+        } elseif ($canApply && $hasPending) {
+            $applyForm = "<form method='post' action='/securegroups/group/" . htmlspecialchars($groupSlug) . "/withdraw' class='d-inline'>
                 <button class='btn btn-sm btn-outline-secondary'>Withdraw</button>
               </form>";
+        } elseif ($canApply && $isMember && !$autoGroup) {
+            $applyForm = "<form method='post' action='/securegroups/group/" . htmlspecialchars($groupSlug) . "/leave' class='d-inline'>
+                <button class='btn btn-sm btn-outline-danger'>Leave</button>
+              </form>";
         } else {
-            $applyForm = "<span class='text-muted'>Applications closed.</span>";
+            $applyForm = "<span class='text-muted'>No actions available.</span>";
         }
 
         $body = "<h1 class='mb-3'>" . htmlspecialchars((string)($group['display_name'] ?? 'Secure Group')) . "</h1>
             <p>" . htmlspecialchars((string)($group['description'] ?? '')) . "</p>
-            <div class='mb-3'><strong>Status:</strong> " . htmlspecialchars($status) . "</div>
+            <div class='mb-1'><strong>Status:</strong> " . htmlspecialchars($status) . "</div>
+            <div class='mb-1'><strong>Source:</strong> " . htmlspecialchars($source) . "</div>
+            <div class='mb-1'><strong>Reason:</strong> " . htmlspecialchars($reason) . "</div>
+            <div class='mb-3'><strong>Last Evaluated:</strong> " . htmlspecialchars($lastEvaluated) . "</div>
             <div class='mb-4'>" . $applyForm . "</div>
             <div class='card mb-4'>
               <div class='card-header'>Eligibility Details</div>
@@ -833,6 +858,17 @@ return function (ModuleRegistry $registry): void {
         if (!$group || (int)($group['allow_applications'] ?? 0) !== 1) {
             return Response::text('Applications disabled.', 403);
         }
+        $existingMembership = $app->db->one("SELECT status FROM module_secgroups_memberships WHERE group_id=? AND user_id=?", [$gid, $uid]);
+        if ($existingMembership && (string)($existingMembership['status'] ?? '') === 'IN') {
+            return Response::text('Already a member.', 422);
+        }
+        $pending = $app->db->one(
+            "SELECT id FROM module_secgroups_requests WHERE group_id=? AND user_id=? AND status='PENDING' LIMIT 1",
+            [$gid, $uid]
+        );
+        if ($pending) {
+            return Response::text('Request already pending.', 422);
+        }
         $publicId = $generatePublicId('module_secgroups_requests');
         $app->db->run(
             "INSERT INTO module_secgroups_requests\n"
@@ -847,10 +883,47 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         $slug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($slug);
+        $pending = $app->db->one(
+            "SELECT id FROM module_secgroups_requests WHERE group_id=? AND user_id=? AND status='PENDING' LIMIT 1",
+            [$gid, $uid]
+        );
+        if (!$pending) {
+            return Response::text('No pending request to withdraw.', 422);
+        }
         $app->db->run(
             "UPDATE module_secgroups_requests SET status='WITHDRAWN', decided_at=?, admin_note='User withdrew'\n"
             . " WHERE group_id=? AND user_id=? AND status='PENDING'",
             [$nowUtc(), $gid, $uid]
+        );
+        return Response::redirect('/securegroups/group/' . rawurlencode($slug));
+    });
+
+    $registry->route('POST', '/securegroups/group/{slug}/leave', function (Request $req) use ($app, $requireLogin, $nowUtc, $resolveGroupId, $syncUserRightsGroup): Response {
+        if ($resp = $requireLogin()) return $resp;
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        $slug = (string)($req->params['slug'] ?? '');
+        $gid = $resolveGroupId($slug);
+        $group = $app->db->one("SELECT allow_applications, auto_group, rights_group_id FROM module_secgroups_groups WHERE id=?", [$gid]);
+        if (!$group || (int)($group['allow_applications'] ?? 0) !== 1 || (int)($group['auto_group'] ?? 0) === 1) {
+            return Response::text('Leaving not permitted.', 403);
+        }
+        $membership = $app->db->one("SELECT status FROM module_secgroups_memberships WHERE group_id=? AND user_id=?", [$gid, $uid]);
+        if (!$membership || (string)($membership['status'] ?? '') !== 'IN') {
+            return Response::text('Not currently a member.', 422);
+        }
+        $stamp = $nowUtc();
+        $app->db->run(
+            "UPDATE module_secgroups_memberships SET status='OUT', source='REQUEST', reason='User left', last_evaluated_at=?, updated_at=?\n"
+            . " WHERE group_id=? AND user_id=?",
+            [$stamp, $stamp, $gid, $uid]
+        );
+        $rightsGroupId = (int)($group['rights_group_id'] ?? 0);
+        if ($rightsGroupId > 0) {
+            $syncUserRightsGroup($uid, $rightsGroupId, false);
+        }
+        $app->db->run(
+            "INSERT INTO module_secgroups_logs (group_id, user_id, action, source, message, created_at) VALUES (?, ?, 'USER_LEFT', 'REQUEST', ?, ?)",
+            [$gid, $uid, 'User left group', $stamp]
         );
         return Response::redirect('/securegroups/group/' . rawurlencode($slug));
     });
@@ -964,6 +1037,14 @@ return function (ModuleRegistry $registry): void {
                 <td>
                   <a class='btn btn-sm btn-outline-primary' href='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/edit'>Edit</a>
                   <a class='btn btn-sm btn-outline-secondary' href='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/rules'>Rules</a>
+                  <form method='post' action='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/toggle' class='d-inline'>
+                    <input type='hidden' name='enabled' value='" . ((int)($group['enabled'] ?? 0) === 1 ? '0' : '1') . "'>
+                    <button class='btn btn-sm " . ((int)($group['enabled'] ?? 0) === 1 ? 'btn-outline-warning' : 'btn-outline-success') . "'>"
+                        . ((int)($group['enabled'] ?? 0) === 1 ? 'Disable' : 'Enable') . "</button>
+                  </form>
+                  <form method='post' action='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/delete' class='d-inline' onsubmit=\"return confirm('Delete this group and all related data?');\">
+                    <button class='btn btn-sm btn-outline-danger'>Delete</button>
+                  </form>
                 </td>
             </tr>";
         }
@@ -1247,6 +1328,49 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/admin/securegroups/groups/' . rawurlencode($groupSlug) . '/edit');
     });
 
+    $registry->route('POST', '/admin/securegroups/groups/{slug}/toggle', function (Request $req) use ($app, $requireLogin, $requireRight, $resolveGroupId, $nowUtc): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $groupSlug = (string)($req->params['slug'] ?? '');
+        $gid = $resolveGroupId($groupSlug);
+        if ($gid <= 0) {
+            return Response::text('Group not found', 404);
+        }
+        $enabled = (int)($req->post['enabled'] ?? 1) === 1 ? 1 : 0;
+        $app->db->run(
+            "UPDATE module_secgroups_groups SET enabled=?, updated_at=? WHERE id=?",
+            [$enabled, $nowUtc(), $gid]
+        );
+        return Response::redirect('/admin/securegroups/groups');
+    });
+
+    $registry->route('POST', '/admin/securegroups/groups/{slug}/delete', function (Request $req) use ($app, $requireLogin, $requireRight, $resolveGroupId): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $groupSlug = (string)($req->params['slug'] ?? '');
+        $gid = $resolveGroupId($groupSlug);
+        if ($gid <= 0) {
+            return Response::text('Group not found', 404);
+        }
+
+        $app->db->run("DELETE FROM module_secgroups_groups WHERE id=?", [$gid]);
+        $orphans = $app->db->all(
+            "SELECT f.id FROM module_secgroups_filters f\n"
+            . " LEFT JOIN module_secgroups_group_filters gf ON gf.filter_id=f.id\n"
+            . " WHERE gf.filter_id IS NULL"
+        );
+        foreach ($orphans as $orphan) {
+            $fid = (int)($orphan['id'] ?? 0);
+            if ($fid > 0) {
+                $app->db->run("DELETE FROM module_secgroups_filters WHERE id=?", [$fid]);
+            }
+        }
+
+        return Response::redirect('/admin/securegroups/groups');
+    });
+
     $registry->route('GET', '/admin/securegroups/groups/{slug}/rules', function (Request $req) use ($app, $renderPage, $requireLogin, $requireRight, $resolveGroupId): Response {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('securegroups.admin')) return $resp;
@@ -1312,6 +1436,7 @@ return function (ModuleRegistry $registry): void {
                 <td>" . htmlspecialchars($lastEvaluated) . "</td>
                 <td>
                   <div class='d-flex flex-wrap gap-1'>
+                    <a class='btn btn-sm btn-outline-primary' href='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/rules/" . htmlspecialchars($filterPublicId) . "/edit'>Edit</a>
                     <form method='post' action='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/rules/" . htmlspecialchars($filterPublicId) . "/move' class='d-inline'>
                       <input type='hidden' name='direction' value='up'>
                       <button class='btn btn-sm btn-outline-secondary'{$disableUp}>▲</button>
@@ -1323,6 +1448,9 @@ return function (ModuleRegistry $registry): void {
                     <form method='post' action='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/rules/" . htmlspecialchars($filterPublicId) . "/toggle' class='d-inline'>
                       <input type='hidden' name='enabled' value='" . ($enabled ? '0' : '1') . "'>
                       <button class='btn btn-sm " . ($enabled ? 'btn-outline-warning' : 'btn-outline-success') . "'>" . ($enabled ? 'Disable' : 'Enable') . "</button>
+                    </form>
+                    <form method='post' action='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/rules/" . htmlspecialchars($filterPublicId) . "/delete' class='d-inline' onsubmit=\"return confirm('Delete this filter?');\">
+                      <button class='btn btn-sm btn-outline-danger'>Delete</button>
                     </form>
                   </div>
                   <form method='post' action='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/rules/test' class='mt-2 d-flex gap-2'>
@@ -1339,7 +1467,14 @@ return function (ModuleRegistry $registry): void {
 
         $searchRows = '';
         foreach ($searchResults as $result) {
-            $searchRows .= "<tr><td>" . htmlspecialchars((string)($result['name'] ?? '')) . "</td><td>" . htmlspecialchars((string)($result['entity_id'] ?? '')) . "</td></tr>";
+            $entityName = (string)($result['name'] ?? '');
+            $entityId = (string)($result['entity_id'] ?? '');
+            $searchRows .= "<tr>
+                <td>" . htmlspecialchars($entityName) . "</td>
+                <td>
+                  <button class='btn btn-sm btn-outline-primary secgroups-entity-select' type='button' data-entity-id='" . htmlspecialchars($entityId) . "' data-entity-name='" . htmlspecialchars($entityName) . "' data-entity-type='" . htmlspecialchars($searchType) . "'>Use</button>
+                </td>
+              </tr>";
         }
         if ($search !== '' && $searchRows === '') {
             $searchRows = "<tr><td colspan='2' class='text-muted'>No results found.</td></tr>";
@@ -1347,10 +1482,18 @@ return function (ModuleRegistry $registry): void {
 
         $groupRows = '';
         foreach ($groupResults as $groupRow) {
-            $groupRows .= "<tr><td>" . htmlspecialchars((string)($groupRow['name'] ?? '')) . "</td><td>" . htmlspecialchars((string)($groupRow['slug'] ?? '')) . "</td></tr>";
+            $groupName = (string)($groupRow['name'] ?? '');
+            $groupSlug = (string)($groupRow['slug'] ?? '');
+            $groupRows .= "<tr>
+                <td>" . htmlspecialchars($groupName) . "</td>
+                <td>" . htmlspecialchars($groupSlug) . "</td>
+                <td>
+                  <button class='btn btn-sm btn-outline-primary secgroups-group-select' type='button' data-group-slug='" . htmlspecialchars($groupSlug) . "'>Add</button>
+                </td>
+              </tr>";
         }
         if ($groupSearch !== '' && $groupRows === '') {
-            $groupRows = "<tr><td colspan='2' class='text-muted'>No groups found.</td></tr>";
+            $groupRows = "<tr><td colspan='3' class='text-muted'>No groups found.</td></tr>";
         }
 
         $body = "<h1 class='mb-3'>Rules for " . htmlspecialchars((string)($group['display_name'] ?? '')) . "</h1>
@@ -1373,7 +1516,7 @@ return function (ModuleRegistry $registry): void {
                 </form>
                 <div class='table-responsive mt-3'>
                   <table class='table table-sm mb-0'>
-                    <thead><tr><th>Name</th><th>ID</th></tr></thead>
+                    <thead><tr><th>Name</th><th></th></tr></thead>
                     <tbody>{$searchRows}</tbody>
                   </table>
                 </div>
@@ -1392,7 +1535,7 @@ return function (ModuleRegistry $registry): void {
                 </form>
                 <div class='table-responsive mt-3'>
                   <table class='table table-sm mb-0'>
-                    <thead><tr><th>Name</th><th>Slug</th></tr></thead>
+                    <thead><tr><th>Name</th><th>Slug</th><th></th></tr></thead>
                     <tbody>{$groupRows}</tbody>
                   </table>
                 </div>
@@ -1426,20 +1569,22 @@ return function (ModuleRegistry $registry): void {
                   </div>
                   <div class='row g-2 mt-2'>
                     <div class='col-md-3 secgroups-rule-field' data-rule-types='alt_corp'>
-                      <label class='form-label'>Corp ID</label>
-                      <input class='form-control' name='corp_id' placeholder='For alt corp filter'>
+                      <label class='form-label'>Corporation</label>
+                      <input type='hidden' name='corp_id' id='secgroups-corp-id'>
+                      <input class='form-control' name='corp_name' id='secgroups-corp-name' placeholder='Select a corporation above' readonly>
                     </div>
                     <div class='col-md-3 secgroups-rule-field' data-rule-types='alt_alliance'>
-                      <label class='form-label'>Alliance ID</label>
-                      <input class='form-control' name='alliance_id' placeholder='For alt alliance filter'>
+                      <label class='form-label'>Alliance</label>
+                      <input type='hidden' name='alliance_id' id='secgroups-alliance-id'>
+                      <input class='form-control' name='alliance_name' id='secgroups-alliance-name' placeholder='Select an alliance above' readonly>
                     </div>
                     <div class='col-md-3 secgroups-rule-field' data-rule-types='user_in_group'>
                       <label class='form-label'>Group Slugs</label>
-                      <input class='form-control' name='group_slugs' placeholder='Comma-separated'>
+                      <input class='form-control' name='group_slugs' id='secgroups-group-slugs' placeholder='Comma-separated'>
                     </div>
                     <div class='col-md-3 secgroups-rule-field' data-rule-types='alt_corp,alt_alliance'>
-                      <label class='form-label'>Exempt Character IDs</label>
-                      <input class='form-control' name='exemptions' placeholder='Comma-separated'>
+                      <label class='form-label'>Exempt Member IDs</label>
+                      <input class='form-control' name='exemptions' placeholder='Comma-separated public IDs'>
                     </div>
                   </div>
                   <div class='row g-2 mt-2 secgroups-rule-field' data-rule-types='expression'>
@@ -1483,6 +1628,11 @@ return function (ModuleRegistry $registry): void {
               (function () {
                 var typeSelect = document.getElementById('secgroups-rule-type');
                 var fields = document.querySelectorAll('.secgroups-rule-field');
+                var corpId = document.getElementById('secgroups-corp-id');
+                var corpName = document.getElementById('secgroups-corp-name');
+                var allianceId = document.getElementById('secgroups-alliance-id');
+                var allianceName = document.getElementById('secgroups-alliance-name');
+                var groupSlugs = document.getElementById('secgroups-group-slugs');
                 function updateFields() {
                   var type = typeSelect ? typeSelect.value : '';
                   fields.forEach(function (field) {
@@ -1491,6 +1641,34 @@ return function (ModuleRegistry $registry): void {
                     field.style.display = show ? '' : 'none';
                   });
                 }
+                function addSlug(value) {
+                  if (!groupSlugs) return;
+                  var current = groupSlugs.value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+                  if (current.indexOf(value) === -1) {
+                    current.push(value);
+                  }
+                  groupSlugs.value = current.join(', ');
+                }
+                document.querySelectorAll('.secgroups-entity-select').forEach(function (btn) {
+                  btn.addEventListener('click', function () {
+                    var entityId = btn.getAttribute('data-entity-id') || '';
+                    var entityName = btn.getAttribute('data-entity-name') || '';
+                    var entityType = btn.getAttribute('data-entity-type') || '';
+                    if (entityType === 'alliance') {
+                      if (allianceId) allianceId.value = entityId;
+                      if (allianceName) allianceName.value = entityName;
+                    } else {
+                      if (corpId) corpId.value = entityId;
+                      if (corpName) corpName.value = entityName;
+                    }
+                  });
+                });
+                document.querySelectorAll('.secgroups-group-select').forEach(function (btn) {
+                  btn.addEventListener('click', function () {
+                    var slug = btn.getAttribute('data-group-slug') || '';
+                    if (slug !== '') addSlug(slug);
+                  });
+                });
                 if (typeSelect) {
                   typeSelect.addEventListener('change', updateFields);
                   updateFields();
@@ -1501,7 +1679,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Secure Group Rules', $body), 200);
     });
 
-    $registry->route('POST', '/admin/securegroups/groups/{slug}/rules/add', function (Request $req) use ($app, $requireLogin, $requireRight, $nowUtc, $resolveGroupId, $generatePublicId, $resolveFilterId): Response {
+    $registry->route('POST', '/admin/securegroups/groups/{slug}/rules/add', function (Request $req) use ($app, $requireLogin, $requireRight, $nowUtc, $resolveGroupId, $generatePublicId, $resolveFilterId, $resolveUserId): Response {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
@@ -1513,25 +1691,68 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Invalid filter data', 422);
         }
 
+        $corpId = (int)($req->post['corp_id'] ?? 0);
+        $corpName = trim((string)($req->post['corp_name'] ?? ''));
+        $allianceId = (int)($req->post['alliance_id'] ?? 0);
+        $allianceName = trim((string)($req->post['alliance_name'] ?? ''));
+
+        if ($type === 'alt_corp' && $corpId <= 0) {
+            return Response::text('Select a corporation from the search results.', 422);
+        }
+        if ($type === 'alt_alliance' && $allianceId <= 0) {
+            return Response::text('Select an alliance from the search results.', 422);
+        }
+
         $groupSlugs = array_filter(array_map('trim', explode(',', (string)($req->post['group_slugs'] ?? ''))));
         $groupIds = [];
+        $missingGroups = [];
         foreach ($groupSlugs as $groupSlugValue) {
             $row = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupSlugValue]);
             $gidValue = (int)($row['id'] ?? 0);
             if ($gidValue > 0) {
                 $groupIds[] = $gidValue;
+            } else {
+                $missingGroups[] = $groupSlugValue;
             }
         }
-        $exemptions = array_filter(array_map('trim', explode(',', (string)($req->post['exemptions'] ?? ''))));
+        if ($type === 'user_in_group' && empty($groupIds)) {
+            return Response::text('Select at least one rights group slug.', 422);
+        }
+        if (!empty($missingGroups)) {
+            return Response::text('Unknown group slugs: ' . implode(', ', $missingGroups), 422);
+        }
+
+        $exemptionPublicIds = array_filter(array_map('trim', explode(',', (string)($req->post['exemptions'] ?? ''))));
+        $exemptUserIds = [];
+        $missingExemptions = [];
+        foreach ($exemptionPublicIds as $publicId) {
+            $userId = $resolveUserId($publicId);
+            if ($userId > 0) {
+                $exemptUserIds[] = $userId;
+            } else {
+                $missingExemptions[] = $publicId;
+            }
+        }
+        if (!empty($missingExemptions)) {
+            return Response::text('Unknown member IDs: ' . implode(', ', $missingExemptions), 422);
+        }
         $leftFilterPublicId = trim((string)($req->post['left_filter_public_id'] ?? ''));
         $rightFilterPublicId = trim((string)($req->post['right_filter_public_id'] ?? ''));
+        $leftFilterId = $resolveFilterId($leftFilterPublicId);
+        $rightFilterId = $resolveFilterId($rightFilterPublicId);
+        if ($type === 'expression' && ($leftFilterId <= 0 || $rightFilterId <= 0)) {
+            return Response::text('Select valid filter public IDs for the expression.', 422);
+        }
         $config = [
-            'corp_id' => (int)($req->post['corp_id'] ?? 0),
-            'alliance_id' => (int)($req->post['alliance_id'] ?? 0),
+            'corp_id' => $corpId,
+            'corp_name' => $corpName,
+            'alliance_id' => $allianceId,
+            'alliance_name' => $allianceName,
             'group_ids' => $groupIds,
-            'exemptions' => array_map('intval', $exemptions),
-            'left_filter_id' => $resolveFilterId($leftFilterPublicId),
-            'right_filter_id' => $resolveFilterId($rightFilterPublicId),
+            'group_slugs' => $groupSlugs,
+            'exempt_user_ids' => $exemptUserIds,
+            'left_filter_id' => $leftFilterId,
+            'right_filter_id' => $rightFilterId,
             'operator' => (string)($req->post['operator'] ?? 'and'),
             'negate' => (int)($req->post['negate'] ?? 0) === 1,
         ];
@@ -1565,6 +1786,433 @@ return function (ModuleRegistry $registry): void {
             "INSERT INTO module_secgroups_group_filters (group_id, filter_id, sort_order, enabled) VALUES (?, ?, ?, 1)",
             [$gid, $filterId, $nextOrder]
         );
+
+        return Response::redirect('/admin/securegroups/groups/' . rawurlencode($groupSlug) . '/rules');
+    });
+
+    $registry->route('GET', '/admin/securegroups/groups/{slug}/rules/{filterPublicId}/edit', function (Request $req) use ($app, $renderPage, $requireLogin, $requireRight, $resolveGroupId, $resolveFilterId): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $groupSlug = (string)($req->params['slug'] ?? '');
+        $gid = $resolveGroupId($groupSlug);
+        $filterId = $resolveFilterId((string)($req->params['filterPublicId'] ?? ''));
+        $filter = $app->db->one(
+            "SELECT f.* FROM module_secgroups_filters f\n"
+            . " JOIN module_secgroups_group_filters gf ON gf.filter_id=f.id\n"
+            . " WHERE gf.group_id=? AND f.id=? LIMIT 1",
+            [$gid, $filterId]
+        );
+        if (!$filter) {
+            return Response::text('Filter not found', 404);
+        }
+
+        $config = json_decode((string)($filter['config_json'] ?? '{}'), true);
+        if (!is_array($config)) $config = [];
+
+        $corpId = (int)($config['corp_id'] ?? 0);
+        $allianceId = (int)($config['alliance_id'] ?? 0);
+        $corpName = (string)($config['corp_name'] ?? '');
+        $allianceName = (string)($config['alliance_name'] ?? '');
+        if ($corpId > 0 && $corpName === '') {
+            $row = $app->db->one("SELECT name FROM universe_entities WHERE entity_id=? LIMIT 1", [$corpId]);
+            $corpName = (string)($row['name'] ?? '');
+        }
+        if ($allianceId > 0 && $allianceName === '') {
+            $row = $app->db->one("SELECT name FROM universe_entities WHERE entity_id=? LIMIT 1", [$allianceId]);
+            $allianceName = (string)($row['name'] ?? '');
+        }
+
+        $groupSlugs = $config['group_slugs'] ?? [];
+        if (!is_array($groupSlugs)) $groupSlugs = [];
+        $groupIds = $config['group_ids'] ?? [];
+        if (!is_array($groupIds)) $groupIds = [];
+        if (empty($groupSlugs) && !empty($groupIds)) {
+            $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
+            $rows = $app->db->all("SELECT slug FROM groups WHERE id IN ({$placeholders})", $groupIds);
+            $groupSlugs = array_map(fn(array $row): string => (string)($row['slug'] ?? ''), $rows);
+        }
+
+        $exemptUserIds = $config['exempt_user_ids'] ?? [];
+        if (!is_array($exemptUserIds)) $exemptUserIds = [];
+        $exemptPublicIds = [];
+        if (!empty($exemptUserIds)) {
+            $placeholders = implode(',', array_fill(0, count($exemptUserIds), '?'));
+            $rows = $app->db->all("SELECT id, public_id FROM eve_users WHERE id IN ({$placeholders})", $exemptUserIds);
+            foreach ($rows as $row) {
+                $exemptPublicIds[(int)($row['id'] ?? 0)] = (string)($row['public_id'] ?? '');
+            }
+        }
+        $exemptionsValue = implode(', ', array_filter(array_map(fn($id) => $exemptPublicIds[(int)$id] ?? '', $exemptUserIds)));
+
+        $leftFilterId = (int)($config['left_filter_id'] ?? 0);
+        $rightFilterId = (int)($config['right_filter_id'] ?? 0);
+        $leftPublicId = '';
+        $rightPublicId = '';
+        if ($leftFilterId > 0) {
+            $row = $app->db->one("SELECT public_id FROM module_secgroups_filters WHERE id=?", [$leftFilterId]);
+            $leftPublicId = (string)($row['public_id'] ?? '');
+        }
+        if ($rightFilterId > 0) {
+            $row = $app->db->one("SELECT public_id FROM module_secgroups_filters WHERE id=?", [$rightFilterId]);
+            $rightPublicId = (string)($row['public_id'] ?? '');
+        }
+
+        $search = trim((string)($req->query['search'] ?? ''));
+        $searchType = (string)($req->query['type'] ?? 'corporation');
+        $groupSearch = trim((string)($req->query['group_search'] ?? ''));
+        $searchResults = [];
+        if ($search !== '') {
+            $entityType = $searchType === 'alliance' ? 'alliance' : 'corporation';
+            $searchResults = $app->db->all(
+                "SELECT entity_id, name FROM universe_entities\n"
+                . " WHERE entity_type=? AND name LIKE ? ORDER BY name ASC LIMIT 25",
+                [$entityType, '%' . $search . '%']
+            );
+        }
+        $groupResults = [];
+        if ($groupSearch !== '') {
+            $groupResults = $app->db->all(
+                "SELECT id, slug, name FROM groups WHERE name LIKE ? OR slug LIKE ? ORDER BY name ASC LIMIT 25",
+                ['%' . $groupSearch . '%', '%' . $groupSearch . '%']
+            );
+        }
+
+        $searchRows = '';
+        foreach ($searchResults as $result) {
+            $entityName = (string)($result['name'] ?? '');
+            $entityId = (string)($result['entity_id'] ?? '');
+            $searchRows .= "<tr>
+                <td>" . htmlspecialchars($entityName) . "</td>
+                <td>
+                  <button class='btn btn-sm btn-outline-primary secgroups-entity-select' type='button' data-entity-id='" . htmlspecialchars($entityId) . "' data-entity-name='" . htmlspecialchars($entityName) . "' data-entity-type='" . htmlspecialchars($searchType) . "'>Use</button>
+                </td>
+              </tr>";
+        }
+        if ($search !== '' && $searchRows === '') {
+            $searchRows = "<tr><td colspan='2' class='text-muted'>No results found.</td></tr>";
+        }
+
+        $groupRows = '';
+        foreach ($groupResults as $groupRow) {
+            $resultName = (string)($groupRow['name'] ?? '');
+            $resultSlug = (string)($groupRow['slug'] ?? '');
+            $groupRows .= "<tr>
+                <td>" . htmlspecialchars($resultName) . "</td>
+                <td>" . htmlspecialchars($resultSlug) . "</td>
+                <td>
+                  <button class='btn btn-sm btn-outline-primary secgroups-group-select' type='button' data-group-slug='" . htmlspecialchars($resultSlug) . "'>Add</button>
+                </td>
+              </tr>";
+        }
+        if ($groupSearch !== '' && $groupRows === '') {
+            $groupRows = "<tr><td colspan='3' class='text-muted'>No groups found.</td></tr>";
+        }
+
+        $body = "<h1 class='mb-3'>Edit Filter</h1>
+            <div class='card mb-4'>
+              <div class='card-header'>Corp/Alliance Search</div>
+              <div class='card-body'>
+                <form method='get' class='row g-2'>
+                  <div class='col-md-4'>
+                    <input class='form-control' name='search' placeholder='Search name' value='" . htmlspecialchars($search) . "'>
+                  </div>
+                  <div class='col-md-3'>
+                    <select class='form-select' name='type'>
+                      <option value='corporation'" . ($searchType !== 'alliance' ? ' selected' : '') . ">Corporation</option>
+                      <option value='alliance'" . ($searchType === 'alliance' ? ' selected' : '') . ">Alliance</option>
+                    </select>
+                  </div>
+                  <div class='col-md-2'>
+                    <button class='btn btn-outline-secondary w-100'>Search</button>
+                  </div>
+                </form>
+                <div class='table-responsive mt-3'>
+                  <table class='table table-sm mb-0'>
+                    <thead><tr><th>Name</th><th></th></tr></thead>
+                    <tbody>{$searchRows}</tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <div class='card mb-4'>
+              <div class='card-header'>Rights Group Search</div>
+              <div class='card-body'>
+                <form method='get' class='row g-2'>
+                  <div class='col-md-6'>
+                    <input class='form-control' name='group_search' placeholder='Search group name or slug' value='" . htmlspecialchars($groupSearch) . "'>
+                  </div>
+                  <div class='col-md-2'>
+                    <button class='btn btn-outline-secondary w-100'>Search</button>
+                  </div>
+                </form>
+                <div class='table-responsive mt-3'>
+                  <table class='table table-sm mb-0'>
+                    <thead><tr><th>Name</th><th>Slug</th><th></th></tr></thead>
+                    <tbody>{$groupRows}</tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <div class='card'>
+              <div class='card-body'>
+                <form method='post' action='/admin/securegroups/groups/" . htmlspecialchars($groupSlug) . "/rules/" . htmlspecialchars((string)($filter['public_id'] ?? '')) . "/edit' id='secgroups-rule-form'>
+                  <div class='row g-2'>
+                    <div class='col-md-3'>
+                      <label class='form-label'>Filter Type</label>
+                      <select class='form-select' name='type' id='secgroups-rule-type'>
+                        <option value='alt_corp'" . ((string)($filter['type'] ?? '') === 'alt_corp' ? ' selected' : '') . ">Alt Corp Filter</option>
+                        <option value='alt_alliance'" . ((string)($filter['type'] ?? '') === 'alt_alliance' ? ' selected' : '') . ">Alt Alliance Filter</option>
+                        <option value='user_in_group'" . ((string)($filter['type'] ?? '') === 'user_in_group' ? ' selected' : '') . ">User In Group Filter</option>
+                        <option value='expression'" . ((string)($filter['type'] ?? '') === 'expression' ? ' selected' : '') . ">Filter Expression</option>
+                      </select>
+                    </div>
+                    <div class='col-md-3'>
+                      <label class='form-label'>Name</label>
+                      <input class='form-control' name='name' value='" . htmlspecialchars((string)($filter['name'] ?? '')) . "' required>
+                    </div>
+                    <div class='col-md-3'>
+                      <label class='form-label'>Description</label>
+                      <input class='form-control' name='description' value='" . htmlspecialchars((string)($filter['description'] ?? '')) . "'>
+                    </div>
+                    <div class='col-md-3'>
+                      <label class='form-label'>Grace Days</label>
+                      <input class='form-control' type='number' name='grace_period_days' value='" . htmlspecialchars((string)($filter['grace_period_days'] ?? 0)) . "'>
+                    </div>
+                  </div>
+                  <div class='row g-2 mt-2'>
+                    <div class='col-md-3 secgroups-rule-field' data-rule-types='alt_corp'>
+                      <label class='form-label'>Corporation</label>
+                      <input type='hidden' name='corp_id' id='secgroups-corp-id' value='" . htmlspecialchars((string)$corpId) . "'>
+                      <input class='form-control' name='corp_name' id='secgroups-corp-name' value='" . htmlspecialchars($corpName) . "' placeholder='Select a corporation above' readonly>
+                    </div>
+                    <div class='col-md-3 secgroups-rule-field' data-rule-types='alt_alliance'>
+                      <label class='form-label'>Alliance</label>
+                      <input type='hidden' name='alliance_id' id='secgroups-alliance-id' value='" . htmlspecialchars((string)$allianceId) . "'>
+                      <input class='form-control' name='alliance_name' id='secgroups-alliance-name' value='" . htmlspecialchars($allianceName) . "' placeholder='Select an alliance above' readonly>
+                    </div>
+                    <div class='col-md-3 secgroups-rule-field' data-rule-types='user_in_group'>
+                      <label class='form-label'>Group Slugs</label>
+                      <input class='form-control' name='group_slugs' id='secgroups-group-slugs' value='" . htmlspecialchars(implode(', ', $groupSlugs)) . "' placeholder='Comma-separated'>
+                    </div>
+                    <div class='col-md-3 secgroups-rule-field' data-rule-types='alt_corp,alt_alliance'>
+                      <label class='form-label'>Exempt Member IDs</label>
+                      <input class='form-control' name='exemptions' value='" . htmlspecialchars($exemptionsValue) . "' placeholder='Comma-separated public IDs'>
+                    </div>
+                  </div>
+                  <div class='row g-2 mt-2 secgroups-rule-field' data-rule-types='expression'>
+                    <div class='col-md-4'>
+                      <label class='form-label'>Expression Left Filter Public ID</label>
+                      <input class='form-control' name='left_filter_public_id' value='" . htmlspecialchars($leftPublicId) . "'>
+                    </div>
+                    <div class='col-md-4'>
+                      <label class='form-label'>Expression Right Filter Public ID</label>
+                      <input class='form-control' name='right_filter_public_id' value='" . htmlspecialchars($rightPublicId) . "'>
+                    </div>
+                    <div class='col-md-2'>
+                      <label class='form-label'>Operator</label>
+                      <select class='form-select' name='operator'>
+                        <option value='and'" . (($config['operator'] ?? 'and') === 'and' ? ' selected' : '') . ">AND</option>
+                        <option value='or'" . (($config['operator'] ?? '') === 'or' ? ' selected' : '') . ">OR</option>
+                        <option value='xor'" . (($config['operator'] ?? '') === 'xor' ? ' selected' : '') . ">XOR</option>
+                      </select>
+                    </div>
+                    <div class='col-md-2'>
+                      <label class='form-label'>Negate</label>
+                      <select class='form-select' name='negate'>
+                        <option value='0'" . (empty($config['negate']) ? ' selected' : '') . ">No</option>
+                        <option value='1'" . (!empty($config['negate']) ? ' selected' : '') . ">Yes</option>
+                      </select>
+                    </div>
+                  </div>
+                  <button class='btn btn-primary mt-3'>Save Filter</button>
+                </form>
+              </div>
+            </div>
+            <script>
+              (function () {
+                var typeSelect = document.getElementById('secgroups-rule-type');
+                var fields = document.querySelectorAll('.secgroups-rule-field');
+                var corpId = document.getElementById('secgroups-corp-id');
+                var corpName = document.getElementById('secgroups-corp-name');
+                var allianceId = document.getElementById('secgroups-alliance-id');
+                var allianceName = document.getElementById('secgroups-alliance-name');
+                var groupSlugs = document.getElementById('secgroups-group-slugs');
+                function updateFields() {
+                  var type = typeSelect ? typeSelect.value : '';
+                  fields.forEach(function (field) {
+                    var types = (field.getAttribute('data-rule-types') || '').split(',');
+                    var show = types.indexOf(type) !== -1;
+                    field.style.display = show ? '' : 'none';
+                  });
+                }
+                function addSlug(value) {
+                  if (!groupSlugs) return;
+                  var current = groupSlugs.value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+                  if (current.indexOf(value) === -1) {
+                    current.push(value);
+                  }
+                  groupSlugs.value = current.join(', ');
+                }
+                document.querySelectorAll('.secgroups-entity-select').forEach(function (btn) {
+                  btn.addEventListener('click', function () {
+                    var entityId = btn.getAttribute('data-entity-id') || '';
+                    var entityName = btn.getAttribute('data-entity-name') || '';
+                    var entityType = btn.getAttribute('data-entity-type') || '';
+                    if (entityType === 'alliance') {
+                      if (allianceId) allianceId.value = entityId;
+                      if (allianceName) allianceName.value = entityName;
+                    } else {
+                      if (corpId) corpId.value = entityId;
+                      if (corpName) corpName.value = entityName;
+                    }
+                  });
+                });
+                document.querySelectorAll('.secgroups-group-select').forEach(function (btn) {
+                  btn.addEventListener('click', function () {
+                    var slug = btn.getAttribute('data-group-slug') || '';
+                    if (slug !== '') addSlug(slug);
+                  });
+                });
+                if (typeSelect) {
+                  typeSelect.addEventListener('change', updateFields);
+                  updateFields();
+                }
+              })();
+            </script>";
+
+        return Response::html($renderPage('Edit Secure Group Filter', $body), 200);
+    });
+
+    $registry->route('POST', '/admin/securegroups/groups/{slug}/rules/{filterPublicId}/edit', function (Request $req) use ($app, $requireLogin, $requireRight, $nowUtc, $resolveGroupId, $resolveFilterId, $resolveUserId): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $groupSlug = (string)($req->params['slug'] ?? '');
+        $gid = $resolveGroupId($groupSlug);
+        $filterId = $resolveFilterId((string)($req->params['filterPublicId'] ?? ''));
+        $existing = $app->db->one(
+            "SELECT f.* FROM module_secgroups_filters f\n"
+            . " JOIN module_secgroups_group_filters gf ON gf.filter_id=f.id\n"
+            . " WHERE gf.group_id=? AND f.id=? LIMIT 1",
+            [$gid, $filterId]
+        );
+        if (!$existing) {
+            return Response::text('Filter not found', 404);
+        }
+
+        $type = (string)($req->post['type'] ?? '');
+        $name = trim((string)($req->post['name'] ?? ''));
+        if ($type === '' || $name === '') {
+            return Response::text('Invalid filter data', 422);
+        }
+
+        $corpId = (int)($req->post['corp_id'] ?? 0);
+        $corpName = trim((string)($req->post['corp_name'] ?? ''));
+        $allianceId = (int)($req->post['alliance_id'] ?? 0);
+        $allianceName = trim((string)($req->post['alliance_name'] ?? ''));
+
+        if ($type === 'alt_corp' && $corpId <= 0) {
+            return Response::text('Select a corporation from the search results.', 422);
+        }
+        if ($type === 'alt_alliance' && $allianceId <= 0) {
+            return Response::text('Select an alliance from the search results.', 422);
+        }
+
+        $groupSlugs = array_filter(array_map('trim', explode(',', (string)($req->post['group_slugs'] ?? ''))));
+        $groupIds = [];
+        $missingGroups = [];
+        foreach ($groupSlugs as $groupSlugValue) {
+            $row = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupSlugValue]);
+            $gidValue = (int)($row['id'] ?? 0);
+            if ($gidValue > 0) {
+                $groupIds[] = $gidValue;
+            } else {
+                $missingGroups[] = $groupSlugValue;
+            }
+        }
+        if ($type === 'user_in_group' && empty($groupIds)) {
+            return Response::text('Select at least one rights group slug.', 422);
+        }
+        if (!empty($missingGroups)) {
+            return Response::text('Unknown group slugs: ' . implode(', ', $missingGroups), 422);
+        }
+
+        $exemptionPublicIds = array_filter(array_map('trim', explode(',', (string)($req->post['exemptions'] ?? ''))));
+        $exemptUserIds = [];
+        $missingExemptions = [];
+        foreach ($exemptionPublicIds as $publicId) {
+            $userId = $resolveUserId($publicId);
+            if ($userId > 0) {
+                $exemptUserIds[] = $userId;
+            } else {
+                $missingExemptions[] = $publicId;
+            }
+        }
+        if (!empty($missingExemptions)) {
+            return Response::text('Unknown member IDs: ' . implode(', ', $missingExemptions), 422);
+        }
+
+        $leftFilterPublicId = trim((string)($req->post['left_filter_public_id'] ?? ''));
+        $rightFilterPublicId = trim((string)($req->post['right_filter_public_id'] ?? ''));
+        $leftFilterId = $resolveFilterId($leftFilterPublicId);
+        $rightFilterId = $resolveFilterId($rightFilterPublicId);
+        if ($type === 'expression' && ($leftFilterId <= 0 || $rightFilterId <= 0)) {
+            return Response::text('Select valid filter public IDs for the expression.', 422);
+        }
+
+        $config = [
+            'corp_id' => $corpId,
+            'corp_name' => $corpName,
+            'alliance_id' => $allianceId,
+            'alliance_name' => $allianceName,
+            'group_ids' => $groupIds,
+            'group_slugs' => $groupSlugs,
+            'exempt_user_ids' => $exemptUserIds,
+            'left_filter_id' => $leftFilterId,
+            'right_filter_id' => $rightFilterId,
+            'operator' => (string)($req->post['operator'] ?? 'and'),
+            'negate' => (int)($req->post['negate'] ?? 0) === 1,
+        ];
+
+        $stamp = $nowUtc();
+        $app->db->run(
+            "UPDATE module_secgroups_filters\n"
+            . " SET type=?, name=?, description=?, config_json=?, grace_period_days=?, updated_at=?\n"
+            . " WHERE id=?",
+            [
+                $type,
+                $name,
+                trim((string)($req->post['description'] ?? '')),
+                json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                (int)($req->post['grace_period_days'] ?? 0),
+                $stamp,
+                $filterId,
+            ]
+        );
+
+        return Response::redirect('/admin/securegroups/groups/' . rawurlencode($groupSlug) . '/rules');
+    });
+
+    $registry->route('POST', '/admin/securegroups/groups/{slug}/rules/{filterPublicId}/delete', function (Request $req) use ($app, $requireLogin, $requireRight, $resolveGroupId, $resolveFilterId): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $groupSlug = (string)($req->params['slug'] ?? '');
+        $gid = $resolveGroupId($groupSlug);
+        $filterId = $resolveFilterId((string)($req->params['filterPublicId'] ?? ''));
+        if ($gid <= 0 || $filterId <= 0) {
+            return Response::redirect('/admin/securegroups/groups/' . rawurlencode($groupSlug) . '/rules');
+        }
+
+        $app->db->run(
+            "DELETE FROM module_secgroups_group_filters WHERE group_id=? AND filter_id=?",
+            [$gid, $filterId]
+        );
+        $remaining = $app->db->one("SELECT 1 FROM module_secgroups_group_filters WHERE filter_id=? LIMIT 1", [$filterId]);
+        if (!$remaining) {
+            $app->db->run("DELETE FROM module_secgroups_filters WHERE id=?", [$filterId]);
+        }
 
         return Response::redirect('/admin/securegroups/groups/' . rawurlencode($groupSlug) . '/rules');
     });
@@ -1822,7 +2470,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
         $overrides = $app->db->all(
-            "SELECT o.*, g.display_name, u.character_name, u.public_id AS user_public_id\n"
+            "SELECT o.*, g.display_name, g.key_slug AS group_slug, u.character_name, u.public_id AS user_public_id\n"
             . " FROM module_secgroups_overrides o\n"
             . " JOIN module_secgroups_groups g ON g.id=o.group_id\n"
             . " JOIN eve_users u ON u.id=o.user_id\n"
@@ -1830,6 +2478,10 @@ return function (ModuleRegistry $registry): void {
         );
         $rows = '';
         foreach ($overrides as $override) {
+            $groupSlug = (string)($override['group_slug'] ?? '');
+            $userPublicId = (string)($override['user_public_id'] ?? '');
+            $createdAt = (string)($override['created_at'] ?? '');
+            $createdParam = rawurlencode($createdAt);
             $rows .= "<tr>
                 <td>" . htmlspecialchars((string)($override['display_name'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($override['character_name'] ?? '')) . "</td>
@@ -1837,10 +2489,17 @@ return function (ModuleRegistry $registry): void {
                 <td>" . htmlspecialchars((string)($override['forced_state'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($override['expires_at'] ?? '—')) . "</td>
                 <td>" . htmlspecialchars((string)($override['reason'] ?? '')) . "</td>
+                <td>" . htmlspecialchars($createdAt) . "</td>
+                <td>
+                  <a class='btn btn-sm btn-outline-primary' href='/admin/securegroups/overrides/" . htmlspecialchars($groupSlug) . "/" . htmlspecialchars($userPublicId) . "/" . htmlspecialchars($createdParam) . "/edit'>Edit</a>
+                  <form method='post' action='/admin/securegroups/overrides/" . htmlspecialchars($groupSlug) . "/" . htmlspecialchars($userPublicId) . "/" . htmlspecialchars($createdParam) . "/delete' class='d-inline' onsubmit=\"return confirm('Delete this override?');\">
+                    <button class='btn btn-sm btn-outline-danger'>Delete</button>
+                  </form>
+                </td>
             </tr>";
         }
         if ($rows === '') {
-            $rows = "<tr><td colspan='6' class='text-muted'>No overrides.</td></tr>";
+            $rows = "<tr><td colspan='8' class='text-muted'>No overrides.</td></tr>";
         }
 
         $groupOptions = '';
@@ -1884,7 +2543,7 @@ return function (ModuleRegistry $registry): void {
             <div class='card'>
               <div class='table-responsive'>
                 <table class='table table-striped mb-0'>
-                  <thead><tr><th>Group</th><th>User</th><th>Member ID</th><th>State</th><th>Expires</th><th>Reason</th></tr></thead>
+                  <thead><tr><th>Group</th><th>User</th><th>Member ID</th><th>State</th><th>Expires</th><th>Reason</th><th>Created</th><th>Actions</th></tr></thead>
                   <tbody>{$rows}</tbody>
                 </table>
               </div>
@@ -1913,6 +2572,111 @@ return function (ModuleRegistry $registry): void {
             . " (group_id, user_id, forced_state, expires_at, reason, created_by, created_at)\n"
             . " VALUES (?, ?, ?, ?, ?, ?, ?)",
             [$groupId, $userId, $state, $expires !== '' ? $expires : null, $reason, (int)($_SESSION['user_id'] ?? 0), $nowUtc()]
+        );
+
+        return Response::redirect('/admin/securegroups/overrides');
+    });
+
+    $registry->route('GET', '/admin/securegroups/overrides/{groupSlug}/{userPublicId}/{createdAt}/edit', function (Request $req) use ($app, $renderPage, $requireLogin, $requireRight, $resolveGroupId, $resolveUserId): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $groupSlug = (string)($req->params['groupSlug'] ?? '');
+        $userPublicId = (string)($req->params['userPublicId'] ?? '');
+        $createdAt = (string)($req->params['createdAt'] ?? '');
+        $groupId = $resolveGroupId($groupSlug);
+        $userId = $resolveUserId($userPublicId);
+        if ($groupId <= 0 || $userId <= 0 || $createdAt === '') {
+            return Response::text('Override not found', 404);
+        }
+        $override = $app->db->one(
+            "SELECT o.*, g.display_name, u.character_name, u.public_id AS user_public_id\n"
+            . " FROM module_secgroups_overrides o\n"
+            . " JOIN module_secgroups_groups g ON g.id=o.group_id\n"
+            . " JOIN eve_users u ON u.id=o.user_id\n"
+            . " WHERE o.group_id=? AND o.user_id=? AND o.created_at=? LIMIT 1",
+            [$groupId, $userId, $createdAt]
+        );
+        if (!$override) {
+            return Response::text('Override not found', 404);
+        }
+
+        $body = "<h1 class='mb-3'>Edit Override</h1>
+            <div class='card'>
+              <div class='card-body'>
+                <div class='mb-3 text-muted'>Group: " . htmlspecialchars((string)($override['display_name'] ?? '')) . " · User: " . htmlspecialchars((string)($override['character_name'] ?? '')) . "</div>
+                <form method='post' action='/admin/securegroups/overrides/" . htmlspecialchars($groupSlug) . "/" . htmlspecialchars($userPublicId) . "/" . htmlspecialchars(rawurlencode($createdAt)) . "/edit'>
+                  <div class='row g-2'>
+                    <div class='col-md-3'>
+                      <label class='form-label'>Forced State</label>
+                      <select class='form-select' name='forced_state'>
+                        <option value='IN'" . ((string)($override['forced_state'] ?? '') === 'IN' ? ' selected' : '') . ">IN</option>
+                        <option value='OUT'" . ((string)($override['forced_state'] ?? '') === 'OUT' ? ' selected' : '') . ">OUT</option>
+                      </select>
+                    </div>
+                    <div class='col-md-4'>
+                      <label class='form-label'>Expires At (UTC)</label>
+                      <input class='form-control' name='expires_at' value='" . htmlspecialchars((string)($override['expires_at'] ?? '')) . "' placeholder='YYYY-mm-dd HH:MM:SS'>
+                    </div>
+                    <div class='col-md-5'>
+                      <label class='form-label'>Reason</label>
+                      <input class='form-control' name='reason' value='" . htmlspecialchars((string)($override['reason'] ?? '')) . "' required>
+                    </div>
+                  </div>
+                  <button class='btn btn-primary mt-3'>Save Override</button>
+                  <a class='btn btn-outline-secondary mt-3 ms-2' href='/admin/securegroups/overrides'>Cancel</a>
+                </form>
+              </div>
+            </div>";
+
+        return Response::html($renderPage('Edit Override', $body), 200);
+    });
+
+    $registry->route('POST', '/admin/securegroups/overrides/{groupSlug}/{userPublicId}/{createdAt}/edit', function (Request $req) use ($app, $requireLogin, $requireRight, $resolveGroupId, $resolveUserId): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $groupSlug = (string)($req->params['groupSlug'] ?? '');
+        $userPublicId = (string)($req->params['userPublicId'] ?? '');
+        $createdAt = (string)($req->params['createdAt'] ?? '');
+        $groupId = $resolveGroupId($groupSlug);
+        $userId = $resolveUserId($userPublicId);
+        if ($groupId <= 0 || $userId <= 0 || $createdAt === '') {
+            return Response::text('Override not found', 404);
+        }
+
+        $forcedState = (string)($req->post['forced_state'] ?? 'IN');
+        $expires = trim((string)($req->post['expires_at'] ?? ''));
+        $reason = trim((string)($req->post['reason'] ?? ''));
+        if ($reason === '') {
+            return Response::text('Reason is required', 422);
+        }
+
+        $app->db->run(
+            "UPDATE module_secgroups_overrides SET forced_state=?, expires_at=?, reason=?\n"
+            . " WHERE group_id=? AND user_id=? AND created_at=?",
+            [$forcedState, $expires !== '' ? $expires : null, $reason, $groupId, $userId, $createdAt]
+        );
+
+        return Response::redirect('/admin/securegroups/overrides');
+    });
+
+    $registry->route('POST', '/admin/securegroups/overrides/{groupSlug}/{userPublicId}/{createdAt}/delete', function (Request $req) use ($app, $requireLogin, $requireRight, $resolveGroupId, $resolveUserId): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $groupSlug = (string)($req->params['groupSlug'] ?? '');
+        $userPublicId = (string)($req->params['userPublicId'] ?? '');
+        $createdAt = (string)($req->params['createdAt'] ?? '');
+        $groupId = $resolveGroupId($groupSlug);
+        $userId = $resolveUserId($userPublicId);
+        if ($groupId <= 0 || $userId <= 0 || $createdAt === '') {
+            return Response::text('Override not found', 404);
+        }
+
+        $app->db->run(
+            "DELETE FROM module_secgroups_overrides WHERE group_id=? AND user_id=? AND created_at=?",
+            [$groupId, $userId, $createdAt]
         );
 
         return Response::redirect('/admin/securegroups/overrides');
