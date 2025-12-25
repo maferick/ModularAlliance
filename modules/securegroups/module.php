@@ -167,7 +167,7 @@ return function (ModuleRegistry $registry): void {
         return $text !== '' ? $text : 'group';
     };
 
-    $ensureRightsGroup = function (string $slug, string $name): int use ($app): int {
+    $ensureRightsGroup = function (string $slug, string $name) use ($app): int {
         $existing = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$slug]);
         if ($existing) {
             return (int)($existing['id'] ?? 0);
@@ -180,7 +180,7 @@ return function (ModuleRegistry $registry): void {
         return (int)($row['id'] ?? 0);
     };
 
-    $syncUserRightsGroup = function (int $userId, int $groupId, bool $shouldHave): void use ($app) {
+    $syncUserRightsGroup = function (int $userId, int $groupId, bool $shouldHave) use ($app): void {
         if ($userId <= 0 || $groupId <= 0) return;
         if ($shouldHave) {
             $app->db->run("INSERT IGNORE INTO eve_user_groups (user_id, group_id) VALUES (?, ?)", [$userId, $groupId]);
@@ -189,7 +189,7 @@ return function (ModuleRegistry $registry): void {
         }
     };
 
-    $getLinkedCharacterIds = function (int $userId): array use ($app): array {
+    $getLinkedCharacterIds = function (int $userId) use ($app): array {
         $main = $app->db->one("SELECT character_id FROM eve_users WHERE id=? LIMIT 1", [$userId]);
         $mainId = (int)($main['character_id'] ?? 0);
         $rows = $app->db->all("SELECT character_id FROM module_charlink_links WHERE user_id=?", [$userId]);
