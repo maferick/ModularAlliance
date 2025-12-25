@@ -800,7 +800,8 @@ return function (ModuleRegistry $registry): void {
         $getCorpToolsSettings,
         $scopePolicy,
         $scopeAudit,
-        $sso
+        $sso,
+        $makeRefreshCallback
     ): array {
         $settings = $getCorpToolsSettings();
         $enabledKeys = $enabledAuditKeys($settings);
