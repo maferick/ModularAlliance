@@ -167,14 +167,14 @@ return function (ModuleRegistry $registry): void {
         return $text !== '' ? $text : 'group';
     };
 
-    $ensureRightsGroup = function (string $slug, string $name) use ($app): int {
+    $ensureRightsGroup = function (string $slug, string $name) use ($app, $nowUtc): int {
         $existing = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$slug]);
         if ($existing) {
             return (int)($existing['id'] ?? 0);
         }
         $app->db->run(
-            "INSERT INTO groups (slug, name, is_admin, created_at, updated_at) VALUES (?, ?, 0, NOW(), NOW())",
-            [$slug, $name]
+            "INSERT INTO groups (slug, name, is_admin, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
+            [$slug, $name, $nowUtc(), $nowUtc()]
         );
         $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
         return (int)($row['id'] ?? 0);
@@ -334,12 +334,12 @@ return function (ModuleRegistry $registry): void {
         $filters = $app->db->all(
             "SELECT f.* FROM module_secgroups_filters f\n"
             . " JOIN module_secgroups_group_filters gf ON gf.filter_id=f.id\n"
-            . " WHERE gf.group_id=? ORDER BY gf.sort_order ASC, f.id ASC",
+            . " WHERE gf.group_id=? AND gf.enabled=1 ORDER BY gf.sort_order ASC, f.id ASC",
             [(int)($group['id'] ?? 0)]
         );
 
         if (empty($filters)) {
-            return ['status' => 'IN', 'reason' => 'No filters configured.', 'evidence' => []];
+            return ['status' => 'IN', 'reason' => 'No enabled rules configured.', 'evidence' => []];
         }
 
         $context = ['evaluate_filter' => $evaluateFilter];
@@ -348,6 +348,19 @@ return function (ModuleRegistry $registry): void {
         $failedFilterId = null;
         foreach ($filters as $filter) {
             $result = $evaluateFilter($userId, $filter, $context);
+            $app->db->run(
+                "UPDATE module_secgroups_group_filters\n"
+                . " SET last_evaluated_at=?, last_pass=?, last_message=?, last_user_id=?\n"
+                . " WHERE group_id=? AND filter_id=?",
+                [
+                    $nowUtc(),
+                    $result['pass'] ? 1 : 0,
+                    (string)($result['message'] ?? ''),
+                    $userId,
+                    (int)($group['id'] ?? 0),
+                    (int)($filter['id'] ?? 0),
+                ]
+            );
             $evidence[] = [
                 'filter_id' => (int)($filter['id'] ?? 0),
                 'type' => (string)($filter['type'] ?? ''),
@@ -405,6 +418,7 @@ return function (ModuleRegistry $registry): void {
             $reason = 'Grace period expired.';
         }
 
+        $stamp = $nowUtc();
         $existing = $app->db->one(
             "SELECT id, status FROM module_secgroups_memberships WHERE group_id=? AND user_id=?",
             [$groupId, $userId]
@@ -414,16 +428,16 @@ return function (ModuleRegistry $registry): void {
         if ($existing) {
             $app->db->run(
                 "UPDATE module_secgroups_memberships\n"
-                . " SET status=?, source=?, reason=?, evidence_json=?, last_evaluated_at=?, grace_expires_at=?, grace_filter_id=?, updated_at=NOW()\n"
+                . " SET status=?, source=?, reason=?, evidence_json=?, last_evaluated_at=?, grace_expires_at=?, grace_filter_id=?, updated_at=?\n"
                 . " WHERE id=?",
-                [$status, $source, $reason, $evidence, $nowUtc(), $graceExpires, $failedFilterId, (int)$existing['id']]
+                [$status, $source, $reason, $evidence, $stamp, $graceExpires, $failedFilterId, $stamp, (int)$existing['id']]
             );
         } else {
             $app->db->run(
                 "INSERT INTO module_secgroups_memberships\n"
                 . " (group_id, user_id, status, source, reason, evidence_json, last_evaluated_at, grace_expires_at, grace_filter_id, created_at, updated_at)\n"
-                . " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
-                [$groupId, $userId, $status, $source, $reason, $evidence, $nowUtc(), $graceExpires, $failedFilterId]
+                . " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [$groupId, $userId, $status, $source, $reason, $evidence, $stamp, $graceExpires, $failedFilterId, $stamp, $stamp]
             );
         }
 
@@ -447,14 +461,14 @@ return function (ModuleRegistry $registry): void {
                     },
                     $source,
                     $reason,
-                    $nowUtc(),
+                    $stamp,
                     json_encode(['override_id' => $overrideId], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                 ]
             );
             $app->db->run(
                 "INSERT INTO module_secgroups_notifications (group_id, user_id, message, created_at)\n"
                 . " VALUES (?, ?, ?, ?)",
-                [$groupId, $userId, $reason, $nowUtc()]
+                [$groupId, $userId, $reason, $stamp]
             );
         }
     };
@@ -1021,7 +1035,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Create Secure Group', $body), 200);
     });
 
-    $registry->route('POST', '/admin/securegroups/groups/new', function (Request $req) use ($app, $requireLogin, $requireRight, $slugify, $ensureRightsGroup): Response {
+    $registry->route('POST', '/admin/securegroups/groups/new', function (Request $req) use ($app, $requireLogin, $requireRight, $slugify, $ensureRightsGroup, $nowUtc): Response {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
@@ -1033,11 +1047,12 @@ return function (ModuleRegistry $registry): void {
         $rightsSlug = 'securegroup:' . $key;
         $rightsGroupId = $ensureRightsGroup($rightsSlug, 'SecureGroup - ' . $name);
 
+        $stamp = $nowUtc();
         $app->db->run(
             "INSERT INTO module_secgroups_groups\n"
             . " (key_slug, display_name, description, enabled, auto_group, include_in_updates, can_grace, grace_default_days,\n"
             . " allow_applications, notify_on_add, notify_on_remove, notify_on_grace, rights_group_id, last_update_at, created_at, updated_at)\n"
-            . " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())",
+            . " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 $key,
                 $name,
@@ -1052,6 +1067,9 @@ return function (ModuleRegistry $registry): void {
                 (int)($req->post['notify_on_remove'] ?? 0),
                 (int)($req->post['notify_on_grace'] ?? 0),
                 $rightsGroupId,
+                $stamp,
+                $stamp,
+                $stamp,
             ]
         );
         $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
@@ -1152,7 +1170,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Edit Secure Group', $body), 200);
     });
 
-    $registry->route('POST', '/admin/securegroups/groups/{id}/edit', function (Request $req) use ($app, $requireLogin, $requireRight, $slugify): Response {
+    $registry->route('POST', '/admin/securegroups/groups/{id}/edit', function (Request $req) use ($app, $requireLogin, $requireRight, $slugify, $nowUtc): Response {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('securegroups.admin')) return $resp;
         $gid = (int)($req->params['id'] ?? 0);
@@ -1167,10 +1185,11 @@ return function (ModuleRegistry $registry): void {
         }
         $key = (string)($group['key_slug'] ?? $slugify($name));
 
+        $stamp = $nowUtc();
         $app->db->run(
             "UPDATE module_secgroups_groups\n"
             . " SET display_name=?, description=?, enabled=?, auto_group=?, include_in_updates=?, can_grace=?, grace_default_days=?,\n"
-            . " allow_applications=?, notify_on_add=?, notify_on_remove=?, notify_on_grace=?, last_update_at=NOW(), updated_at=NOW()\n"
+            . " allow_applications=?, notify_on_add=?, notify_on_remove=?, notify_on_grace=?, last_update_at=?, updated_at=?\n"
             . " WHERE id=?",
             [
                 $name,
@@ -1184,6 +1203,8 @@ return function (ModuleRegistry $registry): void {
                 (int)($req->post['notify_on_add'] ?? 0),
                 (int)($req->post['notify_on_remove'] ?? 0),
                 (int)($req->post['notify_on_grace'] ?? 0),
+                $stamp,
+                $stamp,
                 $gid,
             ]
         );
@@ -1201,7 +1222,7 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Group not found', 404);
         }
         $filters = $app->db->all(
-            "SELECT f.*, gf.sort_order\n"
+            "SELECT f.*, gf.sort_order, gf.enabled, gf.last_evaluated_at, gf.last_pass, gf.last_message, gf.last_user_id\n"
             . " FROM module_secgroups_filters f\n"
             . " JOIN module_secgroups_group_filters gf ON gf.filter_id=f.id\n"
             . " WHERE gf.group_id=? ORDER BY gf.sort_order ASC",
@@ -1229,16 +1250,53 @@ return function (ModuleRegistry $registry): void {
         }
 
         $rows = '';
-        foreach ($filters as $filter) {
+        foreach ($filters as $index => $filter) {
+            $filterId = (int)($filter['id'] ?? 0);
+            $enabled = (int)($filter['enabled'] ?? 0) === 1;
+            $lastPass = $filter['last_pass'];
+            $lastStatus = $lastPass === null ? '—' : ((int)$lastPass === 1 ? 'Pass' : 'Fail');
+            $lastMessage = (string)($filter['last_message'] ?? '');
+            $lastEvaluated = (string)($filter['last_evaluated_at'] ?? '—');
+            $lastUserId = (string)($filter['last_user_id'] ?? '');
+            $disableUp = $index === 0 ? ' disabled' : '';
+            $disableDown = $index === (count($filters) - 1) ? ' disabled' : '';
             $rows .= "<tr>
                 <td>" . htmlspecialchars((string)($filter['name'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($filter['type'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($filter['description'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($filter['grace_period_days'] ?? 0)) . "</td>
+                <td>" . ($enabled ? 'Enabled' : 'Disabled') . "</td>
+                <td>
+                  <div class='fw-semibold'>{$lastStatus}</div>
+                  <div class='text-muted small'>" . htmlspecialchars($lastMessage !== '' ? $lastMessage : 'No evaluation yet.') . "</div>
+                  <div class='text-muted small'>User: " . htmlspecialchars($lastUserId !== '' ? $lastUserId : '—') . "</div>
+                </td>
+                <td>" . htmlspecialchars($lastEvaluated) . "</td>
+                <td>
+                  <div class='d-flex flex-wrap gap-1'>
+                    <form method='post' action='/admin/securegroups/groups/{$gid}/rules/{$filterId}/move' class='d-inline'>
+                      <input type='hidden' name='direction' value='up'>
+                      <button class='btn btn-sm btn-outline-secondary'{$disableUp}>▲</button>
+                    </form>
+                    <form method='post' action='/admin/securegroups/groups/{$gid}/rules/{$filterId}/move' class='d-inline'>
+                      <input type='hidden' name='direction' value='down'>
+                      <button class='btn btn-sm btn-outline-secondary'{$disableDown}>▼</button>
+                    </form>
+                    <form method='post' action='/admin/securegroups/groups/{$gid}/rules/{$filterId}/toggle' class='d-inline'>
+                      <input type='hidden' name='enabled' value='" . ($enabled ? '0' : '1') . "'>
+                      <button class='btn btn-sm " . ($enabled ? 'btn-outline-warning' : 'btn-outline-success') . "'>" . ($enabled ? 'Disable' : 'Enable') . "</button>
+                    </form>
+                  </div>
+                  <form method='post' action='/admin/securegroups/groups/{$gid}/rules/test' class='mt-2 d-flex gap-2'>
+                    <input type='hidden' name='filter_id' value='{$filterId}'>
+                    <input class='form-control form-control-sm' name='user_id' placeholder='User ID' required>
+                    <button class='btn btn-sm btn-outline-primary'>Test</button>
+                  </form>
+                </td>
               </tr>";
         }
         if ($rows === '') {
-            $rows = "<tr><td colspan='4' class='text-muted'>No filters configured.</td></tr>";
+            $rows = "<tr><td colspan='8' class='text-muted'>No rules configured.</td></tr>";
         }
 
         $searchRows = '';
@@ -1304,11 +1362,11 @@ return function (ModuleRegistry $registry): void {
             </div>
             <div class='card mb-4'>
               <div class='card-body'>
-                <form method='post' action='/admin/securegroups/groups/{$gid}/rules/add'>
+                <form method='post' action='/admin/securegroups/groups/{$gid}/rules/add' id='secgroups-rule-form'>
                   <div class='row g-2'>
                     <div class='col-md-3'>
                       <label class='form-label'>Filter Type</label>
-                      <select class='form-select' name='type'>
+                      <select class='form-select' name='type' id='secgroups-rule-type'>
                         <option value='alt_corp'>Alt Corp Filter</option>
                         <option value='alt_alliance'>Alt Alliance Filter</option>
                         <option value='user_in_group'>User In Group Filter</option>
@@ -1329,24 +1387,24 @@ return function (ModuleRegistry $registry): void {
                     </div>
                   </div>
                   <div class='row g-2 mt-2'>
-                    <div class='col-md-3'>
+                    <div class='col-md-3 secgroups-rule-field' data-rule-types='alt_corp'>
                       <label class='form-label'>Corp ID</label>
                       <input class='form-control' name='corp_id' placeholder='For alt corp filter'>
                     </div>
-                    <div class='col-md-3'>
+                    <div class='col-md-3 secgroups-rule-field' data-rule-types='alt_alliance'>
                       <label class='form-label'>Alliance ID</label>
                       <input class='form-control' name='alliance_id' placeholder='For alt alliance filter'>
                     </div>
-                    <div class='col-md-3'>
+                    <div class='col-md-3 secgroups-rule-field' data-rule-types='user_in_group'>
                       <label class='form-label'>Group IDs</label>
                       <input class='form-control' name='group_ids' placeholder='Comma-separated'>
                     </div>
-                    <div class='col-md-3'>
+                    <div class='col-md-3 secgroups-rule-field' data-rule-types='alt_corp,alt_alliance'>
                       <label class='form-label'>Exempt Character IDs</label>
                       <input class='form-control' name='exemptions' placeholder='Comma-separated'>
                     </div>
                   </div>
-                  <div class='row g-2 mt-2'>
+                  <div class='row g-2 mt-2 secgroups-rule-field' data-rule-types='expression'>
                     <div class='col-md-4'>
                       <label class='form-label'>Expression Left Filter ID</label>
                       <input class='form-control' name='left_filter_id'>
@@ -1378,34 +1436,34 @@ return function (ModuleRegistry $registry): void {
             <div class='card'>
               <div class='table-responsive'>
                 <table class='table table-striped mb-0'>
-                  <thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Grace</th></tr></thead>
+                  <thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Grace</th><th>Status</th><th>Last Result</th><th>Last Evaluated</th><th>Actions</th></tr></thead>
                   <tbody>{$rows}</tbody>
                 </table>
               </div>
             </div>
-            <div class='card mt-4'>
-              <div class='card-header'>Test Rule on User</div>
-              <div class='card-body'>
-                <form method='post' action='/admin/securegroups/groups/{$gid}/rules/test'>
-                  <div class='row g-2'>
-                    <div class='col-md-6'>
-                      <label class='form-label'>User ID</label>
-                      <input class='form-control' name='user_id' required>
-                    </div>
-                    <div class='col-md-6'>
-                      <label class='form-label'>Filter ID</label>
-                      <input class='form-control' name='filter_id' required>
-                    </div>
-                  </div>
-                  <button class='btn btn-outline-primary mt-3'>Test</button>
-                </form>
-              </div>
-            </div>";
+            <script>
+              (function () {
+                var typeSelect = document.getElementById('secgroups-rule-type');
+                var fields = document.querySelectorAll('.secgroups-rule-field');
+                function updateFields() {
+                  var type = typeSelect ? typeSelect.value : '';
+                  fields.forEach(function (field) {
+                    var types = (field.getAttribute('data-rule-types') || '').split(',');
+                    var show = types.indexOf(type) !== -1;
+                    field.style.display = show ? '' : 'none';
+                  });
+                }
+                if (typeSelect) {
+                  typeSelect.addEventListener('change', updateFields);
+                  updateFields();
+                }
+              })();
+            </script>";
 
         return Response::html($renderPage('Secure Group Rules', $body), 200);
     });
 
-    $registry->route('POST', '/admin/securegroups/groups/{id}/rules/add', function (Request $req) use ($app, $requireLogin, $requireRight): Response {
+    $registry->route('POST', '/admin/securegroups/groups/{id}/rules/add', function (Request $req) use ($app, $requireLogin, $requireRight, $nowUtc): Response {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
@@ -1429,24 +1487,97 @@ return function (ModuleRegistry $registry): void {
             'negate' => (int)($req->post['negate'] ?? 0) === 1,
         ];
 
+        $stamp = $nowUtc();
         $app->db->run(
             "INSERT INTO module_secgroups_filters\n"
             . " (type, name, description, config_json, grace_period_days, created_at, updated_at)\n"
-            . " VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
+            . " VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
                 $type,
                 $name,
                 trim((string)($req->post['description'] ?? '')),
                 json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                 (int)($req->post['grace_period_days'] ?? 0),
+                $stamp,
+                $stamp,
             ]
         );
         $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
         $filterId = (int)($row['id'] ?? 0);
 
+        $nextOrderRow = $app->db->one(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM module_secgroups_group_filters WHERE group_id=?",
+            [$gid]
+        );
+        $nextOrder = (int)($nextOrderRow['next_order'] ?? 1);
         $app->db->run(
-            "INSERT INTO module_secgroups_group_filters (group_id, filter_id, sort_order) VALUES (?, ?, 0)",
-            [$gid, $filterId]
+            "INSERT INTO module_secgroups_group_filters (group_id, filter_id, sort_order, enabled) VALUES (?, ?, ?, 1)",
+            [$gid, $filterId, $nextOrder]
+        );
+
+        return Response::redirect('/admin/securegroups/groups/' . $gid . '/rules');
+    });
+
+    $registry->route('POST', '/admin/securegroups/groups/{id}/rules/{filterId}/move', function (Request $req) use ($app, $requireLogin, $requireRight): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $gid = (int)($req->params['id'] ?? 0);
+        $filterId = (int)($req->params['filterId'] ?? 0);
+        $direction = (string)($req->post['direction'] ?? '');
+        if ($gid <= 0 || $filterId <= 0 || ($direction !== 'up' && $direction !== 'down')) {
+            return Response::redirect('/admin/securegroups/groups/' . $gid . '/rules');
+        }
+
+        $ordered = $app->db->all(
+            "SELECT filter_id FROM module_secgroups_group_filters WHERE group_id=? ORDER BY sort_order ASC, filter_id ASC",
+            [$gid]
+        );
+        if (empty($ordered)) {
+            return Response::redirect('/admin/securegroups/groups/' . $gid . '/rules');
+        }
+
+        $ids = array_map(fn(array $row): int => (int)($row['filter_id'] ?? 0), $ordered);
+        $pos = array_search($filterId, $ids, true);
+        if ($pos === false) {
+            return Response::redirect('/admin/securegroups/groups/' . $gid . '/rules');
+        }
+
+        if ($direction === 'up' && $pos > 0) {
+            $swap = $ids[$pos - 1];
+            $ids[$pos - 1] = $ids[$pos];
+            $ids[$pos] = $swap;
+        }
+        if ($direction === 'down' && $pos < count($ids) - 1) {
+            $swap = $ids[$pos + 1];
+            $ids[$pos + 1] = $ids[$pos];
+            $ids[$pos] = $swap;
+        }
+
+        foreach ($ids as $index => $id) {
+            $app->db->run(
+                "UPDATE module_secgroups_group_filters SET sort_order=? WHERE group_id=? AND filter_id=?",
+                [$index + 1, $gid, $id]
+            );
+        }
+
+        return Response::redirect('/admin/securegroups/groups/' . $gid . '/rules');
+    });
+
+    $registry->route('POST', '/admin/securegroups/groups/{id}/rules/{filterId}/toggle', function (Request $req) use ($app, $requireLogin, $requireRight): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('securegroups.admin')) return $resp;
+
+        $gid = (int)($req->params['id'] ?? 0);
+        $filterId = (int)($req->params['filterId'] ?? 0);
+        $enabled = (int)($req->post['enabled'] ?? 1) === 1 ? 1 : 0;
+        if ($gid <= 0 || $filterId <= 0) {
+            return Response::redirect('/admin/securegroups/groups/' . $gid . '/rules');
+        }
+
+        $app->db->run(
+            "UPDATE module_secgroups_group_filters SET enabled=? WHERE group_id=? AND filter_id=?",
+            [$enabled, $gid, $filterId]
         );
 
         return Response::redirect('/admin/securegroups/groups/' . $gid . '/rules');
@@ -1546,12 +1677,13 @@ return function (ModuleRegistry $registry): void {
             "UPDATE module_secgroups_requests SET status='APPROVED', decided_at=?, admin_note=? WHERE id=?",
             [$nowUtc(), $adminNote, $rid]
         );
+        $stamp = $nowUtc();
         $app->db->run(
             "INSERT INTO module_secgroups_memberships\n"
             . " (group_id, user_id, status, source, reason, last_evaluated_at, created_at, updated_at)\n"
-            . " VALUES (?, ?, 'IN', 'REQUEST', ?, ?, NOW(), NOW())\n"
-            . " ON DUPLICATE KEY UPDATE status='IN', source='REQUEST', reason=VALUES(reason), last_evaluated_at=?, updated_at=NOW()",
-            [$group['id'], $request['user_id'], $adminNote, $nowUtc(), $nowUtc()]
+            . " VALUES (?, ?, 'IN', 'REQUEST', ?, ?, ?, ?)\n"
+            . " ON DUPLICATE KEY UPDATE status='IN', source='REQUEST', reason=VALUES(reason), last_evaluated_at=?, updated_at=?",
+            [$group['id'], $request['user_id'], $adminNote, $stamp, $stamp, $stamp, $stamp]
         );
 
         $rightsGroupId = (int)($group['rights_group_id'] ?? 0);
