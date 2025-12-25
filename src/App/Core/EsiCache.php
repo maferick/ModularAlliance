@@ -206,6 +206,10 @@ final class EsiCache
         string $urlKey,
         int $ttlSeconds,
         string $accessToken,
+        array $ignoreStatus = [],
+        ?callable $refreshCallback = null
+    ): mixed {
+        $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus, $refreshCallback);
         array $ignoreStatus = []
     ): mixed {
         $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus);
@@ -223,7 +227,8 @@ final class EsiCache
         string $urlKey,
         int $ttlSeconds,
         string $accessToken,
-        array $ignoreStatus = []
+        array $ignoreStatus = [],
+        ?callable $refreshCallback = null
     ): array {
         $cacheKey = hash('sha256', $urlKey);
         $rKey = 'esi:' . $scopeKey . ':' . $cacheKey;
@@ -276,6 +281,15 @@ final class EsiCache
                 if (!empty($u['query'])) $path .= '?' . $u['query'];
             }
 
+            $tokenToUse = $accessToken;
+            [$status, $data] = $this->esi->getWithStatus($path, $tokenToUse);
+            if (($status === 401 || $status === 403) && $refreshCallback) {
+                $refreshedToken = $refreshCallback();
+                if (is_string($refreshedToken) && $refreshedToken !== '' && $refreshedToken !== $tokenToUse) {
+                    $tokenToUse = $refreshedToken;
+                    [$status, $data] = $this->esi->getWithStatus($path, $tokenToUse);
+                }
+            }
             [$status, $data] = $this->esi->getWithStatus($path, $accessToken);
             if ($status >= 200 && $status < 300) {
                 $payload = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);

@@ -227,13 +227,16 @@ return function (ModuleRegistry $registry): void {
 
     $tokenInfo = function (int $characterId) use ($app): array {
         $row = $app->db->one(
-            "SELECT scopes_json, expires_at
+            "SELECT scopes_json, expires_at, status, error_last
              FROM eve_tokens
              WHERE character_id=? LIMIT 1",
             [$characterId]
         );
         $scopes = [];
         $expired = false;
+        $expiresAt = null;
+        $status = 'ACTIVE';
+        $errorLast = null;
         if ($row) {
             $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
             if (!is_array($scopes)) $scopes = [];
@@ -241,8 +244,16 @@ return function (ModuleRegistry $registry): void {
             if ($expiresAt !== null && time() > $expiresAt) {
                 $expired = true;
             }
+            $status = (string)($row['status'] ?? 'ACTIVE');
+            $errorLast = $row['error_last'] ?? null;
         }
-        return ['scopes' => $scopes, 'expired' => $expired];
+        return [
+            'scopes' => $scopes,
+            'expired' => $expired,
+            'expires_at_ts' => $expiresAt,
+            'status' => $status,
+            'error_last' => $errorLast,
+        ];
     };
 
     $registry->route('GET', '/charlink', function () use ($app, $renderPage, $loadTargets, $tokenInfo): Response {
@@ -283,6 +294,8 @@ return function (ModuleRegistry $registry): void {
         $tokenData = $tokenInfo($cid);
         $tokenScopes = $tokenData['scopes'];
         $tokenExpired = (bool)$tokenData['expired'];
+        $tokenStatus = (string)($tokenData['status'] ?? 'ACTIVE');
+        $tokenExpiresAt = $tokenData['expires_at_ts'] ?? null;
         $requiredMissing = array_values(array_diff($requiredScopes, $tokenScopes));
 
         $u = new Universe($app->db);
@@ -304,8 +317,16 @@ return function (ModuleRegistry $registry): void {
                 $flashHtml = "<div class='alert alert-{$type}'>{$message}</div>";
             }
         }
-        if ($tokenExpired) {
-            $flashHtml .= "<div class='alert alert-warning'>Your token is expired. Re-authorize to stay compliant.</div>";
+        if (in_array($tokenStatus, ['NEEDS_REAUTH', 'REVOKED'], true)) {
+            $flashHtml .= "<div class='alert alert-danger'>Token refresh failed or was revoked. Re-authorize this character.</div>";
+        } elseif ($tokenStatus === 'ERROR') {
+            $message = htmlspecialchars((string)($tokenData['error_last'] ?? 'Token refresh failed.'));
+            $flashHtml .= "<div class='alert alert-danger'>Token refresh failed: {$message}</div>";
+        } elseif ($tokenExpired) {
+            $flashHtml .= "<div class='alert alert-warning'>Token expired. Refresh queued on next use.</div>";
+        } elseif ($tokenExpiresAt !== null && ($tokenExpiresAt - time()) <= 1800) {
+            $minutes = max(0, (int)ceil(($tokenExpiresAt - time()) / 60));
+            $flashHtml .= "<div class='alert alert-warning'>Token expiring soon (refresh queued in ~{$minutes} min).</div>";
         } elseif (!empty($requiredMissing)) {
             $missingText = htmlspecialchars(implode(', ', $requiredMissing));
             $flashHtml .= "<div class='alert alert-danger'>Missing required scopes: {$missingText}</div>";
@@ -324,7 +345,13 @@ return function (ModuleRegistry $registry): void {
 
             $status = 'Not linked';
             $badgeClass = 'bg-secondary';
-            if ($tokenExpired) {
+            if (in_array($tokenStatus, ['NEEDS_REAUTH', 'REVOKED'], true)) {
+                $status = 'Re-authorize required';
+                $badgeClass = 'bg-danger';
+            } elseif ($tokenStatus === 'ERROR') {
+                $status = 'Refresh failed';
+                $badgeClass = 'bg-danger';
+            } elseif ($tokenExpired) {
                 $status = 'Token expired';
                 $badgeClass = 'bg-warning text-dark';
             } elseif ($isEnabled && empty($missingScopes)) {
