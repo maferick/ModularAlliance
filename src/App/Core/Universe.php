@@ -278,7 +278,7 @@ final class Universe
             }
             if (!empty($cfg)) {
                 $sso = new EveSso($this->db, $cfg);
-                $token = $sso->getAccessTokenForCharacter($cid, 'basic');
+                $token = $sso->getAccessTokenForCharacter($cid, 'default');
                 if (!empty($token['access_token'])) {
                     $token['refresh_callback'] = function () use (&$token, $sso, $cid): ?string {
                         $refreshToken = (string)($token['refresh_token'] ?? '');
@@ -289,7 +289,7 @@ final class Universe
                             (int)($token['user_id'] ?? 0),
                             $cid,
                             $refreshToken,
-                            'basic'
+                            'default'
                         );
                         if (($refresh['status'] ?? '') === 'success') {
                             $token['access_token'] = (string)($refresh['token']['access_token'] ?? '');
