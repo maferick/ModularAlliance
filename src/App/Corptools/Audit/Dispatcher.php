@@ -85,12 +85,16 @@ final class Dispatcher
 
             $payloads = [];
             foreach ($collector->endpoints($characterId) as $endpoint) {
+                $refreshCallback = isset($token['refresh_callback']) && is_callable($token['refresh_callback'])
+                    ? $token['refresh_callback']
+                    : null;
                 $response = $cache->getCachedAuthWithStatus(
                     "corptools:audit:{$characterId}",
                     "GET {$endpoint}",
                     $collector->ttlSeconds(),
                     (string)($token['access_token'] ?? ''),
-                    [403, 404]
+                    [403, 404],
+                    $refreshCallback
                 );
                 if ($scopeAudit && ($response['status'] ?? 200) >= 400) {
                     $scopeAudit->logEvent('esi_error', $userId, $characterId, [

@@ -280,13 +280,13 @@ return function (ModuleRegistry $registry): void {
         if (!empty($characterIds)) {
             $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
             $basicTokens = $app->db->all(
-                "SELECT character_id, scopes_json, expires_at
+                "SELECT character_id, scopes_json, expires_at, status, last_refresh_at, error_last
                  FROM eve_tokens
                  WHERE character_id IN ({$placeholders})",
                 $characterIds
             );
             $memberTokens = $app->db->all(
-                "SELECT character_id, scopes_json, expires_at
+                "SELECT character_id, scopes_json, expires_at, status, last_refresh_at, error_last
                  FROM eve_token_buckets
                  WHERE character_id IN ({$placeholders})
                    AND bucket='member_audit'
@@ -304,9 +304,15 @@ return function (ModuleRegistry $registry): void {
                 $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
                 if (!is_array($scopes)) $scopes = [];
                 $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
+                $status = (string)($row['status'] ?? 'ACTIVE');
                 $map[$cid] = [
                     'scopes' => $scopes,
+                    'expires_at' => $row['expires_at'] ?? null,
+                    'expires_at_ts' => $expiresAt,
                     'expired' => $expiresAt !== null && $expiresAt !== false && time() > $expiresAt,
+                    'status' => $status,
+                    'last_refresh_at' => $row['last_refresh_at'] ?? null,
+                    'error_last' => $row['error_last'] ?? null,
                 ];
             }
             return $map;
@@ -318,16 +324,33 @@ return function (ModuleRegistry $registry): void {
         $computeStatus = function (array $tokenMap, array $requiredScopes, array $characterIds): array {
             $missingTokens = 0;
             $expiredTokens = 0;
+            $expiringSoon = 0;
             $missingScopes = 0;
+            $needsReauth = 0;
+            $refreshFailed = 0;
+            $now = time();
+            $refreshWindow = 1800;
+
             foreach ($characterIds as $characterId) {
                 $token = $tokenMap[$characterId] ?? null;
                 if (!$token) {
                     $missingTokens++;
                     continue;
                 }
-                if ($token['expired']) {
-                    $expiredTokens++;
+
+                $status = (string)($token['status'] ?? 'ACTIVE');
+                if (in_array($status, ['NEEDS_REAUTH', 'REVOKED'], true)) {
+                    $needsReauth++;
+                } elseif ($status === 'ERROR') {
+                    $refreshFailed++;
                 }
+
+                if (!empty($token['expired'])) {
+                    $expiredTokens++;
+                } elseif (!empty($token['expires_at_ts']) && ($token['expires_at_ts'] - $now) <= $refreshWindow) {
+                    $expiringSoon++;
+                }
+
                 if (!empty($requiredScopes)) {
                     $diff = array_diff($requiredScopes, $token['scopes'] ?? []);
                     if (!empty($diff)) {
@@ -337,11 +360,13 @@ return function (ModuleRegistry $registry): void {
             }
 
             $status = 'Not Linked';
-            if ($missingTokens === 0 && $expiredTokens === 0 && $missingScopes === 0) {
+            if ($missingTokens === 0 && $needsReauth === 0 && $refreshFailed === 0 && $expiredTokens === 0 && $expiringSoon === 0 && $missingScopes === 0) {
                 $status = 'OK';
-            } elseif ($missingTokens === 0 && $expiredTokens > 0) {
-                $status = 'Token Expired';
-            } elseif ($missingTokens === 0 && $missingScopes > 0) {
+            } elseif ($needsReauth > 0 || $refreshFailed > 0) {
+                $status = 'Re-Authorize';
+            } elseif ($expiredTokens > 0 || $expiringSoon > 0) {
+                $status = 'Expiring Soon';
+            } elseif ($missingScopes > 0) {
                 $status = 'Missing Scopes';
             }
 
@@ -349,7 +374,10 @@ return function (ModuleRegistry $registry): void {
                 'status' => $status,
                 'missing_tokens' => $missingTokens,
                 'expired_tokens' => $expiredTokens,
+                'expiring_soon' => $expiringSoon,
                 'missing_scopes' => $missingScopes,
+                'needs_reauth' => $needsReauth,
+                'refresh_failed' => $refreshFailed,
             ];
         };
 
@@ -360,7 +388,8 @@ return function (ModuleRegistry $registry): void {
             return match ($status) {
                 'OK' => "<span class='badge bg-success'>OK</span>",
                 'Missing Scopes' => "<span class='badge bg-warning text-dark'>Missing Scopes</span>",
-                'Token Expired' => "<span class='badge bg-secondary'>Token Expired</span>",
+                'Expiring Soon' => "<span class='badge bg-warning text-dark'>Expiring Soon</span>",
+                'Re-Authorize' => "<span class='badge bg-danger'>Re-Authorize</span>",
                 default => "<span class='badge bg-danger'>Not Linked</span>",
             };
         };
@@ -370,8 +399,17 @@ return function (ModuleRegistry $registry): void {
             if ($status['missing_tokens'] > 0) {
                 $parts[] = $status['missing_tokens'] . " missing token(s)";
             }
+            if ($status['needs_reauth'] > 0) {
+                $parts[] = $status['needs_reauth'] . " need re-authorize";
+            }
+            if ($status['refresh_failed'] > 0) {
+                $parts[] = $status['refresh_failed'] . " refresh failed";
+            }
             if ($status['expired_tokens'] > 0) {
                 $parts[] = $status['expired_tokens'] . " expired";
+            }
+            if ($status['expiring_soon'] > 0) {
+                $parts[] = $status['expiring_soon'] . " expiring soon";
             }
             if ($status['missing_scopes'] > 0) {
                 $parts[] = $status['missing_scopes'] . " missing scopes";
@@ -382,7 +420,96 @@ return function (ModuleRegistry $registry): void {
             return implode(' · ', $parts);
         };
 
-        $renderProfile = function (array $profile, array $status, string $actionUrl, array $scopes, int $totalCharacters) use ($statusBadge, $summaryLine): string {
+        $renderCharacterStatuses = function (array $tokenMap, array $characters, array $requiredScopes, string $profileKey): string {
+            $rows = '';
+            $now = time();
+            $refreshWindow = 1800;
+
+            foreach ($characters as $character) {
+                $characterId = (int)($character['character_id'] ?? 0);
+                if ($characterId <= 0) continue;
+                $name = htmlspecialchars((string)($character['character_name'] ?? 'Unknown'));
+                $token = $tokenMap[$characterId] ?? null;
+                $statusText = 'Not linked';
+                $badge = 'bg-danger';
+                $detail = 'Authorize this character to link the token.';
+                $action = "<a class='btn btn-sm btn-primary' href='/auth/authorize?profile=" . htmlspecialchars($profileKey) . "'>Authorize</a>";
+
+                if ($token) {
+                    $status = (string)($token['status'] ?? 'ACTIVE');
+                    $expiresAtTs = $token['expires_at_ts'] ?? null;
+                    $missingScopes = !empty($requiredScopes)
+                        ? array_diff($requiredScopes, $token['scopes'] ?? [])
+                        : [];
+
+                    if (in_array($status, ['NEEDS_REAUTH', 'REVOKED'], true)) {
+                        $statusText = 'Re-authorize required';
+                        $detail = 'Refresh token is invalid or revoked.';
+                        $action = "<a class='btn btn-sm btn-danger' href='/auth/authorize?profile=" . htmlspecialchars($profileKey) . "'>Re-authorize</a>";
+                    } elseif ($status === 'ERROR') {
+                        $statusText = 'Refresh failed';
+                        $detail = htmlspecialchars((string)($token['error_last'] ?? 'Refresh failed.'));
+                        $action = "<a class='btn btn-sm btn-danger' href='/auth/authorize?profile=" . htmlspecialchars($profileKey) . "'>Re-authorize</a>";
+                    } elseif (!empty($missingScopes)) {
+                        $statusText = 'Missing scopes';
+                        $badge = 'bg-warning text-dark';
+                        $detail = 'Missing: ' . htmlspecialchars(implode(', ', $missingScopes));
+                        $action = "<a class='btn btn-sm btn-primary' href='/auth/authorize?profile=" . htmlspecialchars($profileKey) . "'>Authorize</a>";
+                    } elseif ($expiresAtTs !== null && $expiresAtTs <= $now) {
+                        $statusText = 'Expired (refresh queued)';
+                        $badge = 'bg-warning text-dark';
+                        $detail = 'Token expired and will refresh on next use.';
+                        $action = '';
+                    } elseif ($expiresAtTs !== null && ($expiresAtTs - $now) <= $refreshWindow) {
+                        $statusText = 'Expiring soon';
+                        $badge = 'bg-warning text-dark';
+                        $minutes = max(0, (int)ceil(($expiresAtTs - $now) / 60));
+                        $detail = "Refresh queued (expires in ~{$minutes} min).";
+                        $action = '';
+                    } else {
+                        $statusText = 'Token OK';
+                        $badge = 'bg-success';
+                        if ($expiresAtTs !== null) {
+                            $minutes = max(0, (int)ceil(($expiresAtTs - $now) / 60));
+                            $detail = "Next refresh in ~{$minutes} min.";
+                        } else {
+                            $detail = 'Refresh scheduled on use.';
+                        }
+                        $action = '';
+                    }
+                }
+
+                $rows .= "<tr>
+                    <td>{$name}</td>
+                    <td><span class='badge {$badge}'>{$statusText}</span></td>
+                    <td class='text-muted small'>{$detail}</td>
+                    <td class='text-end'>{$action}</td>
+                  </tr>";
+            }
+
+            if ($rows === '') {
+                $rows = "<tr><td colspan='4' class='text-muted'>No characters linked.</td></tr>";
+            }
+
+            return "<div class='mt-3'>
+                <div class='fw-semibold mb-2'>Per character status</div>
+                <div class='table-responsive'>
+                  <table class='table table-sm'>
+                    <thead>
+                      <tr>
+                        <th>Character</th>
+                        <th>Status</th>
+                        <th>Details</th>
+                        <th class='text-end'>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>{$rows}</tbody>
+                  </table>
+                </div>
+              </div>";
+        };
+
+        $renderProfile = function (array $profile, array $status, string $actionUrl, array $scopes, int $totalCharacters, array $tokenMap, array $characters, array $requiredScopes, string $profileKey) use ($statusBadge, $summaryLine, $renderCharacterStatuses): string {
             $badge = $statusBadge($status['status'] ?? 'Not Linked');
             $summary = htmlspecialchars($summaryLine($status, $totalCharacters));
             $scopeList = '';
@@ -392,6 +519,7 @@ return function (ModuleRegistry $registry): void {
             if ($scopeList === '') {
                 $scopeList = "<li class='text-muted'>No scopes configured.</li>";
             }
+            $characterStatusHtml = $renderCharacterStatuses($tokenMap, $characters, $requiredScopes, $profileKey);
 
             return "<div class='card card-body mb-3'>
                 <div class='d-flex flex-wrap justify-content-between align-items-start gap-3'>
@@ -404,6 +532,7 @@ return function (ModuleRegistry $registry): void {
                     <a class='btn btn-primary' href='" . htmlspecialchars($actionUrl) . "'>Authorize / Re-authorize</a>
                   </div>
                 </div>
+                {$characterStatusHtml}
                 <details class='mt-3'>
                   <summary class='text-muted'>Show required permissions</summary>
                   <ul class='mt-2 mb-0'>{$scopeList}</ul>
@@ -417,14 +546,22 @@ return function (ModuleRegistry $registry): void {
             $basicStatus,
             '/auth/authorize?profile=basic',
             $basicScopes,
-            $totalCharacters
+            $totalCharacters,
+            $basicMap,
+            $characters,
+            $basicScopes,
+            'basic'
         );
         $memberCard = $renderProfile(
             $profiles['member_audit'],
             $memberStatus,
             '/auth/authorize?profile=member_audit',
             $memberScopes,
-            $totalCharacters
+            $totalCharacters,
+            $memberMap,
+            $characters,
+            $memberScopes,
+            'member_audit'
         );
 
         $notes = "<div class='alert alert-info mt-3'>

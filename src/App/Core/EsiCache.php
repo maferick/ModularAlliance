@@ -41,7 +41,7 @@ final class EsiCache
         int $ttlSeconds,
         mixed $fetcherOrForce = null,
         bool $force = false
-    ): array {
+    ): mixed {
         // Determine call style
         $fetcher = null;
 
@@ -68,7 +68,7 @@ final class EsiCache
                     $ttl = (int)$hit['ttl'];
                     if ($fetched > 0 && $ttl > 0 && time() < ($fetched + $ttl)) {
                         $decoded = json_decode((string)$hit['payload'], true);
-                        if (is_array($decoded)) return $decoded;
+                        return $decoded;
                     }
                 }
             } catch (\Throwable $ignore) {
@@ -93,21 +93,19 @@ final class EsiCache
 
                     if (time() < ($fetched + $ttl)) {
                         $decoded = json_decode((string)$row['payload_json'], true);
-                        if (is_array($decoded)) {
-                            // Populate Redis L1 with remaining TTL
-                            if ($this->redis->enabled()) {
-                                $remain = max(1, ($fetched + $ttl) - time());
-                                try {
-                                    $this->redis->setJson($rKey, [
-                                        'payload' => (string)$row['payload_json'],
-                                        'fetched' => $fetched,
-                                        'ttl'     => $ttl,
-                                        'status'  => (int)($row['status_code'] ?? 200),
-                                    ], $remain);
-                                } catch (\Throwable $ignore) {}
-                            }
-                            return $decoded;
+                        // Populate Redis L1 with remaining TTL
+                        if ($this->redis->enabled()) {
+                            $remain = max(1, ($fetched + $ttl) - time());
+                            try {
+                                $this->redis->setJson($rKey, [
+                                    'payload' => (string)$row['payload_json'],
+                                    'fetched' => $fetched,
+                                    'ttl'     => $ttl,
+                                    'status'  => (int)($row['status_code'] ?? 200),
+                                ], $remain);
+                            } catch (\Throwable $ignore) {}
                         }
+                        return $decoded;
                     }
                 }
             }
@@ -134,10 +132,6 @@ final class EsiCache
                 }
 
                 $data = $this->esi->get($path);
-            }
-
-            if (!is_array($data)) {
-                throw new \RuntimeException('ESI fetcher did not return an array');
             }
 
             $payload = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -212,9 +206,10 @@ final class EsiCache
         string $urlKey,
         int $ttlSeconds,
         string $accessToken,
-        array $ignoreStatus = []
-    ): array {
-        $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus);
+        array $ignoreStatus = [],
+        ?callable $refreshCallback = null
+    ): mixed {
+        $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus, $refreshCallback);
         return $result['data'];
     }
 
@@ -222,14 +217,15 @@ final class EsiCache
      * Authenticated cache helper using Bearer tokens with status visibility.
      *
      * @param array<int, int> $ignoreStatus
-     * @return array{status:int, data:array}
+     * @return array{status:int, data:mixed}
      */
     public function getCachedAuthWithStatus(
         string $scopeKey,
         string $urlKey,
         int $ttlSeconds,
         string $accessToken,
-        array $ignoreStatus = []
+        array $ignoreStatus = [],
+        ?callable $refreshCallback = null
     ): array {
         $cacheKey = hash('sha256', $urlKey);
         $rKey = 'esi:' . $scopeKey . ':' . $cacheKey;
@@ -242,12 +238,10 @@ final class EsiCache
                     $ttl = (int)$hit['ttl'];
                     if ($fetched > 0 && $ttl > 0 && time() < ($fetched + $ttl)) {
                         $decoded = json_decode((string)$hit['payload'], true);
-                        if (is_array($decoded)) {
-                            return [
-                                'status' => (int)($hit['status'] ?? 200),
-                                'data' => $decoded,
-                            ];
-                        }
+                        return [
+                            'status' => (int)($hit['status'] ?? 200),
+                            'data' => $decoded,
+                        ];
                     }
                 }
             } catch (\Throwable $ignore) {}
@@ -266,12 +260,10 @@ final class EsiCache
             $ttl     = (int)$row['ttl_seconds'];
             if (time() < ($fetched + $ttl)) {
                 $decoded = json_decode((string)$row['payload_json'], true);
-                if (is_array($decoded)) {
-                    return [
-                        'status' => (int)($row['status_code'] ?? 200),
-                        'data' => $decoded,
-                    ];
-                }
+                return [
+                    'status' => (int)($row['status_code'] ?? 200),
+                    'data' => $decoded,
+                ];
             }
         }
 
@@ -286,8 +278,16 @@ final class EsiCache
                 if (!empty($u['query'])) $path .= '?' . $u['query'];
             }
 
-            [$status, $data] = $this->esi->getWithStatus($path, $accessToken);
-            if ($status >= 200 && $status < 300 && is_array($data)) {
+            $tokenToUse = $accessToken;
+            [$status, $data] = $this->esi->getWithStatus($path, $tokenToUse);
+            if (($status === 401 || $status === 403) && $refreshCallback) {
+                $refreshedToken = $refreshCallback();
+                if (is_string($refreshedToken) && $refreshedToken !== '' && $refreshedToken !== $tokenToUse) {
+                    $tokenToUse = $refreshedToken;
+                    [$status, $data] = $this->esi->getWithStatus($path, $tokenToUse);
+                }
+            }
+            if ($status >= 200 && $status < 300) {
                 $payload = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                 $this->db->run(
                     "REPLACE INTO esi_cache (scope_key, cache_key, url, payload_json, fetched_at, ttl_seconds, status_code)
