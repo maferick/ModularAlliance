@@ -19,24 +19,33 @@ Relevant migrations:
 3. Configure CorpTools in **Admin → Corp Tools** (default corporation, audit scopes, corp audit toggles, and feature enablement).
 
 ## Cron / Jobs
-CorpTools uses a scheduler with persisted job definitions, execution logs, and locking. Run the scheduler every minute via CLI:
+CorpTools uses a scheduler with persisted job definitions, execution logs, and locking. Run the scheduler via the dedicated cron entrypoint:
 
 ```bash
-* * * * * php /var/www/bin/console.php cron:run >> /var/log/modularalliance/corptools-cron.log 2>&1
+*/5 * * * * /usr/bin/php /var/www/bin/cron.php run --due >> /var/log/modularalliance/cron.log 2>&1
 ```
 
 Jobs are managed in **Admin → CorpTools Cron** and logged in **Admin → CorpTools Cron → Runs**.
 
 Registered jobs:
 - `corptools.invoice_sync` — pulls wallet journals for invoice tracking
+- `corptools.token_refresh` — refreshes member/org tokens before expiry
 - `corptools.audit_refresh` — refreshes character audits and summaries
 - `corptools.corp_audit_refresh` — refreshes corp-level audit dashboards
 - `corptools.cleanup` — retention cleanup for audit/pinger data
 
 ## Ubuntu cron hook
+### /etc/cron.d/modularalliance
+```bash
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+*/5 * * * * www-data cd /var/www && /usr/bin/php /var/www/bin/cron.php run --due >> /var/log/modularalliance/cron.log 2>&1
+```
+
 ### Crontab (www-data)
 ```bash
-* * * * * php /var/www/bin/console.php cron:run >> /var/log/modularalliance/corptools-cron.log 2>&1
+*/5 * * * * /usr/bin/php /var/www/bin/cron.php run --due >> /var/log/modularalliance/cron.log 2>&1
 ```
 
 ### systemd service + timer
@@ -50,7 +59,7 @@ Type=oneshot
 User=www-data
 Group=www-data
 WorkingDirectory=/var/www
-ExecStart=/usr/bin/php /var/www/bin/console.php cron:run
+ExecStart=/usr/bin/php /var/www/bin/cron.php run --due
 ```
 
 `/etc/systemd/system/modularalliance-corptools.timer`
@@ -73,7 +82,7 @@ systemctl enable --now modularalliance-corptools.timer
 ```
 
 Log file recommendation:
-- `/var/log/modularalliance/corptools-cron.log` (writeable by `www-data`)
+- `/var/log/modularalliance/cron.log` (writeable by `www-data`)
 
 ## Settings Overview
 CorpTools settings are stored in `module_corptools_settings` and configured via **Admin → Corp Tools**.
@@ -89,7 +98,7 @@ CorpTools settings are stored in `module_corptools_settings` and configured via 
 
 ## Admin dashboards
 - **Status**: `/admin/corptools/status` for health signals and last successful syncs.
-- **Cron Job Manager**: `/admin/corptools/cron` for job schedules, logs, and manual runs.
+- **Cron Job Manager**: `/admin/system/cron` for job schedules, logs, and manual runs.
 
 ## Permissions
 Assign rights via Core Rights:

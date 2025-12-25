@@ -10,8 +10,8 @@ Version: 1.0.0
 use App\Core\EveSso;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
-use App\Core\Settings;
 use App\Core\Universe;
+use App\Corptools\Settings as CorpToolsSettings;
 use App\Corptools\ScopePolicy;
 use App\Corptools\Audit\ScopeAuditService;
 use App\Http\Request;
@@ -19,6 +19,67 @@ use App\Http\Response;
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
+
+    $registry->menu([
+        'slug' => 'user.linking',
+        'title' => 'Scopes & Linking',
+        'url' => '/me/linking',
+        'sort_order' => 35,
+        'area' => 'user_top',
+    ]);
+
+    $getScopeProfiles = function (int $userId) use ($app): array {
+        $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+        $scopeSet = $userId > 0 ? $scopePolicy->getEffectiveScopesForUser($userId) : ['required' => [], 'optional' => []];
+        $memberScopes = array_values(array_unique(array_merge(
+            $scopeSet['required'] ?? [],
+            $scopeSet['optional'] ?? []
+        )));
+
+        $basicScopes = $app->config['eve_sso']['basic_scopes'] ?? ['publicData'];
+        if (!is_array($basicScopes) || empty($basicScopes)) {
+            $basicScopes = ['publicData'];
+        }
+
+        $corpSettings = new CorpToolsSettings($app->db);
+        $settings = $corpSettings->get();
+        $corpAuditEnabled = $settings['corp_audit'] ?? [];
+        $corpAuditScopes = [
+            'wallets' => ['esi-wallet.read_corporation_wallets.v1'],
+            'structures' => ['esi-corporations.read_structures.v1'],
+            'assets' => ['esi-assets.read_corporation_assets.v1'],
+            'sov' => ['esi-sovereignty.read_corporation_campaigns.v1'],
+            'jump_bridges' => ['esi-universe.read_structures.v1'],
+        ];
+        $orgScopes = [];
+        foreach ($corpAuditScopes as $key => $scopes) {
+            if (!empty($corpAuditEnabled[$key])) {
+                $orgScopes = array_merge($orgScopes, $scopes);
+            }
+        }
+        $orgScopes = array_values(array_unique($orgScopes));
+
+        return [
+            'basic' => [
+                'label' => 'Character Profile (Basic)',
+                'description' => 'Basic profile and member widgets.',
+                'bucket' => 'basic',
+                'scopes' => $basicScopes,
+            ],
+            'member_audit' => [
+                'label' => 'Member Audit (Full for Main + Alts)',
+                'description' => 'Full personal audit for your main and linked characters.',
+                'bucket' => 'member_audit',
+                'scopes' => $memberScopes,
+            ],
+            'org_audit' => [
+                'label' => 'Org Audit (Corp/Alliance Staff)',
+                'description' => 'Director-level corp dashboards and org audit.',
+                'bucket' => 'org_audit',
+                'scopes' => $orgScopes,
+            ],
+        ];
+    };
 
     $registry->route('GET', '/auth/login', function () use ($app): Response {
         $cfg = $app->config['eve_sso'] ?? [];
@@ -53,13 +114,15 @@ return function (ModuleRegistry $registry): void {
 
             $userId = (int)($result['user_id'] ?? 0);
             $characterId = (int)($result['character_id'] ?? 0);
-            if ($userId > 0 && $characterId > 0) {
+            $bucket = (string)($result['bucket'] ?? 'basic');
+            if ($userId > 0 && $characterId > 0 && $bucket === 'member_audit') {
                 $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
                 $scopeSet = $scopePolicy->getEffectiveScopesForUser($userId);
                 $tokenRow = $app->db->one(
                     "SELECT access_token, scopes_json, expires_at
-                     FROM eve_tokens
-                     WHERE character_id=? LIMIT 1",
+                     FROM eve_token_buckets
+                     WHERE character_id=? AND bucket='member_audit' AND org_type='character' AND org_id=0
+                     LIMIT 1",
                     [$characterId]
                 );
                 $tokenScopes = json_decode((string)($tokenRow['scopes_json'] ?? '[]'), true);
@@ -105,271 +168,514 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/');
     }, ['public' => true]);
 
-    $registry->route('GET', '/me', function () use ($app): Response {
+    $registry->route('GET', '/auth/authorize', function (Request $req) use ($app, $getScopeProfiles): Response {
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($uid <= 0) {
+            return Response::redirect('/auth/login');
+        }
+
+        $profileKey = (string)($req->query['profile'] ?? '');
+        $profiles = $getScopeProfiles($uid);
+        $profile = $profiles[$profileKey] ?? null;
+        if (!$profile) {
+            return Response::redirect('/me/linking');
+        }
+
+        $bucket = (string)($profile['bucket'] ?? 'basic');
+        $scopes = $profile['scopes'] ?? ['publicData'];
+        if (!is_array($scopes) || empty($scopes)) {
+            $scopes = ['publicData'];
+        }
+
+        $orgType = '';
+        $orgId = 0;
+        if ($bucket === 'member_audit') {
+            $orgType = 'character';
+        }
+
+        if ($bucket === 'org_audit') {
+            $rights = new Rights($app->db);
+            if (!$rights->userHasRight($uid, 'corptools.director')) {
+                return Response::redirect('/me/linking');
+            }
+
+            $orgId = (int)($req->query['org_id'] ?? 0);
+            $orgType = 'corporation';
+
+            $corpSettings = new CorpToolsSettings($app->db);
+            $settings = $corpSettings->get();
+            $allowedIds = array_values(array_filter(array_map('intval', $settings['general']['corp_ids'] ?? [])));
+            if ($orgId <= 0 || (!empty($allowedIds) && !in_array($orgId, $allowedIds, true))) {
+                return Response::redirect('/admin/corptools/linking');
+            }
+        }
+
+        $_SESSION['sso_scopes_override'] = array_values(array_unique(array_filter($scopes, 'is_string')));
+        $_SESSION['sso_token_bucket'] = $bucket;
+        $_SESSION['sso_org_context'] = [
+            'org_type' => $orgType,
+            'org_id' => $orgId,
+        ];
+        $_SESSION['charlink_redirect'] = $bucket === 'org_audit' ? '/admin/corptools/linking' : '/me/linking';
+
+        return Response::redirect('/auth/login');
+    });
+
+    $registry->route('GET', '/me/linking', function () use ($app, $getScopeProfiles): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
-        if ($cid <= 0) return Response::redirect('/auth/login');
-
-        $u = new Universe($app->db);
-        $p = $u->characterProfile($cid);
-
         $uid = (int)($_SESSION['user_id'] ?? 0);
-        $primary = $uid > 0
-            ? $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid])
-            : null;
-        $primaryCharacterId = (int)($primary['character_id'] ?? 0);
-        $primaryName = (string)($primary['character_name'] ?? '');
-        $primaryPortrait = null;
-        $primaryProfile = null;
-        if ($primaryCharacterId > 0) {
-            $primaryProfile = $u->characterProfile($primaryCharacterId);
-            $primaryPortrait = $primaryProfile['character']['portrait']['px256x256']
-                ?? $primaryProfile['character']['portrait']['px128x128']
-                ?? null;
-        }
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
-        $displayProfile = $primaryProfile ?? $p;
-        $charName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
-        $portrait = $p['character']['portrait']['px256x256'] ?? $p['character']['portrait']['px128x128'] ?? null;
-
-        $charName = htmlspecialchars($displayProfile['character']['name'] ?? 'Unknown');
-        $portrait = $displayProfile['character']['portrait']['px256x256']
-            ?? $displayProfile['character']['portrait']['px128x128']
-            ?? null;
-
-        $corpName = htmlspecialchars($displayProfile['corporation']['name'] ?? '—');
-        $corpTicker = htmlspecialchars($displayProfile['corporation']['ticker'] ?? '');
-        $corpIcon = $displayProfile['corporation']['icons']['px128x128']
-            ?? $displayProfile['corporation']['icons']['px64x64']
-            ?? null;
-
-        $allName = htmlspecialchars($displayProfile['alliance']['name'] ?? '—');
-        $allTicker = htmlspecialchars($displayProfile['alliance']['ticker'] ?? '');
-        $allIcon = $displayProfile['alliance']['icons']['px128x128']
-            ?? $displayProfile['alliance']['icons']['px64x64']
-            ?? null;
-
-        $html = "<h1>Profile</h1>";
-
-        if ($primaryCharacterId > 0) {
-            $primaryNameSafe = htmlspecialchars($primaryName !== '' ? $primaryName : 'Unknown');
-            $primaryBadge = $primaryCharacterId === $cid
-                ? "<span class='badge bg-success ms-2'>Current</span>"
-                : "<span class='badge bg-primary ms-2'>Primary</span>";
-            $primaryHtml = "<div class='card card-body mb-4'>
-                <div class='d-flex align-items-center gap-3'>
-                  " . ($primaryPortrait ? "<img src='" . htmlspecialchars($primaryPortrait) . "' width='64' height='64' style='border-radius:10px;'>" : "") . "
-                  <div>
-                    <div class='text-muted'>Main identity</div>
-                    <div class='fs-5 fw-bold'>{$primaryNameSafe}{$primaryBadge}</div>
-                  </div>
-                </div>
-              </div>";
-
-            $html = $primaryHtml . $html;
-        }
-
-        $html .= "<div style='display:flex;gap:16px;align-items:center;margin:12px 0;'>";
-        if ($portrait) $html .= "<img src='" . htmlspecialchars($portrait) . "' width='96' height='96' style='border-radius:10px;'>";
-        $html .= "<div><div style='font-size:22px;font-weight:700;'>{$charName}</div></div>";
-        $html .= "</div>";
-        if ($primaryCharacterId > 0 && $primaryCharacterId !== $cid) {
-            $currentName = htmlspecialchars($p['character']['name'] ?? 'Unknown');
-            $html .= "<div class='text-muted mb-3'>Signed in as {$currentName}.</div>";
-        }
-
-        $getPortrait = function (int $characterId) use ($u): ?string {
-            $profile = $u->characterProfile($characterId);
-            return $profile['character']['portrait']['px128x128']
-                ?? $profile['character']['portrait']['px64x64']
-                ?? null;
-        };
-
-        $linked = [];
-        if ($uid > 0) {
-            $linked = $app->db->all(
-                "SELECT character_id, character_name, linked_at
-                 FROM character_links
-                 WHERE user_id=? AND status='linked'
-                 ORDER BY linked_at ASC",
-                [$uid]
-            );
-        }
-
-        $linkedCards = '';
-        if ($primaryCharacterId > 0) {
-            $portraitUrl = $getPortrait($primaryCharacterId);
-            $primaryNameSafe = htmlspecialchars($primaryName !== '' ? $primaryName : 'Unknown');
-            $badge = $primaryCharacterId === $cid
-                ? "<span class='badge bg-success ms-2'>Current</span>"
-                : "<span class='badge bg-primary ms-2'>Main</span>";
-
-            $linkedCards .= "<div class='col-md-6'>
-                <div class='card card-body'>
-                  <div class='d-flex align-items-center gap-3'>";
-            if ($portraitUrl) {
-                $linkedCards .= "<img src='" . htmlspecialchars($portraitUrl) . "' width='56' height='56' style='border-radius:10px;'>";
-            }
-            $linkedCards .= "<div>
-                      <div class='fw-semibold'>{$primaryNameSafe}{$badge}</div>
-                    </div>
-                  </div>
-                </div>
-              </div>";
-        }
-
-        foreach ($linked as $link) {
-            $linkId = (int)($link['character_id'] ?? 0);
-            if ($linkId <= 0) continue;
-            $linkNameRaw = (string)($link['character_name'] ?? 'Unknown');
-            $linkName = htmlspecialchars($linkNameRaw);
-            $linkNameJs = addslashes($linkNameRaw);
-            $portraitUrl = $getPortrait($linkId);
-            $linkedAt = htmlspecialchars((string)($link['linked_at'] ?? ''));
-
-            $linkedCards .= "<div class='col-md-6'>
-                <div class='card card-body'>
-                  <div class='d-flex align-items-center gap-3'>";
-            if ($portraitUrl) {
-                $linkedCards .= "<img src='" . htmlspecialchars($portraitUrl) . "' width='56' height='56' style='border-radius:10px;'>";
-            }
-            $linkedCards .= "<div>
-                      <div class='fw-semibold'>{$linkName}</div>
-                      <div class='text-muted small'>Linked {$linkedAt}</div>
-                      <form method='post' action='/user/alts/make-main' class='mt-2' onsubmit=\"return confirm('Promote {$linkNameJs} to main character?');\">
-                        <input type='hidden' name='character_id' value='{$linkId}'>
-                        <button class='btn btn-sm btn-outline-light'>Promote to main</button>
-                      </form>
-                    </div>
-                  </div>
-                </div>
-              </div>";
-        }
-
-        if ($linkedCards === '') {
-            $linkedCards = "<div class='col-12 text-muted'>No linked characters yet.</div>";
-        }
-
-        $html .= "<h2>Linked Characters</h2>
-                  <div class='text-muted mb-2'>Main character is shown first. Manage links in <a href='/user/alts'>Linked Characters</a>.</div>
-                  <div class='row g-3 mb-4'>{$linkedCards}</div>";
-
-        $html .= "<h2>Corporation</h2>";
-        $html .= "<div style='display:flex;gap:12px;align-items:center;margin:8px 0;'>";
-        if ($corpIcon) $html .= "<img src='" . htmlspecialchars($corpIcon) . "' width='64' height='64' style='border-radius:10px;'>";
-        $html .= "<div><div style='font-size:18px;font-weight:700;'>{$corpName}</div>";
-        if ($corpTicker !== '') $html .= "<div style='color:#666;'>[{$corpTicker}]</div>";
-        $html .= "</div></div>";
-
-        $html .= "<h2>Alliance</h2>";
-        $html .= "<div style='display:flex;gap:12px;align-items:center;margin:8px 0;'>";
-        if ($allIcon) $html .= "<img src='" . htmlspecialchars($allIcon) . "' width='64' height='64' style='border-radius:10px;'>";
-        $html .= "<div><div style='font-size:18px;font-weight:700;'>{$allName}</div>";
-        if ($allTicker !== '') $html .= "<div style='color:#666;'>[{$allTicker}]</div>";
-        $html .= "</div></div>";
-
-        $uid = (int)($_SESSION['user_id'] ?? 0);
-        $rightsNote = '';
-        $rightsRows = [];
-        if ($uid > 0) {
-            $isSuper = $app->db->one("SELECT 1 FROM eve_users WHERE id=? AND is_superadmin=1 LIMIT 1", [$uid]);
-            $isAdmin = $app->db->one(
-                "SELECT 1
-                 FROM eve_user_groups ug
-                 JOIN groups g ON g.id = ug.group_id
-                 WHERE ug.user_id=? AND g.is_admin=1
-                 LIMIT 1",
-                [$uid]
-            );
-
-            if ($isSuper || $isAdmin) {
-                $rightsNote = $isSuper ? 'Superadmin: all rights enabled.' : 'Admin group: all rights enabled.';
-                $rightsRows = $app->db->all(
-                    "SELECT slug, description
-                     FROM rights
-                     ORDER BY module_slug ASC, slug ASC"
-                );
-            } else {
-                $rightsRows = $app->db->all(
-                    "SELECT DISTINCT r.slug, r.description
-                     FROM eve_user_groups ug
-                     JOIN group_rights gr ON gr.group_id = ug.group_id
-                     JOIN rights r ON r.id = gr.right_id
-                     WHERE ug.user_id=?
-                     ORDER BY r.module_slug ASC, r.slug ASC",
-                    [$uid]
-                );
-            }
-        }
-
-        $html .= "<h2>Active Rights</h2>";
-        if ($rightsNote !== '') {
-            $html .= "<div class='text-muted'>" . htmlspecialchars($rightsNote) . "</div>";
-        }
-
-        if (!empty($rightsRows)) {
-            $html .= "<ul style='margin-top:6px;'>";
-            foreach ($rightsRows as $row) {
-                $slug = htmlspecialchars((string)($row['slug'] ?? ''));
-                $desc = htmlspecialchars((string)($row['description'] ?? ''));
-                if ($desc !== '') {
-                    $html .= "<li><code>{$slug}</code> – {$desc}</li>";
-                } else {
-                    $html .= "<li><code>{$slug}</code></li>";
-                }
-            }
-            $html .= "</ul>";
-        } else {
-            $html .= "<div class='text-muted' style='margin-top:6px;'>No rights assigned.</div>";
-        }
-
-        // Rights gate (admin hard override is inside Rights)
         $rights = new Rights($app->db);
-        $hasRight = function (string $right) use ($rights): bool {
-            $uid = (int)($_SESSION['user_id'] ?? 0);
+        $hasRight = function (string $right) use ($rights, $uid): bool {
             if ($uid <= 0) return false;
             return $rights->userHasRight($uid, $right);
         };
 
-        // Menus
         $leftTree  = $app->menu->tree('left', $hasRight);
         $adminTree = $app->menu->tree('admin_top', $hasRight);
         $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
-
-        // Logged in => hide "Login"
         $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
 
-        // Brand (keep head consistent with admin)
-        $settings = new Settings($app->db);
+        $profiles = $getScopeProfiles($uid);
+        $memberScopes = $profiles['member_audit']['scopes'] ?? [];
+        $basicScopes = $profiles['basic']['scopes'] ?? [];
 
-        $brandName = $settings->get('site.brand.name', 'killsineve.online') ?? 'killsineve.online';
-        $type = $settings->get('site.identity.type', 'corporation') ?? 'corporation'; // corporation|alliance
-        $id = (int)($settings->get('site.identity.id', '0') ?? '0');
-
-        // If not configured, infer from logged-in character (best-effort)
-        if ($id <= 0) {
-            $cid = (int)($_SESSION['character_id'] ?? 0);
-            if ($cid > 0) {
-                $u = new Universe($app->db);
-                $p2 = $u->characterProfile($cid);
-                if ($type === 'alliance' && !empty($p2['alliance']['id'])) {
-                    $id = (int)$p2['alliance']['id'];
-                    if ($brandName === 'killsineve.online' && !empty($p2['alliance']['name'])) {
-                        $brandName = (string)$p2['alliance']['name'];
-                    }
-                } elseif (!empty($p2['corporation']['id'])) {
-                    $id = (int)$p2['corporation']['id'];
-                    if ($brandName === 'killsineve.online' && !empty($p2['corporation']['name'])) {
-                        $brandName = (string)$p2['corporation']['name'];
-                    }
-                }
+        $main = $app->db->one(
+            "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
+            [$uid]
+        );
+        $mainCharacterId = (int)($main['character_id'] ?? 0);
+        $characters = [];
+        if ($mainCharacterId > 0) {
+            $characters[] = [
+                'character_id' => $mainCharacterId,
+                'character_name' => (string)($main['character_name'] ?? 'Unknown'),
+            ];
+        }
+        $links = $app->db->all(
+            "SELECT character_id, character_name
+             FROM character_links
+             WHERE user_id=? AND status='linked'
+             ORDER BY linked_at ASC",
+            [$uid]
+        );
+        foreach ($links as $link) {
+            $linkId = (int)($link['character_id'] ?? 0);
+            if ($linkId > 0 && $linkId !== $mainCharacterId) {
+                $characters[] = [
+                    'character_id' => $linkId,
+                    'character_name' => (string)($link['character_name'] ?? 'Unknown'),
+                ];
             }
         }
 
-        $brand = htmlspecialchars($brandName);
-        $html = "<div class='d-flex align-items-center gap-3 mb-4'>"
-            . "<div><div class='text-muted'>Identity</div><div class='fs-4 fw-bold'>" . $brand . "</div></div>"
-            . "</div>" . $html;
+        $characterIds = array_values(array_unique(array_filter(array_map(
+            fn($row) => (int)($row['character_id'] ?? 0),
+            $characters
+        ))));
 
-        return Response::html(\App\Core\Layout::page('Profile', $html, $leftTree, $adminTree, $userTree), 200);
+        $basicTokens = [];
+        $memberTokens = [];
+        if (!empty($characterIds)) {
+            $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
+            $basicTokens = $app->db->all(
+                "SELECT character_id, scopes_json, expires_at
+                 FROM eve_tokens
+                 WHERE character_id IN ({$placeholders})",
+                $characterIds
+            );
+            $memberTokens = $app->db->all(
+                "SELECT character_id, scopes_json, expires_at
+                 FROM eve_token_buckets
+                 WHERE character_id IN ({$placeholders})
+                   AND bucket='member_audit'
+                   AND org_type='character'
+                   AND org_id=0",
+                $characterIds
+            );
+        }
+
+        $indexTokens = function (array $rows): array {
+            $map = [];
+            foreach ($rows as $row) {
+                $cid = (int)($row['character_id'] ?? 0);
+                if ($cid <= 0) continue;
+                $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
+                if (!is_array($scopes)) $scopes = [];
+                $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
+                $map[$cid] = [
+                    'scopes' => $scopes,
+                    'expired' => $expiresAt !== null && $expiresAt !== false && time() > $expiresAt,
+                ];
+            }
+            return $map;
+        };
+
+        $basicMap = $indexTokens($basicTokens);
+        $memberMap = $indexTokens($memberTokens);
+
+        $computeStatus = function (array $tokenMap, array $requiredScopes, array $characterIds): array {
+            $missingTokens = 0;
+            $expiredTokens = 0;
+            $missingScopes = 0;
+            foreach ($characterIds as $characterId) {
+                $token = $tokenMap[$characterId] ?? null;
+                if (!$token) {
+                    $missingTokens++;
+                    continue;
+                }
+                if ($token['expired']) {
+                    $expiredTokens++;
+                }
+                if (!empty($requiredScopes)) {
+                    $diff = array_diff($requiredScopes, $token['scopes'] ?? []);
+                    if (!empty($diff)) {
+                        $missingScopes++;
+                    }
+                }
+            }
+
+            $status = 'Not Linked';
+            if ($missingTokens === 0 && $expiredTokens === 0 && $missingScopes === 0) {
+                $status = 'OK';
+            } elseif ($missingTokens === 0 && $expiredTokens > 0) {
+                $status = 'Token Expired';
+            } elseif ($missingTokens === 0 && $missingScopes > 0) {
+                $status = 'Missing Scopes';
+            }
+
+            return [
+                'status' => $status,
+                'missing_tokens' => $missingTokens,
+                'expired_tokens' => $expiredTokens,
+                'missing_scopes' => $missingScopes,
+            ];
+        };
+
+        $basicStatus = $computeStatus($basicMap, $basicScopes, $characterIds);
+        $memberStatus = $computeStatus($memberMap, $memberScopes, $characterIds);
+
+        $statusBadge = function (string $status): string {
+            return match ($status) {
+                'OK' => "<span class='badge bg-success'>OK</span>",
+                'Missing Scopes' => "<span class='badge bg-warning text-dark'>Missing Scopes</span>",
+                'Token Expired' => "<span class='badge bg-secondary'>Token Expired</span>",
+                default => "<span class='badge bg-danger'>Not Linked</span>",
+            };
+        };
+
+        $summaryLine = function (array $status, int $total): string {
+            $parts = [];
+            if ($status['missing_tokens'] > 0) {
+                $parts[] = $status['missing_tokens'] . " missing token(s)";
+            }
+            if ($status['expired_tokens'] > 0) {
+                $parts[] = $status['expired_tokens'] . " expired";
+            }
+            if ($status['missing_scopes'] > 0) {
+                $parts[] = $status['missing_scopes'] . " missing scopes";
+            }
+            if (empty($parts)) {
+                return "{$total} characters covered";
+            }
+            return implode(' · ', $parts);
+        };
+
+        $renderProfile = function (array $profile, array $status, string $actionUrl, array $scopes, int $totalCharacters) use ($statusBadge, $summaryLine): string {
+            $badge = $statusBadge($status['status'] ?? 'Not Linked');
+            $summary = htmlspecialchars($summaryLine($status, $totalCharacters));
+            $scopeList = '';
+            foreach ($scopes as $scope) {
+                $scopeList .= '<li><code>' . htmlspecialchars($scope) . '</code></li>';
+            }
+            if ($scopeList === '') {
+                $scopeList = "<li class='text-muted'>No scopes configured.</li>";
+            }
+
+            return "<div class='card card-body mb-3'>
+                <div class='d-flex flex-wrap justify-content-between align-items-start gap-3'>
+                  <div>
+                    <div class='fw-semibold fs-5'>" . htmlspecialchars($profile['label'] ?? '') . "</div>
+                    <div class='text-muted'>" . htmlspecialchars($profile['description'] ?? '') . "</div>
+                    <div class='mt-2'>{$badge} <span class='text-muted small ms-2'>{$summary}</span></div>
+                  </div>
+                  <div class='text-end'>
+                    <a class='btn btn-primary' href='" . htmlspecialchars($actionUrl) . "'>Authorize / Re-authorize</a>
+                  </div>
+                </div>
+                <details class='mt-3'>
+                  <summary class='text-muted'>Show required permissions</summary>
+                  <ul class='mt-2 mb-0'>{$scopeList}</ul>
+                </details>
+              </div>";
+        };
+
+        $totalCharacters = max(1, count($characterIds));
+        $basicCard = $renderProfile(
+            $profiles['basic'],
+            $basicStatus,
+            '/auth/authorize?profile=basic',
+            $basicScopes,
+            $totalCharacters
+        );
+        $memberCard = $renderProfile(
+            $profiles['member_audit'],
+            $memberStatus,
+            '/auth/authorize?profile=member_audit',
+            $memberScopes,
+            $totalCharacters
+        );
+
+        $notes = "<div class='alert alert-info mt-3'>
+            <strong>Tip:</strong> To fully load the member audit, authorize the audit token on each linked character.
+            <a href='/user/alts' class='alert-link'>Manage linked characters</a>.
+          </div>";
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Scopes &amp; Linking</h1>
+                      <div class='text-muted'>Authorize the access profiles needed for your account.</div>
+                    </div>
+                  </div>
+                  {$basicCard}
+                  {$memberCard}
+                  {$notes}";
+
+        return Response::html(\App\Core\Layout::page('Scopes & Linking', $body, $leftTree, $adminTree, $userTree), 200);
+    });
+
+    $registry->route('GET', '/me', function (Request $req) use ($app): Response {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
+
+        $rights = new Rights($app->db);
+        $hasRight = function (string $right) use ($rights, $uid): bool {
+            if ($uid <= 0) return false;
+            return $rights->userHasRight($uid, $right);
+        };
+
+        $leftTree  = $app->menu->tree('left', $hasRight);
+        $adminTree = $app->menu->tree('admin_top', $hasRight);
+        $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
+        $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
+
+        $u = new Universe($app->db);
+        $primary = $app->db->one(
+            "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
+            [$uid]
+        );
+        $primaryCharacterId = (int)($primary['character_id'] ?? 0);
+
+        $characters = [];
+        if ($primaryCharacterId > 0) {
+            $characters[] = [
+                'character_id' => $primaryCharacterId,
+                'character_name' => (string)($primary['character_name'] ?? 'Unknown'),
+                'is_main' => true,
+            ];
+        }
+        $links = $app->db->all(
+            "SELECT character_id, character_name, linked_at
+             FROM character_links
+             WHERE user_id=? AND status='linked'
+             ORDER BY linked_at ASC",
+            [$uid]
+        );
+        foreach ($links as $link) {
+            $linkId = (int)($link['character_id'] ?? 0);
+            if ($linkId <= 0 || $linkId === $primaryCharacterId) continue;
+            $characters[] = [
+                'character_id' => $linkId,
+                'character_name' => (string)($link['character_name'] ?? 'Unknown'),
+                'linked_at' => (string)($link['linked_at'] ?? ''),
+                'is_main' => false,
+            ];
+        }
+
+        $search = trim((string)($req->query['q'] ?? ''));
+        if ($search !== '') {
+            $characters = array_values(array_filter($characters, function (array $row) use ($search): bool {
+                return str_contains(mb_strtolower($row['character_name']), mb_strtolower($search));
+            }));
+        }
+
+        $view = (string)($req->query['view'] ?? 'cards');
+        $view = $view === 'table' ? 'table' : 'cards';
+        $perPage = $view === 'table' ? 10 : 6;
+        $page = max(1, (int)($req->query['page'] ?? 1));
+        $total = count($characters);
+        $offset = ($page - 1) * $perPage;
+        $pagedCharacters = array_slice($characters, $offset, $perPage);
+
+        $characterIds = array_values(array_unique(array_map(fn($row) => (int)$row['character_id'], $characters)));
+        $summaryMap = [];
+        if (!empty($characterIds)) {
+            $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
+            $rows = $app->db->all(
+                "SELECT character_id, total_sp, last_login_at, location_system_id
+                 FROM module_corptools_character_summary
+                 WHERE character_id IN ({$placeholders})",
+                $characterIds
+            );
+            foreach ($rows as $row) {
+                $summaryMap[(int)$row['character_id']] = $row;
+            }
+        }
+
+        $renderPagination = function (int $total, int $page, int $perPage, array $query): string {
+            $pages = (int)ceil($total / max(1, $perPage));
+            if ($pages <= 1) return '';
+            $page = max(1, min($page, $pages));
+            $buildUrl = function (int $target) use ($query): string {
+                $query['page'] = $target;
+                return '/me?' . http_build_query($query);
+            };
+            $prev = $page > 1 ? "<li class='page-item'><a class='page-link' href='" . htmlspecialchars($buildUrl($page - 1)) . "'>Prev</a></li>" : "<li class='page-item disabled'><span class='page-link'>Prev</span></li>";
+            $next = $page < $pages ? "<li class='page-item'><a class='page-link' href='" . htmlspecialchars($buildUrl($page + 1)) . "'>Next</a></li>" : "<li class='page-item disabled'><span class='page-link'>Next</span></li>";
+            $items = '';
+            $start = max(1, $page - 2);
+            $end = min($pages, $page + 2);
+            for ($i = $start; $i <= $end; $i++) {
+                $active = $i === $page ? 'active' : '';
+                $items .= "<li class='page-item {$active}'><a class='page-link' href='" . htmlspecialchars($buildUrl($i)) . "'>{$i}</a></li>";
+            }
+            return "<nav class='mt-3'><ul class='pagination pagination-sm'>{$prev}{$items}{$next}</ul></nav>";
+        };
+
+        $cardsHtml = '';
+        $tableRows = '';
+        foreach ($pagedCharacters as $character) {
+            $characterId = (int)($character['character_id'] ?? 0);
+            if ($characterId <= 0) continue;
+            $profile = $u->characterProfile($characterId);
+            $portrait = $profile['character']['portrait']['px256x256'] ?? $profile['character']['portrait']['px128x128'] ?? null;
+            $corpName = htmlspecialchars((string)($profile['corporation']['name'] ?? '—'));
+            $allianceName = htmlspecialchars((string)($profile['alliance']['name'] ?? '—'));
+            $name = htmlspecialchars((string)($profile['character']['name'] ?? $character['character_name'] ?? 'Unknown'));
+            $summary = $summaryMap[$characterId] ?? [];
+            $totalSp = isset($summary['total_sp']) ? number_format((int)$summary['total_sp']) : '—';
+            $lastLogin = htmlspecialchars((string)($summary['last_login_at'] ?? '—'));
+            $locationId = (int)($summary['location_system_id'] ?? 0);
+            $location = $locationId > 0 ? htmlspecialchars($u->name('system', $locationId)) : '—';
+            $mainBadge = !empty($character['is_main']) ? "<span class='badge bg-primary ms-2'>Main</span>" : '';
+
+            $actions = '';
+            if (empty($character['is_main'])) {
+                $actions = "<form method='post' action='/user/alts/make-main' onsubmit=\"return confirm('Make {$name} your main character?');\">
+                    <input type='hidden' name='character_id' value='{$characterId}'>
+                    <button class='btn btn-sm btn-outline-light'>Make Main</button>
+                  </form>";
+            }
+
+            $cardsHtml .= "<div class='col-md-6 col-xl-4'>
+                <div class='card card-body h-100'>
+                  <div class='d-flex align-items-center gap-3'>
+                    " . ($portrait ? "<img src='" . htmlspecialchars($portrait) . "' width='64' height='64' style='border-radius:12px;'>" : "") . "
+                    <div>
+                      <div class='fw-semibold'>{$name}{$mainBadge}</div>
+                      <div class='text-muted small'>{$corpName}</div>
+                      <div class='text-muted small'>{$allianceName}</div>
+                    </div>
+                  </div>
+                  <div class='mt-3'>
+                    <div class='text-muted small'>Skill Points</div>
+                    <div class='fw-semibold'>{$totalSp}</div>
+                  </div>
+                  <div class='mt-2'>
+                    <div class='text-muted small'>Last Login</div>
+                    <div class='fw-semibold'>{$lastLogin}</div>
+                  </div>
+                  <div class='mt-2'>
+                    <div class='text-muted small'>Location</div>
+                    <div class='fw-semibold'>{$location}</div>
+                  </div>
+                  <div class='mt-3 d-flex flex-wrap gap-2'>
+                    <a class='btn btn-sm btn-outline-secondary' href='/corptools/audit?character_id={$characterId}'>Audit</a>
+                    {$actions}
+                  </div>
+                </div>
+              </div>";
+
+            $tableRows .= "<tr>
+                <td>{$name}{$mainBadge}</td>
+                <td>{$corpName}</td>
+                <td>{$allianceName}</td>
+                <td>{$totalSp}</td>
+                <td>{$lastLogin}</td>
+                <td>{$location}</td>
+                <td class='text-end'>
+                  <a class='btn btn-sm btn-outline-secondary' href='/corptools/audit?character_id={$characterId}'>Audit</a>
+                  {$actions}
+                </td>
+              </tr>";
+        }
+
+        if ($cardsHtml === '') {
+            $cardsHtml = "<div class='col-12 text-muted'>No characters match your search.</div>";
+        }
+        if ($tableRows === '') {
+            $tableRows = "<tr><td colspan='7' class='text-muted'>No characters match your search.</td></tr>";
+        }
+
+        $viewToggle = "<div class='btn-group'>
+            <a class='btn btn-sm " . ($view === 'cards' ? 'btn-primary' : 'btn-outline-light') . "' href='/me?" . htmlspecialchars(http_build_query(['q' => $search, 'view' => 'cards'])) . "'>Cards</a>
+            <a class='btn btn-sm " . ($view === 'table' ? 'btn-primary' : 'btn-outline-light') . "' href='/me?" . htmlspecialchars(http_build_query(['q' => $search, 'view' => 'table'])) . "'>Table</a>
+          </div>";
+
+        $query = array_filter(['q' => $search, 'view' => $view], fn($val) => $val !== '');
+        $pagination = $renderPagination($total, $page, $perPage, $query);
+
+        $listHtml = $view === 'table'
+            ? "<div class='card card-body mt-3'>
+                  <div class='table-responsive'>
+                    <table class='table table-sm align-middle'>
+                      <thead>
+                        <tr>
+                          <th>Character</th>
+                          <th>Corporation</th>
+                          <th>Alliance</th>
+                          <th>SP</th>
+                          <th>Last Login</th>
+                          <th>Location</th>
+                          <th class='text-end'>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>{$tableRows}</tbody>
+                    </table>
+                  </div>
+                </div>"
+            : "<div class='row g-3 mt-3'>{$cardsHtml}</div>";
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Profile</h1>
+                      <div class='text-muted'>Your main character is shown first. Use search and view toggles to explore linked pilots.</div>
+                    </div>
+                    {$viewToggle}
+                  </div>
+                  <form method='get' class='card card-body mt-3'>
+                    <div class='row g-2 align-items-end'>
+                      <div class='col-md-6'>
+                        <label class='form-label'>Search characters</label>
+                        <input class='form-control' name='q' value='" . htmlspecialchars($search) . "' placeholder='Type a character name'>
+                      </div>
+                      <div class='col-md-4'>
+                        <label class='form-label'>View</label>
+                        <select class='form-select' name='view'>
+                          <option value='cards'" . ($view === 'cards' ? ' selected' : '') . ">Cards</option>
+                          <option value='table'" . ($view === 'table' ? ' selected' : '') . ">Table</option>
+                        </select>
+                      </div>
+                      <div class='col-md-2'>
+                        <button class='btn btn-primary w-100'>Apply</button>
+                      </div>
+                    </div>
+                  </form>
+                  {$listHtml}
+                  {$pagination}";
+
+        return Response::html(\App\Core\Layout::page('Profile', $body, $leftTree, $adminTree, $userTree), 200);
     });
 };

@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS eve_token_buckets (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  character_id BIGINT UNSIGNED NOT NULL,
+  bucket VARCHAR(32) NOT NULL,
+  org_type VARCHAR(24) NOT NULL DEFAULT '',
+  org_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  access_token MEDIUMTEXT NOT NULL,
+  refresh_token MEDIUMTEXT NULL,
+  expires_at DATETIME NULL,
+  scopes_json TEXT NULL,
+  token_json MEDIUMTEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_bucket_character (character_id, bucket, org_type, org_id),
+  KEY idx_bucket (bucket),
+  KEY idx_org (org_type, org_id, bucket),
+  KEY idx_user (user_id),
+  CONSTRAINT fk_eve_token_buckets_user_id FOREIGN KEY (user_id) REFERENCES eve_users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
