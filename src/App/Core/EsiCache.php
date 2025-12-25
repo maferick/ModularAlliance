@@ -39,8 +39,9 @@ final class EsiCache
         string $scopeKey,
         string $urlKey,
         int $ttlSeconds,
-        mixed $fetcherOrForce = null,
+        $fetcherOrForce = null,
         bool $force = false
+    ) {
     ): mixed {
         // Determine call style
         $fetcher = null;
@@ -208,6 +209,8 @@ final class EsiCache
         string $accessToken,
         array $ignoreStatus = [],
         ?callable $refreshCallback = null
+    ) {
+        $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus, $refreshCallback);
     ): mixed {
         $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus, $refreshCallback);
         array $ignoreStatus = []

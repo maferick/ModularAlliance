@@ -1403,7 +1403,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect($returnTo);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools', function () use ($app, $renderPage, $corpContext, $tokenData, $hasScopes, $formatIsk, $renderCorpContext, $getCorpToolsSettings): Response {
+    $registry->route('GET', '/corptools', function () use ($app, $renderPage, $corpContext, $hasScopes, $formatIsk, $renderCorpContext, $getCorpToolsSettings, $sso, $makeRefreshCallback): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
