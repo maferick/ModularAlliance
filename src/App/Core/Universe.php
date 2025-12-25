@@ -54,7 +54,7 @@ final class Universe
 
         if ($type === 'structure') {
             $token = $this->bestEffortAccessToken();
-            if (!$token) {
+            if (!$token || empty($token['access_token'])) {
                 return $this->fallback($type, $id);
             }
 
@@ -62,8 +62,9 @@ final class Universe
                 "universe:$type:$id",
                 $path,
                 $ttl,
-                $token,
-                [403, 404]
+                (string)$token['access_token'],
+                [403, 404],
+                $token['refresh_callback'] ?? null
             );
 
             if (!is_array($payload) || !isset($payload['name'])) {
@@ -266,23 +267,50 @@ final class Universe
     ];
 }
 
-    private function bestEffortAccessToken(): ?string
+    private function bestEffortAccessToken(): ?array
     {
+        $cid = (int)($_SESSION['character_id'] ?? 0);
+        if ($cid > 0 && function_exists('app_config')) {
+            $cfg = [];
+            $all = \app_config();
+            if (is_array($all) && isset($all['eve_sso']) && is_array($all['eve_sso'])) {
+                $cfg = $all['eve_sso'];
+            }
+            if (!empty($cfg)) {
+                $sso = new EveSso($this->db, $cfg);
+                $token = $sso->getAccessTokenForCharacter($cid, 'basic');
+                if (!empty($token['access_token'])) {
+                    $token['refresh_callback'] = function () use (&$token, $sso, $cid): ?string {
+                        $refreshToken = (string)($token['refresh_token'] ?? '');
+                        if ($refreshToken === '') {
+                            return null;
+                        }
+                        $refresh = $sso->refreshTokenForCharacter(
+                            (int)($token['user_id'] ?? 0),
+                            $cid,
+                            $refreshToken,
+                            'basic'
+                        );
+                        if (($refresh['status'] ?? '') === 'success') {
+                            $token['access_token'] = (string)($refresh['token']['access_token'] ?? '');
+                            $token['refresh_token'] = (string)($refresh['token']['refresh_token'] ?? $refreshToken);
+                            return $token['access_token'];
+                        }
+                        return null;
+                    };
+                    return $token;
+                }
+            }
+        }
+
         $candidates = [
             $_SESSION['access_token'] ?? null,
             $_SESSION['sso_access_token'] ?? null,
             $_SESSION['esi_access_token'] ?? null,
         ];
         foreach ($candidates as $t) {
-            if (is_string($t) && $t !== '') return $t;
-        }
-
-        $cid = (int)($_SESSION['character_id'] ?? 0);
-        if ($cid > 0) {
-            $row = $this->db->one("SELECT access_token FROM eve_tokens WHERE character_id=? LIMIT 1", [$cid])
-                ?? $this->db->one("SELECT access_token FROM tokens WHERE character_id=? LIMIT 1", [$cid]);
-            if ($row && !empty($row['access_token'])) {
-                return (string)$row['access_token'];
+            if (is_string($t) && $t !== '') {
+                return ['access_token' => $t, 'refresh_callback' => null];
             }
         }
 

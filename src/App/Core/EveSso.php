@@ -5,6 +5,11 @@ namespace App\Core;
 
 final class EveSso
 {
+    private const STATUS_ACTIVE = 'ACTIVE';
+    private const STATUS_NEEDS_REAUTH = 'NEEDS_REAUTH';
+    private const STATUS_REVOKED = 'REVOKED';
+    private const STATUS_ERROR = 'ERROR';
+
     public function __construct(private readonly Db $db, private readonly array $cfg) {}
 
     public function beginLogin(): string
@@ -308,7 +313,8 @@ final class EveSso
     ): array
     {
         if ($refreshToken === '') {
-            return ['status' => 'failed', 'message' => 'Missing refresh token.'];
+            $this->updateTokenStatus($userId, $characterId, $bucket, $orgContext, self::STATUS_NEEDS_REAUTH, 'Missing refresh token.');
+            return ['status' => 'failed', 'message' => 'Missing refresh token.', 'error_code' => 'missing_refresh_token'];
         }
 
         $meta = $this->getMetadata();
@@ -333,12 +339,22 @@ final class EveSso
         ]);
 
         if ($status < 200 || $status >= 300) {
-            return ['status' => 'failed', 'message' => "Refresh failed (HTTP {$status}): " . substr($body, 0, 300)];
+            $errorPayload = json_decode($body, true);
+            $errorCode = is_array($errorPayload) ? (string)($errorPayload['error'] ?? '') : '';
+            $message = "Refresh failed (HTTP {$status}): " . substr($body, 0, 300);
+            if ($errorCode === 'invalid_grant') {
+                $this->updateTokenStatus($userId, $characterId, $bucket, $orgContext, self::STATUS_NEEDS_REAUTH, $message);
+                return ['status' => 'failed', 'message' => $message, 'error_code' => 'invalid_grant'];
+            }
+            $this->updateTokenStatus($userId, $characterId, $bucket, $orgContext, self::STATUS_ERROR, $message);
+            return ['status' => 'failed', 'message' => $message, 'error_code' => $errorCode];
         }
 
         $token = json_decode($body, true);
         if (!is_array($token) || empty($token['access_token'])) {
-            return ['status' => 'failed', 'message' => 'Invalid token JSON.'];
+            $message = 'Invalid token JSON.';
+            $this->updateTokenStatus($userId, $characterId, $bucket, $orgContext, self::STATUS_ERROR, $message);
+            return ['status' => 'failed', 'message' => $message, 'error_code' => 'invalid_json'];
         }
 
         if (empty($token['refresh_token'])) {
@@ -351,6 +367,9 @@ final class EveSso
         $this->upsertToken($userId, $characterId, $token, $jwtPayload, $bucket, [
             'org_type' => $orgType,
             'org_id' => $orgId,
+            'status' => self::STATUS_ACTIVE,
+            'last_refresh_at' => gmdate('Y-m-d H:i:s'),
+            'error_last' => null,
         ]);
 
         $expiresAt = null;
@@ -369,6 +388,95 @@ final class EveSso
             'expires_at' => $expiresAt,
             'scopes' => $scopes,
         ];
+    }
+
+    public function getAccessTokenForCharacter(
+        int $characterId,
+        string $bucket = 'basic',
+        array $orgContext = [],
+        int $refreshWindowSeconds = 120
+    ): array
+    {
+        $row = $this->fetchTokenRow($characterId, $bucket, $orgContext);
+        if (!$row) {
+            return [
+                'status' => 'MISSING',
+                'access_token' => null,
+                'refresh_token' => null,
+                'expires_at' => null,
+                'scopes' => [],
+                'expired' => true,
+                'user_id' => 0,
+                'character_id' => $characterId,
+                'last_refresh_at' => null,
+                'error_last' => null,
+                'refreshed' => false,
+            ];
+        }
+
+        $token = $this->normalizeTokenRow($row);
+        $status = (string)($token['status'] ?? self::STATUS_ACTIVE);
+        $expiresAtTs = $token['expires_at'] ? strtotime((string)$token['expires_at']) : null;
+        $needsRefresh = empty($token['access_token']) || $expiresAtTs === null
+            || (time() + max(0, $refreshWindowSeconds)) >= $expiresAtTs;
+
+        if (in_array($status, [self::STATUS_NEEDS_REAUTH, self::STATUS_REVOKED], true)) {
+            $token['expired'] = true;
+            return $token;
+        }
+
+        if ($needsRefresh) {
+            $refreshToken = (string)($token['refresh_token'] ?? '');
+            if ($refreshToken !== '') {
+                $refresh = $this->refreshTokenForCharacter(
+                    (int)($token['user_id'] ?? 0),
+                    $characterId,
+                    $refreshToken,
+                    $bucket,
+                    $orgContext
+                );
+                if (($refresh['status'] ?? '') === 'success') {
+                    return [
+                        'status' => self::STATUS_ACTIVE,
+                        'access_token' => (string)($refresh['token']['access_token'] ?? ''),
+                        'refresh_token' => (string)($refresh['token']['refresh_token'] ?? $refreshToken),
+                        'expires_at' => $refresh['expires_at'] ?? null,
+                        'scopes' => $refresh['scopes'] ?? [],
+                        'expired' => false,
+                        'user_id' => (int)($token['user_id'] ?? 0),
+                        'character_id' => $characterId,
+                        'last_refresh_at' => gmdate('Y-m-d H:i:s'),
+                        'error_last' => null,
+                        'refreshed' => true,
+                    ];
+                }
+
+                $token['status'] = ($refresh['error_code'] ?? '') === 'invalid_grant'
+                    ? self::STATUS_NEEDS_REAUTH
+                    : self::STATUS_ERROR;
+                $token['expired'] = true;
+                $token['error_last'] = (string)($refresh['message'] ?? 'Refresh failed.');
+                $token['refreshed'] = false;
+                return $token;
+            }
+
+            $this->updateTokenStatus(
+                (int)($token['user_id'] ?? 0),
+                $characterId,
+                $bucket,
+                $orgContext,
+                self::STATUS_NEEDS_REAUTH,
+                'Missing refresh token.'
+            );
+            $token['status'] = self::STATUS_NEEDS_REAUTH;
+            $token['expired'] = true;
+            $token['error_last'] = 'Missing refresh token.';
+            $token['refreshed'] = false;
+            return $token;
+        }
+
+        $token['refreshed'] = false;
+        return $token;
     }
 
     private function getMetadata(): array
@@ -467,10 +575,14 @@ final class EveSso
             $scopes = [];
         }
 
+        $status = (string)($orgContext['status'] ?? self::STATUS_ACTIVE);
+        $lastRefreshAt = $orgContext['last_refresh_at'] ?? null;
+        $errorLast = $orgContext['error_last'] ?? null;
+
         if ($bucket === 'basic') {
             $this->db->run(
-                "REPLACE INTO eve_tokens (user_id, character_id, access_token, refresh_token, expires_at, scopes_json, token_json)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "REPLACE INTO eve_tokens (user_id, character_id, access_token, refresh_token, expires_at, scopes_json, token_json, status, last_refresh_at, error_last)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     $userId,
                     $characterId,
@@ -479,6 +591,9 @@ final class EveSso
                     $expiresAt,
                     json_encode($scopes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                     json_encode($token),
+                    $status,
+                    $lastRefreshAt,
+                    $errorLast,
                 ]
             );
             return;
@@ -488,8 +603,8 @@ final class EveSso
         $orgId = (int)($orgContext['org_id'] ?? 0);
         $this->db->run(
             "INSERT INTO eve_token_buckets
-             (user_id, character_id, bucket, org_type, org_id, access_token, refresh_token, expires_at, scopes_json, token_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+             (user_id, character_id, bucket, org_type, org_id, access_token, refresh_token, expires_at, scopes_json, token_json, status, last_refresh_at, error_last, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
              ON DUPLICATE KEY UPDATE
                user_id=VALUES(user_id),
                access_token=VALUES(access_token),
@@ -497,6 +612,9 @@ final class EveSso
                expires_at=VALUES(expires_at),
                scopes_json=VALUES(scopes_json),
                token_json=VALUES(token_json),
+               status=VALUES(status),
+               last_refresh_at=VALUES(last_refresh_at),
+               error_last=VALUES(error_last),
                updated_at=NOW()",
             [
                 $userId,
@@ -509,7 +627,90 @@ final class EveSso
                 $expiresAt,
                 json_encode($scopes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                 json_encode($token),
+                $status,
+                $lastRefreshAt,
+                $errorLast,
             ]
+        );
+    }
+
+    private function fetchTokenRow(int $characterId, string $bucket, array $orgContext): ?array
+    {
+        if ($bucket === 'basic') {
+            return $this->db->one(
+                "SELECT user_id, character_id, access_token, refresh_token, expires_at, scopes_json, status, last_refresh_at, error_last
+                 FROM eve_tokens
+                 WHERE character_id=? LIMIT 1",
+                [$characterId]
+            );
+        }
+
+        $orgType = (string)($orgContext['org_type'] ?? '');
+        $orgId = (int)($orgContext['org_id'] ?? 0);
+        return $this->db->one(
+            "SELECT user_id, character_id, access_token, refresh_token, expires_at, scopes_json, status, last_refresh_at, error_last
+             FROM eve_token_buckets
+             WHERE character_id=? AND bucket=? AND org_type=? AND org_id=?
+             LIMIT 1",
+            [$characterId, $bucket, $orgType, $orgId]
+        );
+    }
+
+    private function normalizeTokenRow(array $row): array
+    {
+        $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
+        if (!is_array($scopes)) {
+            $scopes = [];
+        }
+        $expiresAt = $row['expires_at'] ? (string)$row['expires_at'] : null;
+        $expiresAtTs = $expiresAt ? strtotime($expiresAt) : null;
+        $expired = $expiresAtTs !== null && time() > $expiresAtTs;
+        $status = (string)($row['status'] ?? self::STATUS_ACTIVE);
+
+        return [
+            'status' => $status,
+            'access_token' => (string)($row['access_token'] ?? ''),
+            'refresh_token' => (string)($row['refresh_token'] ?? ''),
+            'expires_at' => $expiresAt,
+            'scopes' => $scopes,
+            'expired' => $expired,
+            'user_id' => (int)($row['user_id'] ?? 0),
+            'character_id' => (int)($row['character_id'] ?? 0),
+            'last_refresh_at' => $row['last_refresh_at'] ?? null,
+            'error_last' => $row['error_last'] ?? null,
+        ];
+    }
+
+    private function updateTokenStatus(
+        int $userId,
+        int $characterId,
+        string $bucket,
+        array $orgContext,
+        string $status,
+        ?string $errorLast
+    ): void
+    {
+        $lastRefreshAt = $status === self::STATUS_ACTIVE ? gmdate('Y-m-d H:i:s') : null;
+
+        if ($bucket === 'basic') {
+            $this->db->run(
+                "UPDATE eve_tokens
+                 SET status=?, error_last=?, last_refresh_at=?, updated_at=NOW()
+                 WHERE character_id=? AND user_id=?
+                 LIMIT 1",
+                [$status, $errorLast, $lastRefreshAt, $characterId, $userId]
+            );
+            return;
+        }
+
+        $orgType = (string)($orgContext['org_type'] ?? '');
+        $orgId = (int)($orgContext['org_id'] ?? 0);
+        $this->db->run(
+            "UPDATE eve_token_buckets
+             SET status=?, error_last=?, last_refresh_at=?, updated_at=NOW()
+             WHERE character_id=? AND user_id=? AND bucket=? AND org_type=? AND org_id=?
+             LIMIT 1",
+            [$status, $errorLast, $lastRefreshAt, $characterId, $userId, $bucket, $orgType, $orgId]
         );
     }
 
