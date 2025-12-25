@@ -43,13 +43,18 @@ SQL);
         $path = $this->relPath($filePath);
 
         $existing = $this->db->one(
-            "SELECT id FROM migration_log
-             WHERE module_slug=? AND file_path=? AND checksum=? AND status='applied'
+            "SELECT id, checksum FROM migration_log
+             WHERE module_slug=? AND file_path=? AND status='applied'
+             ORDER BY id DESC
              LIMIT 1",
-            [$moduleSlug, $path, $checksum]
+            [$moduleSlug, $path]
         );
         if ($existing) {
-            echo "[SKIP] {$moduleSlug}: {$path}\n";
+            if ($existing['checksum'] === $checksum) {
+                echo "[SKIP] {$moduleSlug}: {$path}\n";
+            } else {
+                echo "[SKIP] {$moduleSlug}: {$path} (already applied with different checksum)\n";
+            }
             return;
         }
 
