@@ -1222,7 +1222,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Import Fit', $body), 200);
     });
 
-    $registry->route('POST', '/admin/fittings/fits/preview', function (Request $req) use ($app, $renderPage, $requireLogin, $requireRight, $csrfCheck, $parseEft, $buildBuyAll): Response {
+    $registry->route('POST', '/admin/fittings/fits/preview', function (Request $req) use ($app, $renderPage, $requireLogin, $requireRight, $csrfCheck, $csrfToken, $parseEft, $buildBuyAll): Response {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('fittings.manage')) return $resp;
         if (!$csrfCheck('fittings_fit_save', (string)($req->post['csrf_token'] ?? ''))) {
