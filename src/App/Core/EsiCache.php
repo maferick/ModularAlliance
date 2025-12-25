@@ -42,7 +42,10 @@ final class EsiCache
         $fetcherOrForce = null,
         bool $force = false
     ) {
+<<<<<<< ours
     ): mixed {
+=======
+>>>>>>> theirs
         // Determine call style
         $fetcher = null;
 
@@ -211,11 +214,14 @@ final class EsiCache
         ?callable $refreshCallback = null
     ) {
         $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus, $refreshCallback);
+<<<<<<< ours
     ): mixed {
         $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus, $refreshCallback);
         array $ignoreStatus = []
     ): mixed {
         $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus);
+=======
+>>>>>>> theirs
         return $result['data'];
     }
 
@@ -293,7 +299,10 @@ final class EsiCache
                     [$status, $data] = $this->esi->getWithStatus($path, $tokenToUse);
                 }
             }
+<<<<<<< ours
             [$status, $data] = $this->esi->getWithStatus($path, $accessToken);
+=======
+>>>>>>> theirs
             if ($status >= 200 && $status < 300) {
                 $payload = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                 $this->db->run(
