@@ -4,10 +4,10 @@ declare(strict_types=1);
 define('APP_ROOT', dirname(__DIR__));
 require APP_ROOT . '/core/bootstrap.php';
 
-use App\Core\App;
+use App\Core\Db;
 
-$app = App::boot();
-$db = $app->db;
+$config = app_config();
+$db = Db::fromConfig($config['db'] ?? []);
 
 $db->exec("SET time_zone = '+00:00'");
 
@@ -802,5 +802,44 @@ $statements = [
 foreach ($statements as $sql) {
     $db->exec($sql);
 }
+
+$db->run(
+    "INSERT IGNORE INTO settings (`key`, `value`) VALUES
+     ('site.brand.name', 'killsineve.online'),
+     ('site.identity.type', 'corporation'),
+     ('site.identity.id', '0')"
+);
+
+$db->run("INSERT IGNORE INTO authz_state (id, version) VALUES (1, 1)");
+
+$db->run(
+    "INSERT IGNORE INTO groups (slug, name, is_admin)
+     VALUES ('admin', 'Administrator', 1)"
+);
+
+$db->run(
+    "INSERT IGNORE INTO rights (slug, description) VALUES
+     ('admin.access', 'Admin Access'),
+     ('admin.cache', 'Manage ESI Cache'),
+     ('admin.rights', 'Manage Rights (Groups & Permissions)'),
+     ('admin.users', 'Manage Users & Groups'),
+     ('admin.menu', 'Manage Menu')"
+);
+
+$db->run(
+    "INSERT IGNORE INTO group_rights (group_id, right_id)
+     SELECT g.id, r.id
+     FROM groups g
+     JOIN rights r ON r.slug IN ('admin.access','admin.cache','admin.rights','admin.users','admin.menu')
+     WHERE g.slug='admin'"
+);
+
+$db->run(
+    "INSERT IGNORE INTO menu_registry (slug,title,url,parent_slug,sort_order,area,right_slug,enabled) VALUES
+     ('user.login','Login','/auth/login',NULL,10,'user_top',NULL,1),
+     ('user.profile','Profile','/me',NULL,20,'user_top',NULL,1),
+     ('user.alts','Linked Characters','/user/alts',NULL,30,'user_top',NULL,1),
+     ('user.logout','Logout','/auth/logout',NULL,40,'user_top',NULL,1)"
+);
 
 echo "[OK] Install complete.\n";
