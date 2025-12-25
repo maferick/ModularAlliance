@@ -17,6 +17,7 @@ use App\Core\HttpClient;
 use App\Core\Layout;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
+use App\Core\Identifiers;
 use App\Core\Settings;
 use App\Core\Universe;
 use App\Corptools\MemberQueryBuilder;
@@ -2343,7 +2344,7 @@ return function (ModuleRegistry $registry): void {
         $u = new Universe($app->db);
         $rowsHtml = '';
         foreach ($rows as $row) {
-            $userId = (int)($row['user_id'] ?? 0);
+            $userPublicId = (string)($row['user_public_id'] ?? '');
             $name = htmlspecialchars((string)($row['main_character_name'] ?? $row['character_name'] ?? 'Unknown'));
             $auditLoaded = ((int)($row['audit_loaded'] ?? 0) === 1) ? 'Loaded' : 'Missing';
             $systemId = (int)($row['location_system_id'] ?? 0);
@@ -2376,7 +2377,7 @@ return function (ModuleRegistry $registry): void {
             }
             $missingText = $missing ? htmlspecialchars(implode(', ', $missing)) : '—';
 
-            $detailLink = $userId > 0 ? "<a class='btn btn-sm btn-outline-light' href='/admin/corptools/members/{$userId}'>View</a>" : '';
+            $detailLink = $userPublicId !== '' ? "<a class='btn btn-sm btn-outline-light' href='/admin/corptools/members/" . htmlspecialchars($userPublicId) . "'>View</a>" : '';
 
             $rowsHtml .= "<tr>
                 <td>
@@ -2600,20 +2601,21 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/admin/corptools/members');
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/admin/corptools/members/{userId}', function (Request $req) use ($app, $renderPage): Response {
-        $userId = (int)($req->params['userId'] ?? 0);
-        if ($userId <= 0) {
+    $registry->route('GET', '/admin/corptools/members/{userPublicId}', function (Request $req) use ($app, $renderPage): Response {
+        $userPublicId = (string)($req->params['userPublicId'] ?? '');
+        if ($userPublicId === '') {
             return Response::redirect('/admin/corptools/members');
         }
 
         $user = $app->db->one(
-            "SELECT id, character_id, character_name, updated_at
-             FROM eve_users WHERE id=? LIMIT 1",
-            [$userId]
+            "SELECT id, public_id, character_id, character_name, updated_at
+             FROM eve_users WHERE public_id=? LIMIT 1",
+            [$userPublicId]
         );
         if (!$user) {
             return Response::redirect('/admin/corptools/members');
         }
+        $userId = (int)($user['id'] ?? 0);
 
         $summary = $app->db->one(
             "SELECT corp_id, alliance_id, highest_sp, last_login_at, corp_joined_at
@@ -2655,10 +2657,10 @@ return function (ModuleRegistry $registry): void {
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>Member: {$mainName}</h1>
-                      <div class='text-muted'>User ID {$userId} · Main character ID {$mainId}</div>
+                      <div class='text-muted'>Member ID " . htmlspecialchars((string)($user['public_id'] ?? '')) . " · Main character {$mainName}</div>
                     </div>
                     <div class='text-end'>
-                      <a class='btn btn-outline-light' href='/admin/corptools/members/{$userId}/characters'>View Characters</a>
+                      <a class='btn btn-outline-light' href='/admin/corptools/members/" . htmlspecialchars($userPublicId) . "/characters'>View Characters</a>
                       <a class='btn btn-primary ms-2' href='/me/linking?profile=member_audit'>Request Full Audit Authorization</a>
                     </div>
                   </div>
@@ -2679,19 +2681,20 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Member Detail', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/admin/corptools/members/{userId}/characters', function (Request $req) use ($app, $renderPage): Response {
-        $userId = (int)($req->params['userId'] ?? 0);
-        if ($userId <= 0) {
+    $registry->route('GET', '/admin/corptools/members/{userPublicId}/characters', function (Request $req) use ($app, $renderPage): Response {
+        $userPublicId = (string)($req->params['userPublicId'] ?? '');
+        if ($userPublicId === '') {
             return Response::redirect('/admin/corptools/members');
         }
 
         $user = $app->db->one(
-            "SELECT id, character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
-            [$userId]
+            "SELECT id, public_id, character_id, character_name FROM eve_users WHERE public_id=? LIMIT 1",
+            [$userPublicId]
         );
         if (!$user) {
             return Response::redirect('/admin/corptools/members');
         }
+        $userId = (int)($user['id'] ?? 0);
 
         $characters = [];
         $mainId = (int)($user['character_id'] ?? 0);
@@ -2784,7 +2787,7 @@ return function (ModuleRegistry $registry): void {
                       <div class='text-muted'>Member audit tokens for main + linked characters.</div>
                     </div>
                     <div class='text-end'>
-                      <a class='btn btn-outline-light' href='/admin/corptools/members/{$userId}'>Back to Member</a>
+                      <a class='btn btn-outline-light' href='/admin/corptools/members/" . htmlspecialchars((string)($user['public_id'] ?? $userPublicId)) . "'>Back to Member</a>
                       <a class='btn btn-primary ms-2' href='/me/linking?profile=member_audit'>Request Full Audit Authorization</a>
                     </div>
                   </div>
@@ -3525,12 +3528,16 @@ return function (ModuleRegistry $registry): void {
         $search = trim((string)($req->query['q'] ?? ''));
         $corpInput = trim((string)($req->query['corp_id'] ?? ''));
         $allianceInput = trim((string)($req->query['alliance_id'] ?? ''));
-        $groupInput = trim((string)($req->query['group_id'] ?? ''));
+        $groupInput = trim((string)($req->query['group_slug'] ?? ''));
         $statusFilter = trim((string)($req->query['status'] ?? ''));
 
         $corpId = ctype_digit($corpInput) ? (int)$corpInput : 0;
         $allianceId = ctype_digit($allianceInput) ? (int)$allianceInput : 0;
-        $groupId = ctype_digit($groupInput) ? (int)$groupInput : 0;
+        $groupId = 0;
+        if ($groupInput !== '') {
+            $groupRow = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupInput]);
+            $groupId = (int)($groupRow['id'] ?? 0);
+        }
 
         $params = [];
         $where = [];
@@ -3572,6 +3579,7 @@ return function (ModuleRegistry $registry): void {
 
         $rows = $app->db->all(
             "SELECT u.id AS user_id,
+                    u.public_id AS user_public_id,
                     u.character_id AS main_character_id,
                     u.character_name AS main_character_name,
                     ms.corp_id,
@@ -3692,19 +3700,20 @@ return function (ModuleRegistry $registry): void {
                 'q' => $search,
                 'corp_id' => $corpInput,
                 'alliance_id' => $allianceInput,
-                'group_id' => $groupInput,
+                'group_slug' => $groupInput,
                 'status' => $statusFilter,
             ], fn($val) => $val !== '' && $val !== null)
         );
 
-        $groupRows = $app->db->all("SELECT id, name FROM groups ORDER BY name ASC");
+        $groupRows = $app->db->all("SELECT id, slug, name FROM groups ORDER BY name ASC");
         $universe = $universeShared;
         $groupOptions = "<option value=''>All groups</option>";
         foreach ($groupRows as $group) {
             $gid = (int)($group['id'] ?? 0);
+            $gslug = (string)($group['slug'] ?? '');
             $gname = htmlspecialchars((string)($group['name'] ?? 'Group'));
-            $selected = $gid === $groupId ? 'selected' : '';
-            $groupOptions .= "<option value='{$gid}' {$selected}>{$gname}</option>";
+            $selected = $gslug === $groupInput ? 'selected' : '';
+            $groupOptions .= "<option value='" . htmlspecialchars($gslug) . "' {$selected}>{$gname}</option>";
         }
 
         $statusOptions = [
@@ -3746,6 +3755,7 @@ return function (ModuleRegistry $registry): void {
         foreach ($rows as $row) {
             $userId = (int)($row['user_id'] ?? 0);
             if ($userId <= 0) continue;
+            $userPublicId = (string)($row['user_public_id'] ?? '');
             $mainName = htmlspecialchars((string)($row['main_character_name'] ?? 'Unknown'));
             $corpId = (int)($row['corp_id'] ?? 0);
             $allianceId = (int)($row['alliance_id'] ?? 0);
@@ -3806,7 +3816,7 @@ return function (ModuleRegistry $registry): void {
                 $detailRows = "<tr><td colspan='7' class='text-muted'>No linked characters.</td></tr>";
             }
             $compliance = $totalCount > 0 ? "{$compliantCount}/{$totalCount}" : '0/0';
-            $collapseId = "member-{$userId}";
+            $collapseId = "member-" . $userPublicId;
 
             $rowsHtml .= "<div class='card card-body mb-3'>
                 <div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
@@ -3817,8 +3827,8 @@ return function (ModuleRegistry $registry): void {
                   <div class='text-end'>
                     <div class='text-muted small'>Compliance {$compliance}</div>
                     <div class='form-check'>
-                      <input class='form-check-input' type='checkbox' name='user_ids[]' value='{$userId}' id='member-select-{$userId}'>
-                      <label class='form-check-label small' for='member-select-{$userId}'>Select</label>
+                      <input class='form-check-input' type='checkbox' name='user_public_ids[]' value='" . htmlspecialchars($userPublicId) . "' id='member-select-{$collapseId}'>
+                      <label class='form-check-label small' for='member-select-{$collapseId}'>Select</label>
                     </div>
                     <button class='btn btn-sm btn-outline-light mt-2' type='button' data-bs-toggle='collapse' data-bs-target='#{$collapseId}'>Details</button>
                   </div>
@@ -3841,7 +3851,7 @@ return function (ModuleRegistry $registry): void {
             'q' => $search,
             'corp_id' => $corpInput,
             'alliance_id' => $allianceInput,
-            'group_id' => $groupInput,
+            'group_slug' => $groupInput,
             'status' => $statusFilter,
         ], fn($val) => $val !== '' && $val !== null));
 
@@ -3895,7 +3905,7 @@ return function (ModuleRegistry $registry): void {
                       </div>
                       <div class='col-md-2'>
                         <label class='form-label'>Group</label>
-                        <select class='form-select' name='group_id'>{$groupOptions}</select>
+                        <select class='form-select' name='group_slug'>{$groupOptions}</select>
                       </div>
                       <div class='col-md-2'>
                         <label class='form-label'>Status</label>
@@ -3922,9 +3932,18 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('POST', '/admin/corptools/member-audit/action', function (Request $req) use ($app, $auditCollectors, $bucketTokenData, $getEffectiveScopesForUser, $scopeAudit, $updateMemberSummary): Response {
         $action = (string)($req->post['action'] ?? '');
-        $selected = $req->post['user_ids'] ?? [];
+        $selected = $req->post['user_public_ids'] ?? [];
         if (!is_array($selected)) $selected = [];
-        $userIds = array_values(array_filter(array_map('intval', $selected), fn(int $id) => $id > 0));
+        $publicIds = array_values(array_filter(array_map('strval', $selected), fn(string $id) => $id !== ''));
+        $userIds = [];
+        if ($publicIds) {
+            $placeholders = implode(',', array_fill(0, count($publicIds), '?'));
+            $rows = $app->db->all(
+                "SELECT id FROM eve_users WHERE public_id IN ({$placeholders})",
+                $publicIds
+            );
+            $userIds = array_values(array_filter(array_map(fn($row) => (int)($row['id'] ?? 0), $rows)));
+        }
 
         if (empty($userIds)) {
             $_SESSION['member_audit_links'] = [];
@@ -3944,7 +3963,7 @@ return function (ModuleRegistry $registry): void {
                     [$userId, $tokenHash, $prefix]
                 );
                 $userRow = $app->db->one("SELECT character_name FROM eve_users WHERE id=? LIMIT 1", [$userId]);
-                $userName = (string)($userRow['character_name'] ?? "User {$userId}");
+                $userName = (string)($userRow['character_name'] ?? 'Member');
                 $links[] = [
                     'user' => $userName,
                     'url' => "/corptools/reauth?token={$token}",
@@ -4019,12 +4038,16 @@ return function (ModuleRegistry $registry): void {
         $search = trim((string)($req->query['q'] ?? ''));
         $corpInput = trim((string)($req->query['corp_id'] ?? ''));
         $allianceInput = trim((string)($req->query['alliance_id'] ?? ''));
-        $groupInput = trim((string)($req->query['group_id'] ?? ''));
+        $groupInput = trim((string)($req->query['group_slug'] ?? ''));
         $statusFilter = trim((string)($req->query['status'] ?? ''));
 
         $corpId = ctype_digit($corpInput) ? (int)$corpInput : 0;
         $allianceId = ctype_digit($allianceInput) ? (int)$allianceInput : 0;
-        $groupId = ctype_digit($groupInput) ? (int)$groupInput : 0;
+        $groupId = 0;
+        if ($groupInput !== '') {
+            $groupRow = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupInput]);
+            $groupId = (int)($groupRow['id'] ?? 0);
+        }
 
         $params = [];
         $where = [];
@@ -4053,7 +4076,7 @@ return function (ModuleRegistry $registry): void {
 
         $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
         $rows = $app->db->all(
-            "SELECT u.id AS user_id, u.character_name AS main_character_name, ms.corp_id, ms.alliance_id, ms.highest_sp
+            "SELECT u.public_id AS user_public_id, u.character_name AS main_character_name, ms.corp_id, ms.alliance_id, ms.highest_sp
              FROM eve_users u
              LEFT JOIN module_corptools_member_summary ms ON ms.user_id=u.id
              {$whereSql}
@@ -4061,10 +4084,10 @@ return function (ModuleRegistry $registry): void {
             $params
         );
 
-        $lines = ["user_id,main_character,corp_id,alliance_id,highest_sp"];
+        $lines = ["member_id,main_character,corp_id,alliance_id,highest_sp"];
         foreach ($rows as $row) {
             $lines[] = implode(',', [
-                (int)($row['user_id'] ?? 0),
+                (string)($row['user_public_id'] ?? ''),
                 '"' . str_replace('"', '""', (string)($row['main_character_name'] ?? '')) . '"',
                 (int)($row['corp_id'] ?? 0),
                 (int)($row['alliance_id'] ?? 0),
@@ -4718,25 +4741,26 @@ return function (ModuleRegistry $registry): void {
             }
 
             $policies = $scopePolicy->listPolicies();
-            $policyId = (int)($_GET['policy_id'] ?? 0);
+            $policyPublicId = trim((string)($_GET['policy_id'] ?? ''));
             $selectedPolicy = null;
             foreach ($policies as $policy) {
-                if ((int)($policy['id'] ?? 0) === $policyId) {
+                if ($policyPublicId !== '' && (string)($policy['public_id'] ?? '') === $policyPublicId) {
                     $selectedPolicy = $policy;
                     break;
                 }
             }
             if (!$selectedPolicy && !empty($policies)) {
                 $selectedPolicy = $policies[0];
-                $policyId = (int)($selectedPolicy['id'] ?? 0);
+                $policyPublicId = (string)($selectedPolicy['public_id'] ?? '');
             }
+            $policyId = (int)($selectedPolicy['id'] ?? 0);
 
             $required = $selectedPolicy ? $scopePolicy->normalizeScopes($selectedPolicy['required_scopes_json'] ?? null) : [];
             $optional = $selectedPolicy ? $scopePolicy->normalizeScopes($selectedPolicy['optional_scopes_json'] ?? null) : [];
 
             $policyRows = '';
             foreach ($policies as $policy) {
-                $pid = (int)($policy['id'] ?? 0);
+                $pid = (string)($policy['public_id'] ?? '');
                 $name = htmlspecialchars((string)($policy['name'] ?? 'Policy'));
                 $applies = htmlspecialchars((string)($policy['applies_to'] ?? 'all_users'));
                 $active = !empty($policy['is_active']) ? "<span class='badge bg-success'>Active</span>" : "<span class='badge bg-secondary'>Inactive</span>";
@@ -4744,26 +4768,26 @@ return function (ModuleRegistry $registry): void {
                     <td>{$name}</td>
                     <td>{$applies}</td>
                     <td>{$active}</td>
-                    <td class='text-end'><a class='btn btn-sm btn-outline-light' href='/admin/corptools?tab=scope_policy&policy_id={$pid}'>Edit</a></td>
+                    <td class='text-end'><a class='btn btn-sm btn-outline-light' href='/admin/corptools?tab=scope_policy&policy_id=" . htmlspecialchars($pid) . "'>Edit</a></td>
                   </tr>";
             }
             if ($policyRows === '') {
                 $policyRows = "<tr><td colspan='4' class='text-muted'>No policies defined yet.</td></tr>";
             }
 
-            $groupRows = $app->db->all("SELECT id, name FROM groups ORDER BY name ASC");
+            $groupRows = $app->db->all("SELECT slug, name FROM groups ORDER BY name ASC");
             $groupOptions = "<option value=''>Select group</option>";
             foreach ($groupRows as $group) {
-                $gid = (int)($group['id'] ?? 0);
+                $gslug = (string)($group['slug'] ?? '');
                 $gname = htmlspecialchars((string)($group['name'] ?? 'Group'));
-                if ($gid <= 0) continue;
-                $groupOptions .= "<option value='{$gid}'>{$gname} (ID {$gid})</option>";
+                if ($gslug === '') continue;
+                $groupOptions .= "<option value='" . htmlspecialchars($gslug) . "'>{$gname}</option>";
             }
 
             $overrideRows = '';
             if ($policyId > 0) {
                 $overrides = $app->db->all(
-                    "SELECT id, target_type, target_id, required_scopes_json, optional_scopes_json
+                    "SELECT id, public_id, target_type, target_id, required_scopes_json, optional_scopes_json
                      FROM corp_scope_policy_overrides
                      WHERE policy_id=?
                      ORDER BY updated_at DESC, id DESC",
@@ -4771,18 +4795,20 @@ return function (ModuleRegistry $registry): void {
                 );
 
                 foreach ($overrides as $override) {
-                    $oid = (int)($override['id'] ?? 0);
+                    $oid = (string)($override['public_id'] ?? '');
                     $type = (string)($override['target_type'] ?? '');
                     $targetId = (int)($override['target_id'] ?? 0);
                     $targetLabel = '';
                     if ($type === 'user') {
-                        $userRow = $app->db->one("SELECT character_name FROM eve_users WHERE id=? LIMIT 1", [$targetId]);
+                        $userRow = $app->db->one("SELECT character_name, public_id FROM eve_users WHERE id=? LIMIT 1", [$targetId]);
                         $userName = (string)($userRow['character_name'] ?? 'User');
-                        $targetLabel = htmlspecialchars($userName) . " (User #{$targetId})";
+                        $userPublicId = (string)($userRow['public_id'] ?? '');
+                        $targetLabel = htmlspecialchars($userName) . ($userPublicId !== '' ? " (" . htmlspecialchars($userPublicId) . ")" : '');
                     } else {
-                        $groupRow = $app->db->one("SELECT name FROM groups WHERE id=? LIMIT 1", [$targetId]);
+                        $groupRow = $app->db->one("SELECT name, slug FROM groups WHERE id=? LIMIT 1", [$targetId]);
                         $groupName = (string)($groupRow['name'] ?? 'Group');
-                        $targetLabel = htmlspecialchars($groupName) . " (Group #{$targetId})";
+                        $groupSlug = (string)($groupRow['slug'] ?? '');
+                        $targetLabel = htmlspecialchars($groupName) . ($groupSlug !== '' ? " (" . htmlspecialchars($groupSlug) . ")" : '');
                     }
                     $requiredLabel = htmlspecialchars(implode(', ', $scopePolicy->normalizeScopes($override['required_scopes_json'] ?? null)));
                     $optionalLabel = htmlspecialchars(implode(', ', $scopePolicy->normalizeScopes($override['optional_scopes_json'] ?? null)));
@@ -4795,8 +4821,8 @@ return function (ModuleRegistry $registry): void {
                         <td>{$optionalLabel}</td>
                         <td class='text-end'>
                           <form method='post' action='/admin/corptools/scope-policy/override/delete' onsubmit=\"return confirm('Delete this override?');\">
-                            <input type='hidden' name='override_id' value='{$oid}'>
-                            <input type='hidden' name='policy_id' value='{$policyId}'>
+                            <input type='hidden' name='override_public_id' value='" . htmlspecialchars($oid) . "'>
+                            <input type='hidden' name='policy_id' value='" . htmlspecialchars((string)$policyPublicId) . "'>
                             <button class='btn btn-sm btn-outline-danger'>Delete</button>
                           </form>
                         </td>
@@ -4855,7 +4881,7 @@ return function (ModuleRegistry $registry): void {
                 </div>
               </div>
               <form method='post' action='/admin/corptools/scope-policy/save' class='card card-body mt-3'>
-                <input type='hidden' name='policy_id' value='{$policyId}'>
+                <input type='hidden' name='policy_id' value='" . htmlspecialchars((string)$policyPublicId) . "'>
                 <div class='row g-2'>
                   <div class='col-md-6'>
                     <label class='form-label'>Policy name</label>
@@ -4901,7 +4927,7 @@ return function (ModuleRegistry $registry): void {
                 <div class='fw-semibold mb-2'>Policy overrides</div>
                 <div class='text-muted small'>Overrides add scopes for specific users or groups without altering the base policy.</div>
                 <form method='post' action='/admin/corptools/scope-policy/override' class='row g-2 mt-2'>
-                  <input type='hidden' name='policy_id' value='{$policyId}'>
+                  <input type='hidden' name='policy_id' value='" . htmlspecialchars((string)$policyPublicId) . "'>
                   <div class='col-md-3'>
                     <label class='form-label'>Target type</label>
                     <select class='form-select' name='target_type'>
@@ -4910,13 +4936,13 @@ return function (ModuleRegistry $registry): void {
                     </select>
                   </div>
                   <div class='col-md-4'>
-                    <label class='form-label'>User ID</label>
-                    <input class='form-control' name='target_user_id' placeholder='User ID'>
+                    <label class='form-label'>Member ID</label>
+                    <input class='form-control' name='target_user_public_id' placeholder='Member ID'>
                     <div class='form-text'>Use for per-user overrides.</div>
                   </div>
                   <div class='col-md-5'>
                     <label class='form-label'>Group</label>
-                    <select class='form-select' name='target_group_id'>{$groupOptions}</select>
+                    <select class='form-select' name='target_group_slug'>{$groupOptions}</select>
                     <div class='form-text'>Use for HR/director groups.</div>
                   </div>
                   <div class='col-12'>
@@ -5175,7 +5201,12 @@ return function (ModuleRegistry $registry): void {
     }, ['right' => 'corptools.admin']);
 
     $registry->route('POST', '/admin/corptools/scope-policy/save', function (Request $req) use ($app, $scopePolicy): Response {
-        $policyId = (int)($req->post['policy_id'] ?? 0);
+        $policyPublicId = trim((string)($req->post['policy_id'] ?? ''));
+        $policyId = 0;
+        if ($policyPublicId !== '') {
+            $policyRow = $app->db->one("SELECT id FROM corp_scope_policies WHERE public_id=? LIMIT 1", [$policyPublicId]);
+            $policyId = (int)($policyRow['id'] ?? 0);
+        }
         $name = trim((string)($req->post['name'] ?? ''));
         $description = trim((string)($req->post['description'] ?? ''));
         $appliesTo = (string)($req->post['applies_to'] ?? 'all_users');
@@ -5203,11 +5234,12 @@ return function (ModuleRegistry $registry): void {
                 [$name, $description, $appliesTo, $payloadRequired, $payloadOptional, $isActive, $policyId]
             );
         } else {
+            $policyPublicId = Identifiers::generatePublicId($app->db, 'corp_scope_policies');
             $app->db->run(
                 "INSERT INTO corp_scope_policies
-                 (name, description, applies_to, required_scopes_json, optional_scopes_json, is_active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())",
-                [$name, $description, $appliesTo, $payloadRequired, $payloadOptional, $isActive]
+                 (public_id, name, description, applies_to, required_scopes_json, optional_scopes_json, is_active, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+                [$policyPublicId, $name, $description, $appliesTo, $payloadRequired, $payloadOptional, $isActive]
             );
             $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
             $policyId = (int)($row['id'] ?? 0);
@@ -5221,14 +5253,20 @@ return function (ModuleRegistry $registry): void {
         }
 
         $_SESSION['corptools_scope_flash'] = ['type' => 'success', 'message' => 'Scope policy saved.'];
-        return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . $policyId);
+        return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . rawurlencode($policyPublicId));
     }, ['right' => 'corptools.admin']);
 
     $registry->route('POST', '/admin/corptools/scope-policy/override', function (Request $req) use ($app): Response {
-        $policyId = (int)($req->post['policy_id'] ?? 0);
+        $policyPublicId = trim((string)($req->post['policy_id'] ?? ''));
+        $policyRow = $policyPublicId !== '' ? $app->db->one("SELECT id FROM corp_scope_policies WHERE public_id=? LIMIT 1", [$policyPublicId]) : null;
+        $policyId = (int)($policyRow['id'] ?? 0);
         $targetType = (string)($req->post['target_type'] ?? 'user');
-        $targetUserId = (int)($req->post['target_user_id'] ?? 0);
-        $targetGroupId = (int)($req->post['target_group_id'] ?? 0);
+        $targetUserPublicId = trim((string)($req->post['target_user_public_id'] ?? ''));
+        $targetGroupSlug = trim((string)($req->post['target_group_slug'] ?? ''));
+        $targetUserRow = $targetUserPublicId !== '' ? $app->db->one("SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$targetUserPublicId]) : null;
+        $targetGroupRow = $targetGroupSlug !== '' ? $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$targetGroupSlug]) : null;
+        $targetUserId = (int)($targetUserRow['id'] ?? 0);
+        $targetGroupId = (int)($targetGroupRow['id'] ?? 0);
         $required = $req->post['override_required_scopes'] ?? [];
         $optional = $req->post['override_optional_scopes'] ?? [];
         if (!is_array($required)) $required = [];
@@ -5244,9 +5282,10 @@ return function (ModuleRegistry $registry): void {
 
         $app->db->run(
             "INSERT INTO corp_scope_policy_overrides
-             (policy_id, target_type, target_id, required_scopes_json, optional_scopes_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
+             (public_id, policy_id, target_type, target_id, required_scopes_json, optional_scopes_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())",
             [
+                Identifiers::generatePublicId($app->db, 'corp_scope_policy_overrides'),
                 $policyId,
                 $targetType === 'group' ? 'group' : 'user',
                 $targetId,
@@ -5256,17 +5295,17 @@ return function (ModuleRegistry $registry): void {
         );
 
         $_SESSION['corptools_scope_flash'] = ['type' => 'success', 'message' => 'Scope override added.'];
-        return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . $policyId);
+        return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . rawurlencode($policyPublicId));
     }, ['right' => 'corptools.admin']);
 
     $registry->route('POST', '/admin/corptools/scope-policy/override/delete', function (Request $req) use ($app): Response {
-        $overrideId = (int)($req->post['override_id'] ?? 0);
-        $policyId = (int)($req->post['policy_id'] ?? 0);
-        if ($overrideId > 0) {
-            $app->db->run("DELETE FROM corp_scope_policy_overrides WHERE id=?", [$overrideId]);
+        $overridePublicId = trim((string)($req->post['override_public_id'] ?? ''));
+        $policyPublicId = trim((string)($req->post['policy_id'] ?? ''));
+        if ($overridePublicId !== '') {
+            $app->db->run("DELETE FROM corp_scope_policy_overrides WHERE public_id=?", [$overridePublicId]);
         }
         $_SESSION['corptools_scope_flash'] = ['type' => 'success', 'message' => 'Scope override removed.'];
-        return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . $policyId);
+        return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . rawurlencode($policyPublicId));
     }, ['right' => 'corptools.admin']);
 
     $registry->route('POST', '/admin/corptools/rules', function (Request $req) use ($app): Response {

@@ -51,9 +51,11 @@ return function (ModuleRegistry $registry): void {
         $offset = max(0, $offset);
 
         $rows = $app->db->all(
-            "SELECT id, created_at, user_id, character_id, ip, method, path, status, decision, reason, context_json
-             FROM access_log
-             ORDER BY id DESC
+            "SELECT l.id, l.created_at, l.user_id, l.character_id, l.ip, l.method, l.path, l.status, l.decision, l.reason, l.context_json,
+                    u.public_id AS user_public_id, u.character_name AS user_character_name
+             FROM access_log l
+             LEFT JOIN eve_users u ON u.id = l.user_id
+             ORDER BY l.id DESC
              LIMIT {$limit} OFFSET {$offset}"
         );
 
@@ -65,8 +67,10 @@ return function (ModuleRegistry $registry): void {
             $status = htmlspecialchars((string)($row['status'] ?? ''));
             $decision = htmlspecialchars((string)($row['decision'] ?? ''));
             $reason = htmlspecialchars((string)($row['reason'] ?? ''));
-            $userId = htmlspecialchars((string)($row['user_id'] ?? ''));
-            $characterId = htmlspecialchars((string)($row['character_id'] ?? ''));
+            $userId = htmlspecialchars((string)($row['user_public_id'] ?? ''));
+            $characterName = htmlspecialchars((string)($row['user_character_name'] ?? ''));
+            $userLabel = $userId !== '' ? $userId : '-';
+            $characterLabel = $characterName !== '' ? $characterName : '-';
             $ip = htmlspecialchars((string)($row['ip'] ?? ''));
             $context = '';
 
@@ -82,8 +86,8 @@ return function (ModuleRegistry $registry): void {
                 . '<td>' . $status . '</td>'
                 . '<td>' . $decision . '</td>'
                 . '<td>' . $reason . '</td>'
-                . '<td>' . $userId . '</td>'
-                . '<td>' . $characterId . '</td>'
+                . '<td>' . $userLabel . '</td>'
+                . '<td>' . $characterLabel . '</td>'
                 . '<td>' . $ip . '</td>'
                 . '<td>' . $context . '</td>'
                 . '</tr>';
@@ -124,8 +128,8 @@ return function (ModuleRegistry $registry): void {
             . '<th>Status</th>'
             . '<th>Decision</th>'
             . '<th>Reason</th>'
-            . '<th>User ID</th>'
-            . '<th>Character ID</th>'
+            . '<th>Member</th>'
+            . '<th>Character</th>'
             . '<th>IP</th>'
             . '<th>Context</th>'
             . '</tr></thead>'
