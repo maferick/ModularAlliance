@@ -808,6 +808,10 @@ return function (ModuleRegistry $registry): void {
 
         $dispatcher = new AuditDispatcher($app->db);
         $universe = new Universe($app->db);
+        $collectors = is_callable($auditCollectors) ? $auditCollectors() : [];
+        if (empty($collectors)) {
+            return ['status' => 'failed', 'message' => 'Audit collectors unavailable'];
+        }
 
         $batchSize = 50;
         $offset = 0;
@@ -959,7 +963,7 @@ return function (ModuleRegistry $registry): void {
                             $characterId,
                             $characterName,
                             $token,
-                            $auditCollectors(),
+                            $collectors,
                             $enabledKeys,
                             $baseSummary,
                             $requiredScopes,
