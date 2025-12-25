@@ -1,36 +1,56 @@
 # Secure Groups
 
-Secure Groups is a lightweight, provider-driven rules engine for managing portal group membership. The core module only orchestrates providers (filters) and stores auditable decisions.
+Secure Groups provides AllianceAuth-style secure group automation with smart filters and audit trails.
 
-## What it is
+## Install
 
-* **Groups** define membership targets inside the portal.
-* **Rules** are supplied by providers (CorpTools, CharLink, etc.).
-* **Evaluation** runs on a schedule and stores evidence for every decision.
-* **Apply** enforces evaluated results (unless the group is in dry-run mode).
+1. Apply migrations:
+   ```bash
+   php bin/migrate.php
+   ```
+2. Verify cron jobs appear in **Admin → Cron Manager**.
 
-## Configuring rules
+## Configure groups
 
-1. Go to **Admin → Secure Groups → Groups**.
-2. Create or edit a group.
-3. Add rules using the provider and rule dropdowns.
-4. Configure operators and values (rules are evaluated in logic groups; all rules in a group are ANDed, groups are ORed).
-5. Choose how unknown data is handled:
-   * **Fail**: unknown data fails the rule.
-   * **Ignore**: unknown data is skipped.
-   * **Defer**: membership stays pending.
+1. Go to **Admin → Secure Groups → Groups** and create a group.
+2. Edit group settings (applications, grace period, notifications).
+3. Add rules in **Rules**:
+   * **Alt Corp Filter** (corp ID + optional exemptions)
+   * **Alt Alliance Filter** (alliance ID + optional exemptions)
+   * **User In Group Filter** (existing rights groups)
+   * **Filter Expression** (AND/OR/XOR of two filters)
+4. Test filters against a user from the Rules page.
 
-## Cron enforcement
+## Member experience
 
-Secure Groups uses the shared cron runner (`bin/cron.php`) and registers two jobs:
+Members can see their group statuses at **/securegroups** and view per-rule explanations in each group detail page.
 
-* `securegroups.evaluate` — evaluates rules and stores evidence.
-* `securegroups.apply` — applies changes based on the evaluated results.
+## Cron jobs
 
-Use **Admin → Cron Manager** for job status and a crontab snippet.
+Secure Groups registers these jobs with the shared cron runner:
+
+* `securegroups.evaluate_all` — evaluate all groups/users (hourly).
+* `securegroups.evaluate_group` — evaluate one group on demand.
+* `securegroups.evaluate_user` — evaluate one user on demand.
+
+Run due jobs manually:
+```bash
+php bin/cron.php run --due --verbose
+```
+
+Run a single job:
+```bash
+php bin/cron.php run --job=securegroups.evaluate_all --verbose
+```
+
+Ubuntu crontab example:
+```
+* * * * * cd /var/www/ModularAlliance && /usr/bin/flock -n /tmp/modularalliance-cron.lock /usr/bin/php -d detect_unicode=0 bin/cron.php run --due --verbose >> /var/log/modularalliance/cron.log 2>&1
+```
 
 ## Troubleshooting
 
-* **Missing scopes or token expiry**: providers return `unknown` with evidence. Check CorpTools/CharLink scope status.
-* **Stale data**: run CorpTools audit refresh jobs and re-run `securegroups.evaluate`.
-* **Manual overrides**: sticky overrides are not overwritten by auto-apply. Use the Manual Overrides page to remove them.
+* **Missing corp/alliance data:** Ensure CorpTools summary tables are populated.
+* **Applications not visible:** Confirm `allow_applications` is enabled for the group.
+* **Access not updated:** Verify the secure group created a rights group with slug `securegroup:<key>` and that cron has run.
+* **Check failures:** See **Admin → Secure Groups → Logs** and **Admin → Cron Manager**.
