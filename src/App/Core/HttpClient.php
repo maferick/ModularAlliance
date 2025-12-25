@@ -24,6 +24,17 @@ final class HttpClient
         return [$status, $resp];
     }
 
+    public static function postJson(string $url, array $payload, array $headers = [], int $timeout = 10): array
+    {
+        $body = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($body === false) {
+            throw new \RuntimeException('Failed to encode JSON payload.');
+        }
+        $headers[] = 'Content-Type: application/json';
+        [$status, $resp] = self::request('POST', $url, $headers, $body, $timeout);
+        return [$status, $resp];
+    }
+
     private static function request(string $method, string $url, array $headers, ?string $body, int $timeout): array
     {
         $ch = curl_init($url);
@@ -47,4 +58,3 @@ final class HttpClient
         return [$status, (string)$resp];
     }
 }
-
