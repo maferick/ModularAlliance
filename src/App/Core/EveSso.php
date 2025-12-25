@@ -229,7 +229,21 @@ final class EveSso
             }
         }
 
-        $this->upsertToken($finalUserId, $characterId, $token, $jwtPayload);
+        $bucket = (string)($_SESSION['sso_token_bucket'] ?? 'basic');
+        $orgContext = $_SESSION['sso_org_context'] ?? null;
+        unset($_SESSION['sso_token_bucket'], $_SESSION['sso_org_context']);
+
+        $orgType = '';
+        $orgId = 0;
+        if (is_array($orgContext)) {
+            $orgType = (string)($orgContext['org_type'] ?? '');
+            $orgId = (int)($orgContext['org_id'] ?? 0);
+        }
+
+        $this->upsertToken($finalUserId, $characterId, $token, $jwtPayload, $bucket, [
+            'org_type' => $orgType,
+            'org_id' => $orgId,
+        ]);
         $this->warmIdentity($characterId, (string)$token['access_token']);
 
         $pendingTargets = $_SESSION['charlink_pending_targets'] ?? null;
@@ -277,10 +291,21 @@ final class EveSso
             'character_name' => $characterName,
             'jwt' => $jwtPayload,
             'token' => $token,
+            'bucket' => $bucket,
+            'org_context' => [
+                'org_type' => $orgType,
+                'org_id' => $orgId,
+            ],
         ];
     }
 
-    public function refreshTokenForCharacter(int $userId, int $characterId, string $refreshToken): array
+    public function refreshTokenForCharacter(
+        int $userId,
+        int $characterId,
+        string $refreshToken,
+        string $bucket = 'basic',
+        array $orgContext = []
+    ): array
     {
         if ($refreshToken === '') {
             return ['status' => 'failed', 'message' => 'Missing refresh token.'];
@@ -321,7 +346,12 @@ final class EveSso
         }
 
         $jwtPayload = $this->decodeJwtPayload((string)$token['access_token']);
-        $this->upsertToken($userId, $characterId, $token, $jwtPayload);
+        $orgType = (string)($orgContext['org_type'] ?? '');
+        $orgId = (int)($orgContext['org_id'] ?? 0);
+        $this->upsertToken($userId, $characterId, $token, $jwtPayload, $bucket, [
+            'org_type' => $orgType,
+            'org_id' => $orgId,
+        ]);
 
         $expiresAt = null;
         if (!empty($jwtPayload['exp']) && is_numeric($jwtPayload['exp'])) {
@@ -418,7 +448,14 @@ final class EveSso
         return (int)($row['id'] ?? 0);
     }
 
-    private function upsertToken(int $userId, int $characterId, array $token, array $jwtPayload): void
+    private function upsertToken(
+        int $userId,
+        int $characterId,
+        array $token,
+        array $jwtPayload,
+        string $bucket = 'basic',
+        array $orgContext = []
+    ): void
     {
         $expiresAt = null;
         if (!empty($jwtPayload['exp']) && is_numeric($jwtPayload['exp'])) {
@@ -430,12 +467,43 @@ final class EveSso
             $scopes = [];
         }
 
+        if ($bucket === 'basic') {
+            $this->db->run(
+                "REPLACE INTO eve_tokens (user_id, character_id, access_token, refresh_token, expires_at, scopes_json, token_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    $userId,
+                    $characterId,
+                    (string)$token['access_token'],
+                    (string)($token['refresh_token'] ?? ''),
+                    $expiresAt,
+                    json_encode($scopes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                    json_encode($token),
+                ]
+            );
+            return;
+        }
+
+        $orgType = (string)($orgContext['org_type'] ?? '');
+        $orgId = (int)($orgContext['org_id'] ?? 0);
         $this->db->run(
-            "REPLACE INTO eve_tokens (user_id, character_id, access_token, refresh_token, expires_at, scopes_json, token_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO eve_token_buckets
+             (user_id, character_id, bucket, org_type, org_id, access_token, refresh_token, expires_at, scopes_json, token_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+             ON DUPLICATE KEY UPDATE
+               user_id=VALUES(user_id),
+               access_token=VALUES(access_token),
+               refresh_token=VALUES(refresh_token),
+               expires_at=VALUES(expires_at),
+               scopes_json=VALUES(scopes_json),
+               token_json=VALUES(token_json),
+               updated_at=NOW()",
             [
                 $userId,
                 $characterId,
+                $bucket,
+                $orgType,
+                $orgId,
                 (string)$token['access_token'],
                 (string)($token['refresh_token'] ?? ''),
                 $expiresAt,

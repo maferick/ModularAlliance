@@ -10,7 +10,8 @@ final class Request
         public readonly string $path,
         public readonly array $query,
         public readonly array $post,
-        public readonly array $server
+        public readonly array $server,
+        public readonly array $params = []
     ) {}
 
     public static function fromGlobals(): self
@@ -28,6 +29,6 @@ final class Request
             $path = '/' . ltrim($_GET['route'], '/');
         }
 
-        return new self($method, $path, $_GET, $_POST, $_SERVER);
+        return new self($method, $path, $_GET, $_POST, $_SERVER, []);
     }
 }

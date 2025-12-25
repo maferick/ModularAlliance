@@ -99,7 +99,7 @@ return function (ModuleRegistry $registry): void {
     $registry->menu([
         'slug' => 'corptools.admin_tools',
         'title' => 'Admin / HR Tools',
-        'url' => '/corptools/members',
+        'url' => '/admin/corptools/members',
         'sort_order' => 50,
         'area' => 'left',
         'right_slug' => 'corptools.director',
@@ -107,8 +107,17 @@ return function (ModuleRegistry $registry): void {
     $registry->menu([
         'slug' => 'corptools.members',
         'title' => 'Members',
-        'url' => '/corptools/members',
+        'url' => '/admin/corptools/members',
         'sort_order' => 51,
+        'area' => 'left',
+        'parent_slug' => 'corptools.admin_tools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'corptools.org_linking',
+        'title' => 'Org Token Linking',
+        'url' => '/admin/corptools/linking',
+        'sort_order' => 52,
         'area' => 'left',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
@@ -117,7 +126,7 @@ return function (ModuleRegistry $registry): void {
         'slug' => 'corptools.corp_audit',
         'title' => 'Corp Audit',
         'url' => '/corptools/corp-audit',
-        'sort_order' => 52,
+        'sort_order' => 53,
         'area' => 'left',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
@@ -126,7 +135,7 @@ return function (ModuleRegistry $registry): void {
         'slug' => 'corptools.invoices',
         'title' => 'Invoices',
         'url' => '/corptools/invoices',
-        'sort_order' => 53,
+        'sort_order' => 54,
         'area' => 'left',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
@@ -191,6 +200,14 @@ return function (ModuleRegistry $registry): void {
         'area' => 'admin_top',
         'right_slug' => 'corptools.cron.manage',
     ]);
+    $registry->menu([
+        'slug' => 'admin.system.cron',
+        'title' => 'Cron Job Manager',
+        'url' => '/admin/system/cron',
+        'sort_order' => 49,
+        'area' => 'admin_top',
+        'right_slug' => 'corptools.cron.manage',
+    ]);
 
     $rights = new Rights($app->db);
     $hasRight = function (string $right) use ($rights): bool {
@@ -237,6 +254,14 @@ return function (ModuleRegistry $registry): void {
         'esi-characters.read_notifications.v1' => 'Notifications feed.',
         'esi-characters.read_standings.v1' => 'Standings.',
         'esi-characters.read_statistics.v1' => 'Character statistics.',
+    ];
+
+    $orgAuditScopeMap = [
+        'wallets' => ['esi-wallet.read_corporation_wallets.v1'],
+        'structures' => ['esi-corporations.read_structures.v1'],
+        'assets' => ['esi-assets.read_corporation_assets.v1'],
+        'sov' => ['esi-sovereignty.read_corporation_campaigns.v1'],
+        'jump_bridges' => ['esi-universe.read_structures.v1'],
     ];
 
     $renderPagination = function (int $total, int $page, int $perPage, string $base, array $query): string {
@@ -320,6 +345,39 @@ return function (ModuleRegistry $registry): void {
         return ['access_token' => $accessToken, 'scopes' => $scopes, 'expired' => $expired, 'expires_at' => $expiresAt];
     };
 
+    $bucketTokenData = function (int $characterId, string $bucket, string $orgType = '', int $orgId = 0) use ($app): array {
+        $row = $app->db->one(
+            "SELECT access_token, scopes_json, expires_at, refresh_token
+             FROM eve_token_buckets
+             WHERE character_id=? AND bucket=? AND org_type=? AND org_id=?
+             LIMIT 1",
+            [$characterId, $bucket, $orgType, $orgId]
+        );
+        $scopes = [];
+        $accessToken = null;
+        $refreshToken = null;
+        $expired = false;
+        $expiresAt = null;
+        if ($row) {
+            $accessToken = (string)($row['access_token'] ?? '');
+            $refreshToken = (string)($row['refresh_token'] ?? '');
+            $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
+            if (!is_array($scopes)) $scopes = [];
+            $expiresAt = $row['expires_at'] ? (string)$row['expires_at'] : null;
+            $expiresAtTs = $expiresAt ? strtotime($expiresAt) : null;
+            if ($expiresAtTs !== null && time() > $expiresAtTs) {
+                $expired = true;
+            }
+        }
+        return [
+            'access_token' => $accessToken,
+            'refresh_token' => $refreshToken,
+            'scopes' => $scopes,
+            'expired' => $expired,
+            'expires_at' => $expiresAt,
+        ];
+    };
+
     $hasScopes = function (array $tokenScopes, array $requiredScopes): bool {
         foreach ($requiredScopes as $scope) {
             if (!in_array($scope, $tokenScopes, true)) return false;
@@ -396,9 +454,11 @@ return function (ModuleRegistry $registry): void {
     $getCorpToken = function (int $corpId, array $requiredScopes) use ($app, $hasScopes, $sso, $scopeAudit): array {
         $rows = $app->db->all(
             "SELECT user_id, character_id, access_token, refresh_token, scopes_json, expires_at
-             FROM eve_tokens"
+             FROM eve_token_buckets
+             WHERE bucket='org_audit' AND org_type='corporation' AND org_id=?
+             ORDER BY updated_at DESC",
+            [$corpId]
         );
-        $u = new Universe($app->db);
 
         foreach ($rows as $row) {
             $characterId = (int)($row['character_id'] ?? 0);
@@ -413,7 +473,13 @@ return function (ModuleRegistry $registry): void {
             $expired = $expiresAt !== null && time() > $expiresAt;
 
             if (($expired || $accessToken === '') && $refreshToken !== '') {
-                $refresh = $sso->refreshTokenForCharacter($userId, $characterId, $refreshToken);
+                $refresh = $sso->refreshTokenForCharacter(
+                    $userId,
+                    $characterId,
+                    $refreshToken,
+                    'org_audit',
+                    ['org_type' => 'corporation', 'org_id' => $corpId]
+                );
                 if (($refresh['status'] ?? '') === 'success') {
                     $accessToken = (string)($refresh['token']['access_token'] ?? '');
                     $refreshToken = (string)($refresh['token']['refresh_token'] ?? $refreshToken);
@@ -422,11 +488,15 @@ return function (ModuleRegistry $registry): void {
                     $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
                         'status' => 'success',
                         'context' => 'corp_token',
+                        'bucket' => 'org_audit',
+                        'org_id' => $corpId,
                     ]);
                 } else {
                     $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
                         'status' => 'failed',
                         'context' => 'corp_token',
+                        'bucket' => 'org_audit',
+                        'org_id' => $corpId,
                         'message' => $refresh['message'] ?? 'Refresh failed.',
                     ]);
                     $expired = true;
@@ -434,12 +504,6 @@ return function (ModuleRegistry $registry): void {
             }
 
             if ($expired || $accessToken === '' || !$hasScopes($scopes, $requiredScopes)) {
-                continue;
-            }
-
-            $profile = $u->characterProfile($characterId);
-            $memberCorpId = (int)($profile['corporation']['id'] ?? 0);
-            if ($memberCorpId !== $corpId) {
                 continue;
             }
 
@@ -644,7 +708,7 @@ return function (ModuleRegistry $registry): void {
         );
     };
 
-    $runInvoiceSync = function (App $app, array $context = []) use ($tokenData, $getAvailableCorpIds, $getCorpToolsSettings, $parseEsiDatetimeToMysql, $scopeAudit): array {
+    $runInvoiceSync = function (App $app, array $context = []) use ($getCorpToken, $getAvailableCorpIds, $getCorpToolsSettings, $parseEsiDatetimeToMysql, $scopeAudit): array {
         $settings = $getCorpToolsSettings();
         if (empty($settings['invoices']['enabled'])) {
             return ['message' => 'Invoices disabled'];
@@ -666,25 +730,10 @@ return function (ModuleRegistry $registry): void {
             $corpId = (int)$corpId;
             if ($corpId <= 0) continue;
 
-            $tokenRow = $app->db->one(
-                "SELECT character_id FROM eve_tokens WHERE JSON_CONTAINS(scopes_json, '" . '"' . "esi-wallet.read_corporation_wallets.v1" . '"' . "') LIMIT 1"
-            );
-            if (!$tokenRow) continue;
-
-            $characterId = (int)($tokenRow['character_id'] ?? 0);
-            if ($characterId <= 0) continue;
-
-            $token = $tokenData($characterId);
+            $token = $getCorpToken($corpId, ['esi-wallet.read_corporation_wallets.v1']);
             if (empty($token['access_token']) || $token['expired']) continue;
-
-            $charData = $cache->getCached(
-                "char:{$characterId}",
-                "GET /latest/characters/{$characterId}/",
-                3600,
-                fn() => $client->get("/latest/characters/{$characterId}/")
-            );
-            $charCorpId = (int)($charData['corporation_id'] ?? 0);
-            if ($charCorpId !== $corpId) continue;
+            $characterId = (int)($token['character_id'] ?? 0);
+            if ($characterId <= 0) continue;
 
             foreach ($walletDivisions as $division) {
                 $division = (int)$division;
@@ -881,8 +930,11 @@ return function (ModuleRegistry $registry): void {
                 $charPlaceholders = implode(',', array_fill(0, count($charIds), '?'));
                 $tokenRows = $app->db->all(
                     "SELECT user_id, character_id, access_token, refresh_token, scopes_json, expires_at
-                     FROM eve_tokens
-                     WHERE character_id IN ({$charPlaceholders})",
+                     FROM eve_token_buckets
+                     WHERE bucket='member_audit'
+                       AND org_type='character'
+                       AND org_id=0
+                       AND character_id IN ({$charPlaceholders})",
                     $charIds
                 );
             }
@@ -931,7 +983,13 @@ return function (ModuleRegistry $registry): void {
                     $needsRefresh = empty($token['access_token']) || ($expiresAtTs !== null && ($now + $refreshThreshold) >= $expiresAtTs);
 
                     if ($needsRefresh && !empty($token['refresh_token'])) {
-                        $refresh = $sso->refreshTokenForCharacter($userId, $characterId, (string)$token['refresh_token']);
+                        $refresh = $sso->refreshTokenForCharacter(
+                            $userId,
+                            $characterId,
+                            (string)$token['refresh_token'],
+                            'member_audit',
+                            ['org_type' => 'character', 'org_id' => 0]
+                        );
                         if (($refresh['status'] ?? '') === 'success') {
                             $metrics['token_refreshed']++;
                             $token['access_token'] = (string)($refresh['token']['access_token'] ?? '');
@@ -1178,6 +1236,72 @@ return function (ModuleRegistry $registry): void {
         return ['message' => 'Corp audit refresh complete'];
     };
 
+    $runTokenRefresh = function (App $app, array $context = []) use ($sso, $scopeAudit): array {
+        $threshold = (int)($context['refresh_threshold'] ?? 600);
+        $now = time();
+        $metrics = [
+            'tokens_checked' => 0,
+            'tokens_refreshed' => 0,
+            'tokens_failed' => 0,
+        ];
+
+        $rows = $app->db->all(
+            "SELECT user_id, character_id, bucket, org_type, org_id, refresh_token, expires_at
+             FROM eve_token_buckets
+             WHERE refresh_token IS NOT NULL AND refresh_token != ''"
+        );
+
+        foreach ($rows as $row) {
+            $metrics['tokens_checked']++;
+            $characterId = (int)($row['character_id'] ?? 0);
+            $userId = (int)($row['user_id'] ?? 0);
+            $bucket = (string)($row['bucket'] ?? '');
+            $orgType = (string)($row['org_type'] ?? '');
+            $orgId = (int)($row['org_id'] ?? 0);
+            $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
+            $refreshToken = (string)($row['refresh_token'] ?? '');
+
+            if ($characterId <= 0 || $userId <= 0 || $bucket === '') {
+                continue;
+            }
+
+            if ($expiresAt !== null && ($now + $threshold) < $expiresAt) {
+                continue;
+            }
+
+            $refresh = $sso->refreshTokenForCharacter(
+                $userId,
+                $characterId,
+                $refreshToken,
+                $bucket,
+                ['org_type' => $orgType, 'org_id' => $orgId]
+            );
+            if (($refresh['status'] ?? '') === 'success') {
+                $metrics['tokens_refreshed']++;
+                $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
+                    'status' => 'success',
+                    'bucket' => $bucket,
+                    'org_type' => $orgType,
+                    'org_id' => $orgId,
+                ]);
+            } else {
+                $metrics['tokens_failed']++;
+                $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
+                    'status' => 'failed',
+                    'bucket' => $bucket,
+                    'org_type' => $orgType,
+                    'org_id' => $orgId,
+                    'message' => (string)($refresh['message'] ?? 'Refresh failed.'),
+                ]);
+            }
+        }
+
+        return [
+            'message' => 'Token refresh complete',
+            'metrics' => $metrics,
+        ];
+    };
+
     $runCleanup = function (App $app, array $context = []) use ($getCorpToolsSettings): array {
         $settings = $getCorpToolsSettings();
         $retentionDays = (int)($settings['general']['retention_days'] ?? 30);
@@ -1218,6 +1342,13 @@ return function (ModuleRegistry $registry): void {
             'description' => 'Pull wallet journal entries for invoice tracking.',
             'schedule' => 900,
             'handler' => $runInvoiceSync,
+        ],
+        [
+            'key' => 'corptools.token_refresh',
+            'name' => 'Token Refresh',
+            'description' => 'Refresh member/org tokens that are nearing expiry.',
+            'schedule' => 300,
+            'handler' => $runTokenRefresh,
         ],
         [
             'key' => 'corptools.audit_refresh',
@@ -1373,7 +1504,7 @@ return function (ModuleRegistry $registry): void {
             ['label' => 'Moons', 'desc' => 'Moon extraction tracking', 'url' => '/corptools/moons', 'enabled' => $moonsEnabled],
             ['label' => 'Indy Dash', 'desc' => 'Industry structures & services', 'url' => '/corptools/industry', 'enabled' => $indyEnabled],
             ['label' => 'Corp Audit', 'desc' => 'Corp wallet/structure snapshots', 'url' => '/corptools/corp-audit', 'enabled' => $corpAuditEnabled],
-            ['label' => 'Members', 'desc' => 'Audit-driven filters', 'url' => '/corptools/members', 'enabled' => $corpAuditEnabled || $auditEnabled],
+            ['label' => 'Members', 'desc' => 'Audit-driven filters', 'url' => '/admin/corptools/members', 'enabled' => $corpAuditEnabled || $auditEnabled],
         ];
 
         $tilesHtml = '';
@@ -1645,7 +1776,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('My Characters', $body), 200);
     }, ['right' => 'corptools.view']);
 
-    $registry->route('POST', '/corptools/characters/audit', function (Request $req) use ($app, $auditCollectors, $getCorpToolsSettings, $tokenData, $getEffectiveScopesForUser, $scopeAudit): Response {
+    $registry->route('POST', '/corptools/characters/audit', function (Request $req) use ($app, $auditCollectors, $getCorpToolsSettings, $bucketTokenData, $getEffectiveScopesForUser, $scopeAudit): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -1699,7 +1830,7 @@ return function (ModuleRegistry $registry): void {
                 continue;
             }
 
-            $token = $tokenData($characterId);
+        $token = $bucketTokenData($characterId, 'member_audit', 'character', 0);
             $tokenMissing = $token['expired'] || empty($token['access_token']);
             if ($tokenMissing) {
                 $missingTokens++;
@@ -2137,14 +2268,14 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Invoices', $body), 200);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools/members', function (Request $req) use ($app, $renderPage, $corpContext, $getCorpToolsSettings, $renderCorpContext, $renderPagination): Response {
+    $registry->route('GET', '/admin/corptools/members', function (Request $req) use ($app, $renderPage, $corpContext, $getCorpToolsSettings, $renderCorpContext, $renderPagination): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
         $context = $corpContext();
         $corp = $context['selected'];
-        $contextPanel = $renderCorpContext($context, '/corptools/members');
+        $contextPanel = $renderCorpContext($context, '/admin/corptools/members');
         if (!$corp) {
             $body = "<h1>Members</h1>{$contextPanel}";
             return Response::html($renderPage('Members', $body), 200);
@@ -2172,11 +2303,14 @@ return function (ModuleRegistry $registry): void {
         $locationSystemInput = (string)($req->query['location_system_id'] ?? '');
         $shipTypeInput = (string)($req->query['ship_type_id'] ?? '');
         $nameInput = (string)($req->query['name'] ?? '');
+        $corpInput = (string)($req->query['corp_id'] ?? '');
+        $allianceInput = (string)($req->query['alliance_id'] ?? '');
 
         $filters = [
             'asset_presence' => (string)($req->query['asset_presence'] ?? ''),
             'name' => $nameInput,
-            'corp_id' => (string)($corp['id'] ?? ''),
+            'corp_id' => $corpInput !== '' ? $resolveEntityId('corporation', $corpInput) : (string)($corp['id'] ?? ''),
+            'alliance_id' => $allianceInput !== '' ? $resolveEntityId('alliance', $allianceInput) : '',
             'asset_value_min' => (string)($req->query['asset_value_min'] ?? $defaultAssetMin),
             'location_region_id' => (string)($req->query['location_region_id'] ?? ''),
             'location_system_id' => $resolveEntityId('system', $locationSystemInput),
@@ -2215,9 +2349,23 @@ return function (ModuleRegistry $registry): void {
             array_merge($query['params'], [$perPage, ($page - 1) * $perPage])
         );
 
+        $healthRows = $app->db->all(
+            "SELECT css.status, COUNT(*) AS total
+             FROM module_corptools_character_scope_status css
+             JOIN module_corptools_member_summary ms ON ms.main_character_id = css.character_id
+             WHERE ms.corp_id=?
+             GROUP BY css.status",
+            [(int)($corp['id'] ?? 0)]
+        );
+        $healthMap = [];
+        foreach ($healthRows as $row) {
+            $healthMap[(string)($row['status'] ?? 'UNKNOWN')] = (int)($row['total'] ?? 0);
+        }
+
         $u = new Universe($app->db);
         $rowsHtml = '';
         foreach ($rows as $row) {
+            $userId = (int)($row['user_id'] ?? 0);
             $name = htmlspecialchars((string)($row['main_character_name'] ?? $row['character_name'] ?? 'Unknown'));
             $auditLoaded = ((int)($row['audit_loaded'] ?? 0) === 1) ? 'Loaded' : 'Missing';
             $systemId = (int)($row['location_system_id'] ?? 0);
@@ -2250,6 +2398,8 @@ return function (ModuleRegistry $registry): void {
             }
             $missingText = $missing ? htmlspecialchars(implode(', ', $missing)) : '—';
 
+            $detailLink = $userId > 0 ? "<a class='btn btn-sm btn-outline-light' href='/admin/corptools/members/{$userId}'>View</a>" : '';
+
             $rowsHtml .= "<tr>
                 <td>
                   <div class='fw-semibold'>{$name}</div>
@@ -2262,19 +2412,22 @@ return function (ModuleRegistry $registry): void {
                 <td>{$lastAudit}</td>
                 <td>{$systemName}</td>
                 <td>{$shipName}</td>
+                <td class='text-end'>{$detailLink}</td>
               </tr>";
         }
         if ($rowsHtml === '') {
-            $rowsHtml = "<tr><td colspan='8' class='text-muted'>No members matched the filters yet.</td></tr>";
+            $rowsHtml = "<tr><td colspan='9' class='text-muted'>No members matched the filters yet.</td></tr>";
         }
 
         $pagination = $renderPagination(
             $totalRows,
             $page,
             $perPage,
-            '/corptools/members',
+            '/admin/corptools/members',
             array_filter([
                 'name' => $nameInput,
+                'corp_id' => $corpInput,
+                'alliance_id' => $allianceInput,
                 'asset_presence' => $filters['asset_presence'],
                 'asset_value_min' => $filters['asset_value_min'],
                 'location_region_id' => $filters['location_region_id'],
@@ -2298,6 +2451,13 @@ return function (ModuleRegistry $registry): void {
             ], fn($val) => $val !== '' && $val !== null)
         );
 
+        $healthCards = "<div class='row g-2 mt-3'>";
+        $healthCards .= "<div class='col-md-3'><div class='card card-body'><div class='text-muted'>Compliant</div><div class='fw-semibold'>" . ($healthMap['COMPLIANT'] ?? 0) . "</div></div></div>";
+        $healthCards .= "<div class='col-md-3'><div class='card card-body'><div class='text-muted'>Missing Scopes</div><div class='fw-semibold'>" . ($healthMap['MISSING_SCOPES'] ?? 0) . "</div></div></div>";
+        $healthCards .= "<div class='col-md-3'><div class='card card-body'><div class='text-muted'>Expired Tokens</div><div class='fw-semibold'>" . ($healthMap['TOKEN_EXPIRED'] ?? 0) . "</div></div></div>";
+        $healthCards .= "<div class='col-md-3'><div class='card card-body'><div class='text-muted'>Refresh Failures</div><div class='fw-semibold'>" . ($healthMap['TOKEN_REFRESH_FAILED'] ?? 0) . "</div></div></div>";
+        $healthCards .= "</div>";
+
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>Members</h1>
@@ -2305,11 +2465,20 @@ return function (ModuleRegistry $registry): void {
                     </div>
                   </div>
                   {$contextPanel}
+                  {$healthCards}
                   <form method='get' class='card card-body mt-3'>
                     <div class='row g-2'>
                       <div class='col-md-3'>
                         <label class='form-label'>Member name</label>
                         <input class='form-control' name='name' value='" . htmlspecialchars($nameInput) . "' placeholder='Search name'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Corporation (name or ID)</label>
+                        <input class='form-control' name='corp_id' value='" . htmlspecialchars($corpInput) . "' placeholder='Corp'>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label'>Alliance (name or ID)</label>
+                        <input class='form-control' name='alliance_id' value='" . htmlspecialchars($allianceInput) . "' placeholder='Alliance'>
                       </div>
                       <div class='col-md-3'>
                         <label class='form-label'>Audit status</label>
@@ -2420,7 +2589,7 @@ return function (ModuleRegistry $registry): void {
                       </div>
                       <div class='col-md-3 d-flex align-items-end'>
                         <button class='btn btn-primary me-2'>Apply filters</button>
-                        <a class='btn btn-outline-secondary' href='/corptools/members'>Reset</a>
+                        <a class='btn btn-outline-secondary' href='/admin/corptools/members'>Reset</a>
                       </div>
                     </div>
                   </form>
@@ -2437,6 +2606,7 @@ return function (ModuleRegistry $registry): void {
                             <th>Last audit</th>
                             <th>Location</th>
                             <th>Ship</th>
+                            <th class='text-end'>Actions</th>
                           </tr>
                         </thead>
                         <tbody>{$rowsHtml}</tbody>
@@ -2446,6 +2616,218 @@ return function (ModuleRegistry $registry): void {
                   {$pagination}";
 
         return Response::html($renderPage('Members', $body), 200);
+    }, ['right' => 'corptools.director']);
+
+    $registry->route('GET', '/corptools/members', function (): Response {
+        return Response::redirect('/admin/corptools/members');
+    }, ['right' => 'corptools.director']);
+
+    $registry->route('GET', '/admin/corptools/members/{userId}', function (Request $req) use ($app, $renderPage): Response {
+        $userId = (int)($req->params['userId'] ?? 0);
+        if ($userId <= 0) {
+            return Response::redirect('/admin/corptools/members');
+        }
+
+        $user = $app->db->one(
+            "SELECT id, character_id, character_name, updated_at
+             FROM eve_users WHERE id=? LIMIT 1",
+            [$userId]
+        );
+        if (!$user) {
+            return Response::redirect('/admin/corptools/members');
+        }
+
+        $summary = $app->db->one(
+            "SELECT corp_id, alliance_id, highest_sp, last_login_at, corp_joined_at
+             FROM module_corptools_member_summary
+             WHERE user_id=? LIMIT 1",
+            [$userId]
+        );
+
+        $links = $app->db->all(
+            "SELECT character_id, character_name, linked_at
+             FROM character_links
+             WHERE user_id=? AND status='linked'
+             ORDER BY linked_at ASC",
+            [$userId]
+        );
+
+        $mainName = htmlspecialchars((string)($user['character_name'] ?? 'Unknown'));
+        $mainId = (int)($user['character_id'] ?? 0);
+        $lastLogin = htmlspecialchars((string)($summary['last_login_at'] ?? '—'));
+        $corpId = (int)($summary['corp_id'] ?? 0);
+        $allianceId = (int)($summary['alliance_id'] ?? 0);
+        $highestSp = htmlspecialchars((string)($summary['highest_sp'] ?? '—'));
+        $corpJoined = htmlspecialchars((string)($summary['corp_joined_at'] ?? '—'));
+
+        $u = new Universe($app->db);
+        $corpName = $corpId > 0 ? htmlspecialchars($u->name('corporation', $corpId)) : '—';
+        $allianceName = $allianceId > 0 ? htmlspecialchars($u->name('alliance', $allianceId)) : '—';
+
+        $altsHtml = '';
+        foreach ($links as $link) {
+            $altName = htmlspecialchars((string)($link['character_name'] ?? 'Unknown'));
+            $altLinked = htmlspecialchars((string)($link['linked_at'] ?? '—'));
+            $altsHtml .= "<li>{$altName} <span class='text-muted small'>(linked {$altLinked})</span></li>";
+        }
+        if ($altsHtml === '') {
+            $altsHtml = "<li class='text-muted'>No linked alts.</li>";
+        }
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Member: {$mainName}</h1>
+                      <div class='text-muted'>User ID {$userId} · Main character ID {$mainId}</div>
+                    </div>
+                    <div class='text-end'>
+                      <a class='btn btn-outline-light' href='/admin/corptools/members/{$userId}/characters'>View Characters</a>
+                      <a class='btn btn-primary ms-2' href='/me/linking?profile=member_audit'>Request Full Audit Authorization</a>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='row g-3'>
+                      <div class='col-md-4'><div class='text-muted'>Corporation</div><div class='fw-semibold'>{$corpName}</div></div>
+                      <div class='col-md-4'><div class='text-muted'>Alliance</div><div class='fw-semibold'>{$allianceName}</div></div>
+                      <div class='col-md-4'><div class='text-muted'>Highest SP</div><div class='fw-semibold'>{$highestSp}</div></div>
+                      <div class='col-md-4'><div class='text-muted'>Last Login</div><div class='fw-semibold'>{$lastLogin}</div></div>
+                      <div class='col-md-4'><div class='text-muted'>Corp Joined</div><div class='fw-semibold'>{$corpJoined}</div></div>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='fw-semibold mb-2'>Linked Characters</div>
+                    <ul class='mb-0'>{$altsHtml}</ul>
+                  </div>";
+
+        return Response::html($renderPage('Member Detail', $body), 200);
+    }, ['right' => 'corptools.director']);
+
+    $registry->route('GET', '/admin/corptools/members/{userId}/characters', function (Request $req) use ($app, $renderPage): Response {
+        $userId = (int)($req->params['userId'] ?? 0);
+        if ($userId <= 0) {
+            return Response::redirect('/admin/corptools/members');
+        }
+
+        $user = $app->db->one(
+            "SELECT id, character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
+            [$userId]
+        );
+        if (!$user) {
+            return Response::redirect('/admin/corptools/members');
+        }
+
+        $characters = [];
+        $mainId = (int)($user['character_id'] ?? 0);
+        if ($mainId > 0) {
+            $characters[$mainId] = (string)($user['character_name'] ?? 'Unknown');
+        }
+        $links = $app->db->all(
+            "SELECT character_id, character_name
+             FROM character_links
+             WHERE user_id=? AND status='linked'",
+            [$userId]
+        );
+        foreach ($links as $link) {
+            $cid = (int)($link['character_id'] ?? 0);
+            if ($cid > 0) {
+                $characters[$cid] = (string)($link['character_name'] ?? 'Unknown');
+            }
+        }
+
+        $charIds = array_keys($characters);
+        if (empty($charIds)) {
+            return Response::redirect('/admin/corptools/members');
+        }
+
+        $placeholders = implode(',', array_fill(0, count($charIds), '?'));
+        $scopeRows = $app->db->all(
+            "SELECT character_id, status, missing_scopes_json, checked_at, token_expires_at
+             FROM module_corptools_character_scope_status
+             WHERE character_id IN ({$placeholders})",
+            $charIds
+        );
+        $scopeMap = [];
+        foreach ($scopeRows as $row) {
+            $cid = (int)($row['character_id'] ?? 0);
+            if ($cid > 0) {
+                $scopeMap[$cid] = $row;
+            }
+        }
+
+        $tokenRows = $app->db->all(
+            "SELECT character_id, expires_at
+             FROM eve_token_buckets
+             WHERE bucket='member_audit' AND org_type='character' AND org_id=0
+               AND character_id IN ({$placeholders})",
+            $charIds
+        );
+        $tokenMap = [];
+        foreach ($tokenRows as $row) {
+            $cid = (int)($row['character_id'] ?? 0);
+            if ($cid > 0) {
+                $tokenMap[$cid] = $row;
+            }
+        }
+
+        $rowsHtml = '';
+        foreach ($characters as $cid => $name) {
+            $scope = $scopeMap[$cid] ?? null;
+            $token = $tokenMap[$cid] ?? null;
+            $status = (string)($scope['status'] ?? 'MISSING');
+            $badge = match ($status) {
+                'COMPLIANT' => 'bg-success',
+                'MISSING_SCOPES' => 'bg-warning text-dark',
+                'TOKEN_EXPIRED' => 'bg-secondary',
+                'TOKEN_INVALID', 'TOKEN_REFRESH_FAILED' => 'bg-danger',
+                default => 'bg-dark',
+            };
+            $missing = [];
+            if (!empty($scope['missing_scopes_json'])) {
+                $missing = json_decode((string)$scope['missing_scopes_json'], true);
+                if (!is_array($missing)) $missing = [];
+            }
+            $missingText = $missing ? htmlspecialchars(implode(', ', $missing)) : '—';
+            $expiresAt = $token['expires_at'] ?? null;
+            $expiresLabel = $expiresAt ? htmlspecialchars((string)$expiresAt) : '—';
+            $checkedAt = htmlspecialchars((string)($scope['checked_at'] ?? '—'));
+
+            $rowsHtml .= "<tr>
+                <td>" . htmlspecialchars($name) . "</td>
+                <td><span class='badge {$badge}'>" . htmlspecialchars($status) . "</span></td>
+                <td>{$missingText}</td>
+                <td>{$expiresLabel}</td>
+                <td>{$checkedAt}</td>
+              </tr>";
+        }
+
+        $memberName = htmlspecialchars((string)($user['character_name'] ?? 'Unknown'));
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Audit Completeness: {$memberName}</h1>
+                      <div class='text-muted'>Member audit tokens for main + linked characters.</div>
+                    </div>
+                    <div class='text-end'>
+                      <a class='btn btn-outline-light' href='/admin/corptools/members/{$userId}'>Back to Member</a>
+                      <a class='btn btn-primary ms-2' href='/me/linking?profile=member_audit'>Request Full Audit Authorization</a>
+                    </div>
+                  </div>
+                  <div class='card card-body mt-3'>
+                    <div class='table-responsive'>
+                      <table class='table table-sm align-middle'>
+                        <thead>
+                          <tr>
+                            <th>Character</th>
+                            <th>Status</th>
+                            <th>Missing Scopes</th>
+                            <th>Token Expires</th>
+                            <th>Last Refresh</th>
+                          </tr>
+                        </thead>
+                        <tbody>{$rowsHtml}</tbody>
+                      </table>
+                    </div>
+                  </div>";
+
+        return Response::html($renderPage('Member Audit Characters', $body), 200);
     }, ['right' => 'corptools.director']);
 
     $registry->route('GET', '/corptools/moons', function () use ($app, $renderPage, $corpContext, $getCorpToolsSettings, $renderCorpContext): Response {
@@ -2854,6 +3236,7 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('GET', '/corptools/health', function () use ($app, $renderPage, $getCorpToolsSettings): Response {
         $tables = [
+            'eve_token_buckets',
             'module_corptools_settings',
             'module_corptools_character_summary',
             'module_corptools_member_summary',
@@ -2909,6 +3292,7 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('GET', '/admin/corptools/status', function () use ($app, $renderPage, $moduleVersion): Response {
         $tables = [
+            'eve_token_buckets',
             'module_corptools_settings',
             'corp_scope_policies',
             'corp_scope_policy_overrides',
@@ -3554,7 +3938,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Member Audit', $body), 200);
     }, ['right' => 'corptools.member_audit']);
 
-    $registry->route('POST', '/admin/corptools/member-audit/action', function (Request $req) use ($app, $auditCollectors, $tokenData, $getEffectiveScopesForUser, $scopeAudit, $updateMemberSummary): Response {
+    $registry->route('POST', '/admin/corptools/member-audit/action', function (Request $req) use ($app, $auditCollectors, $bucketTokenData, $getEffectiveScopesForUser, $scopeAudit, $updateMemberSummary): Response {
         $action = (string)($req->post['action'] ?? '');
         $selected = $req->post['user_ids'] ?? [];
         if (!is_array($selected)) $selected = [];
@@ -3621,7 +4005,7 @@ return function (ModuleRegistry $registry): void {
             foreach ($characters as $character) {
                 $characterId = (int)($character['character_id'] ?? 0);
                 if ($characterId <= 0) continue;
-                $token = $tokenData($characterId);
+                $token = $bucketTokenData($characterId, 'member_audit', 'character', 0);
                 $profile = $universe->characterProfile($characterId);
                 $baseSummary = [
                     'is_main' => $characterId === $mainId ? 1 : 0,
@@ -3743,7 +4127,10 @@ return function (ModuleRegistry $registry): void {
 
         $scopeSet = $scopePolicy->getEffectiveScopesForUser($userId);
         $requiredScopes = $scopeSet['required'] ?? [];
-        $_SESSION['sso_scopes_override'] = $requiredScopes;
+        $optionalScopes = $scopeSet['optional'] ?? [];
+        $_SESSION['sso_scopes_override'] = array_values(array_unique(array_merge($requiredScopes, $optionalScopes)));
+        $_SESSION['sso_token_bucket'] = 'member_audit';
+        $_SESSION['sso_org_context'] = ['org_type' => 'character', 'org_id' => 0];
         $_SESSION['charlink_redirect'] = '/corptools/characters';
 
         $app->db->run(
@@ -3753,6 +4140,111 @@ return function (ModuleRegistry $registry): void {
 
         return Response::redirect('/auth/login');
     }, ['public' => true]);
+
+    $registry->route('GET', '/admin/corptools/linking', function () use ($app, $renderPage, $getAvailableCorpIds, $getCorpProfiles, $getCorpToolsSettings, $orgAuditScopeMap): Response {
+        $corpIds = $getAvailableCorpIds();
+        $profiles = $getCorpProfiles($corpIds);
+        $settings = $getCorpToolsSettings();
+        $enabled = $settings['corp_audit'] ?? [];
+
+        $requiredScopes = [];
+        foreach ($orgAuditScopeMap as $key => $scopes) {
+            if (!empty($enabled[$key])) {
+                $requiredScopes = array_merge($requiredScopes, $scopes);
+            }
+        }
+        $requiredScopes = array_values(array_unique($requiredScopes));
+
+        $tokenRows = [];
+        if (!empty($corpIds)) {
+            $placeholders = implode(',', array_fill(0, count($corpIds), '?'));
+            $tokenRows = $app->db->all(
+                "SELECT org_id, scopes_json, expires_at
+                 FROM eve_token_buckets
+                 WHERE bucket='org_audit' AND org_type='corporation' AND org_id IN ({$placeholders})
+                 ORDER BY updated_at DESC",
+                $corpIds
+            );
+        }
+
+        $tokensByOrg = [];
+        foreach ($tokenRows as $row) {
+            $orgId = (int)($row['org_id'] ?? 0);
+            if ($orgId <= 0 || isset($tokensByOrg[$orgId])) continue;
+            $scopes = json_decode((string)($row['scopes_json'] ?? '[]'), true);
+            if (!is_array($scopes)) $scopes = [];
+            $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
+            $tokensByOrg[$orgId] = [
+                'scopes' => $scopes,
+                'expired' => $expiresAt !== null && $expiresAt !== false && time() > $expiresAt,
+            ];
+        }
+
+        $scopeList = '';
+        foreach ($requiredScopes as $scope) {
+            $scopeList .= '<li><code>' . htmlspecialchars($scope) . '</code></li>';
+        }
+        if ($scopeList === '') {
+            $scopeList = "<li class='text-muted'>No corp audit scopes are enabled in settings.</li>";
+        }
+
+        $cards = '';
+        foreach ($profiles as $profile) {
+            $corpId = (int)($profile['id'] ?? 0);
+            if ($corpId <= 0) continue;
+            $label = htmlspecialchars((string)($profile['label'] ?? 'Corporation'));
+            $token = $tokensByOrg[$corpId] ?? null;
+            $status = 'Not Linked';
+            if ($token && !$token['expired']) {
+                $missing = array_diff($requiredScopes, $token['scopes'] ?? []);
+                $status = empty($missing) ? 'OK' : 'Missing Scopes';
+            } elseif ($token && $token['expired']) {
+                $status = 'Token Expired';
+            }
+
+            $badge = match ($status) {
+                'OK' => "<span class='badge bg-success'>OK</span>",
+                'Missing Scopes' => "<span class='badge bg-warning text-dark'>Missing Scopes</span>",
+                'Token Expired' => "<span class='badge bg-secondary'>Token Expired</span>",
+                default => "<span class='badge bg-danger'>Not Linked</span>",
+            };
+
+            $cards .= "<div class='card card-body mb-3'>
+                <div class='d-flex flex-wrap justify-content-between align-items-start gap-3'>
+                  <div>
+                    <div class='fw-semibold fs-5'>{$label}</div>
+                    <div class='text-muted'>Corp-level audit access for directors and HR.</div>
+                    <div class='mt-2'>{$badge}</div>
+                  </div>
+                  <div class='text-end'>
+                    <a class='btn btn-primary' href='/auth/authorize?profile=org_audit&amp;org_id={$corpId}'>Authorize / Re-authorize</a>
+                  </div>
+                </div>
+                <details class='mt-3'>
+                  <summary class='text-muted'>Show required permissions</summary>
+                  <ul class='mt-2 mb-0'>{$scopeList}</ul>
+                </details>
+              </div>";
+        }
+
+        if ($cards === '') {
+            $cards = "<div class='alert alert-warning'>No corp identities are configured for CorpTools. Set corp IDs in Admin → Corp Tools.</div>";
+        }
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
+                    <div>
+                      <h1 class='mb-1'>Org Token Linking</h1>
+                      <div class='text-muted'>Authorize director-level scopes per corporation. Tokens are tied to configured corp IDs.</div>
+                    </div>
+                  </div>
+                  {$cards}";
+
+        return Response::html($renderPage('Org Token Linking', $body), 200);
+    }, ['right' => 'corptools.director']);
+
+    $registry->route('GET', '/admin/system/cron', function (): Response {
+        return Response::redirect('/admin/corptools/cron');
+    }, ['right' => 'corptools.cron.manage']);
 
     $registry->route('GET', '/admin/corptools/cron', function () use ($app, $renderPage): Response {
         JobRegistry::sync($app->db);
