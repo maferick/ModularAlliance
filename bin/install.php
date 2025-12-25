@@ -43,23 +43,6 @@ $statements = [
         UNIQUE KEY uniq_character (character_id),
         KEY idx_eve_users_is_superadmin (is_superadmin)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "CREATE TABLE IF NOT EXISTS eve_tokens (
-        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        user_id BIGINT UNSIGNED NOT NULL,
-        character_id BIGINT UNSIGNED NOT NULL,
-        access_token MEDIUMTEXT NOT NULL,
-        refresh_token MEDIUMTEXT NULL,
-        expires_at DATETIME NULL,
-        scopes_json TEXT NULL,
-        token_json MEDIUMTEXT NOT NULL,
-        status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
-        last_refresh_at DATETIME NULL,
-        error_last TEXT NULL,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY uniq_token_character (character_id),
-        KEY idx_user (user_id),
-        CONSTRAINT fk_eve_tokens_user_id FOREIGN KEY (user_id) REFERENCES eve_users(id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS eve_token_buckets (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
         user_id BIGINT UNSIGNED NOT NULL,

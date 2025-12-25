@@ -1180,12 +1180,6 @@ return function (ModuleRegistry $registry): void {
              WHERE refresh_token IS NOT NULL AND refresh_token != ''"
         );
 
-        $basicRows = $app->db->all(
-            "SELECT user_id, character_id, refresh_token, expires_at, status
-             FROM eve_tokens
-             WHERE refresh_token IS NOT NULL AND refresh_token != ''"
-        );
-
         foreach ($rows as $row) {
             $metrics['tokens_checked']++;
             $characterId = (int)($row['character_id'] ?? 0);
@@ -1231,46 +1225,6 @@ return function (ModuleRegistry $registry): void {
                     'bucket' => $bucket,
                     'org_type' => $orgType,
                     'org_id' => $orgId,
-                    'message' => (string)($refresh['message'] ?? 'Refresh failed.'),
-                ]);
-            }
-        }
-
-        foreach ($basicRows as $row) {
-            $metrics['tokens_checked']++;
-            $characterId = (int)($row['character_id'] ?? 0);
-            $userId = (int)($row['user_id'] ?? 0);
-            $expiresAt = $row['expires_at'] ? strtotime((string)$row['expires_at']) : null;
-            $refreshToken = (string)($row['refresh_token'] ?? '');
-            $status = (string)($row['status'] ?? 'ACTIVE');
-
-            if ($characterId <= 0 || $userId <= 0) {
-                continue;
-            }
-            if (in_array($status, ['NEEDS_REAUTH', 'REVOKED'], true)) {
-                continue;
-            }
-            if ($expiresAt !== null && ($now + $threshold) < $expiresAt) {
-                continue;
-            }
-
-            $refresh = $sso->refreshTokenForCharacter(
-                $userId,
-                $characterId,
-                $refreshToken,
-                'basic'
-            );
-            if (($refresh['status'] ?? '') === 'success') {
-                $metrics['tokens_refreshed']++;
-                $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
-                    'status' => 'success',
-                    'bucket' => 'basic',
-                ]);
-            } else {
-                $metrics['tokens_failed']++;
-                $scopeAudit->logEvent('token_refresh', $userId, $characterId, [
-                    'status' => 'failed',
-                    'bucket' => 'basic',
                     'message' => (string)($refresh['message'] ?? 'Refresh failed.'),
                 ]);
             }
@@ -1424,9 +1378,9 @@ return function (ModuleRegistry $registry): void {
 
         $corpLabel = htmlspecialchars((string)$corp['label']);
         $icon = $corp['icons']['px64x64'] ?? null;
-        $token = $sso->getAccessTokenForCharacter($cid, 'basic');
+        $token = $sso->getAccessTokenForCharacter($cid, 'default');
         if (!empty($token['access_token'])) {
-            $token['refresh_callback'] = $makeRefreshCallback($token, 'basic', []);
+            $token['refresh_callback'] = $makeRefreshCallback($token, 'default', []);
         }
         $settings = $getCorpToolsSettings();
         $auditEnabled = !empty(array_filter($settings['audit_scopes'] ?? [], fn($enabled) => !empty($enabled)));
@@ -3109,9 +3063,9 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
-        $token = $sso->getAccessTokenForCharacter($cid, 'basic');
+        $token = $sso->getAccessTokenForCharacter($cid, 'default');
         if (!empty($token['access_token'])) {
-            $token['refresh_callback'] = $makeRefreshCallback($token, 'basic', []);
+            $token['refresh_callback'] = $makeRefreshCallback($token, 'default', []);
         }
         $requiredScopes = ['esi-characters.read_notifications.v1'];
         $missingScopes = !$token['expired'] && $token['access_token'] && $hasScopes($token['scopes'], $requiredScopes) ? [] : $requiredScopes;

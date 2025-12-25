@@ -60,4 +60,4 @@ Targets are configured via `module_charlink_targets` and the `charlink.targets` 
 
 ## Notes
 - The hub requests the union of selected target scopes in a single SSO login.
-- Tokens are stored in the existing `eve_tokens` table; per-character enabled targets are stored in `module_charlink_links`.
+- Tokens are stored in `eve_token_buckets` (bucket `default`); per-character enabled targets are stored in `module_charlink_links`.

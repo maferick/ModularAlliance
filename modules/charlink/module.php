@@ -228,8 +228,9 @@ return function (ModuleRegistry $registry): void {
     $tokenInfo = function (int $characterId) use ($app): array {
         $row = $app->db->one(
             "SELECT scopes_json, expires_at, status, error_last
-             FROM eve_tokens
-             WHERE character_id=? LIMIT 1",
+             FROM eve_token_buckets
+             WHERE character_id=? AND bucket='default' AND org_type='' AND org_id=0
+             LIMIT 1",
             [$characterId]
         );
         $scopes = [];

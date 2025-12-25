@@ -63,7 +63,7 @@ return function (ModuleRegistry $registry): void {
             'basic' => [
                 'label' => 'Character Profile (Basic)',
                 'description' => 'Basic profile and member widgets.',
-                'bucket' => 'basic',
+                'bucket' => 'default',
                 'scopes' => $basicScopes,
             ],
             'member_audit' => [
@@ -114,7 +114,7 @@ return function (ModuleRegistry $registry): void {
 
             $userId = (int)($result['user_id'] ?? 0);
             $characterId = (int)($result['character_id'] ?? 0);
-            $bucket = (string)($result['bucket'] ?? 'basic');
+            $bucket = (string)($result['bucket'] ?? 'default');
             if ($userId > 0 && $characterId > 0 && $bucket === 'member_audit') {
                 $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
                 $scopeSet = $scopePolicy->getEffectiveScopesForUser($userId);
@@ -181,7 +181,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/me/linking');
         }
 
-        $bucket = (string)($profile['bucket'] ?? 'basic');
+        $bucket = (string)($profile['bucket'] ?? 'default');
         $scopes = $profile['scopes'] ?? ['publicData'];
         if (!is_array($scopes) || empty($scopes)) {
             $scopes = ['publicData'];
@@ -281,8 +281,11 @@ return function (ModuleRegistry $registry): void {
             $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
             $basicTokens = $app->db->all(
                 "SELECT character_id, scopes_json, expires_at, status, last_refresh_at, error_last
-                 FROM eve_tokens
-                 WHERE character_id IN ({$placeholders})",
+                 FROM eve_token_buckets
+                 WHERE character_id IN ({$placeholders})
+                   AND bucket='default'
+                   AND org_type=''
+                   AND org_id=0",
                 $characterIds
             );
             $memberTokens = $app->db->all(

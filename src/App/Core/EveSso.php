@@ -5,6 +5,8 @@ namespace App\Core;
 
 final class EveSso
 {
+    private const DEFAULT_BUCKET = 'default';
+    private const LEGACY_BUCKET = 'basic';
     private const STATUS_ACTIVE = 'ACTIVE';
     private const STATUS_NEEDS_REAUTH = 'NEEDS_REAUTH';
     private const STATUS_REVOKED = 'REVOKED';
@@ -234,13 +236,13 @@ final class EveSso
             }
         }
 
-        $bucket = (string)($_SESSION['sso_token_bucket'] ?? 'basic');
+        $bucket = $this->normalizeBucket((string)($_SESSION['sso_token_bucket'] ?? self::DEFAULT_BUCKET));
         $orgContext = $_SESSION['sso_org_context'] ?? null;
         unset($_SESSION['sso_token_bucket'], $_SESSION['sso_org_context']);
 
         $orgType = '';
         $orgId = 0;
-        if (is_array($orgContext)) {
+        if ($bucket !== self::DEFAULT_BUCKET && is_array($orgContext)) {
             $orgType = (string)($orgContext['org_type'] ?? '');
             $orgId = (int)($orgContext['org_id'] ?? 0);
         }
@@ -308,10 +310,11 @@ final class EveSso
         int $userId,
         int $characterId,
         string $refreshToken,
-        string $bucket = 'basic',
+        string $bucket = self::DEFAULT_BUCKET,
         array $orgContext = []
     ): array
     {
+        $bucket = $this->normalizeBucket($bucket);
         if ($refreshToken === '') {
             $this->updateTokenStatus($userId, $characterId, $bucket, $orgContext, self::STATUS_NEEDS_REAUTH, 'Missing refresh token.');
             return ['status' => 'failed', 'message' => 'Missing refresh token.', 'error_code' => 'missing_refresh_token'];
@@ -362,8 +365,12 @@ final class EveSso
         }
 
         $jwtPayload = $this->decodeJwtPayload((string)$token['access_token']);
-        $orgType = (string)($orgContext['org_type'] ?? '');
-        $orgId = (int)($orgContext['org_id'] ?? 0);
+        $orgType = '';
+        $orgId = 0;
+        if ($bucket !== self::DEFAULT_BUCKET) {
+            $orgType = (string)($orgContext['org_type'] ?? '');
+            $orgId = (int)($orgContext['org_id'] ?? 0);
+        }
         $this->upsertToken($userId, $characterId, $token, $jwtPayload, $bucket, [
             'org_type' => $orgType,
             'org_id' => $orgId,
@@ -392,11 +399,12 @@ final class EveSso
 
     public function getAccessTokenForCharacter(
         int $characterId,
-        string $bucket = 'basic',
+        string $bucket = self::DEFAULT_BUCKET,
         array $orgContext = [],
         int $refreshWindowSeconds = 120
     ): array
     {
+        $bucket = $this->normalizeBucket($bucket);
         $row = $this->fetchTokenRow($characterId, $bucket, $orgContext);
         if (!$row) {
             return [
@@ -562,10 +570,11 @@ final class EveSso
         int $characterId,
         array $token,
         array $jwtPayload,
-        string $bucket = 'basic',
+        string $bucket = self::DEFAULT_BUCKET,
         array $orgContext = []
     ): void
     {
+        $bucket = $this->normalizeBucket($bucket);
         $expiresAt = null;
         if (!empty($jwtPayload['exp']) && is_numeric($jwtPayload['exp'])) {
             $expiresAt = gmdate('Y-m-d H:i:s', (int)$jwtPayload['exp']);
@@ -579,29 +588,12 @@ final class EveSso
         $status = (string)($orgContext['status'] ?? self::STATUS_ACTIVE);
         $lastRefreshAt = $orgContext['last_refresh_at'] ?? null;
         $errorLast = $orgContext['error_last'] ?? null;
-
-        if ($bucket === 'basic') {
-            $this->db->run(
-                "REPLACE INTO eve_tokens (user_id, character_id, access_token, refresh_token, expires_at, scopes_json, token_json, status, last_refresh_at, error_last)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    $userId,
-                    $characterId,
-                    (string)$token['access_token'],
-                    (string)($token['refresh_token'] ?? ''),
-                    $expiresAt,
-                    json_encode($scopes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-                    json_encode($token),
-                    $status,
-                    $lastRefreshAt,
-                    $errorLast,
-                ]
-            );
-            return;
+        $orgType = '';
+        $orgId = 0;
+        if ($bucket !== self::DEFAULT_BUCKET) {
+            $orgType = (string)($orgContext['org_type'] ?? '');
+            $orgId = (int)($orgContext['org_id'] ?? 0);
         }
-
-        $orgType = (string)($orgContext['org_type'] ?? '');
-        $orgId = (int)($orgContext['org_id'] ?? 0);
         $this->db->run(
             "INSERT INTO eve_token_buckets
              (user_id, character_id, bucket, org_type, org_id, access_token, refresh_token, expires_at, scopes_json, token_json, status, last_refresh_at, error_last, created_at, updated_at)
@@ -637,17 +629,12 @@ final class EveSso
 
     private function fetchTokenRow(int $characterId, string $bucket, array $orgContext): ?array
     {
-        if ($bucket === 'basic') {
-            return $this->db->one(
-                "SELECT user_id, character_id, access_token, refresh_token, expires_at, scopes_json, status, last_refresh_at, error_last
-                 FROM eve_tokens
-                 WHERE character_id=? LIMIT 1",
-                [$characterId]
-            );
+        $orgType = '';
+        $orgId = 0;
+        if ($bucket !== self::DEFAULT_BUCKET) {
+            $orgType = (string)($orgContext['org_type'] ?? '');
+            $orgId = (int)($orgContext['org_id'] ?? 0);
         }
-
-        $orgType = (string)($orgContext['org_type'] ?? '');
-        $orgId = (int)($orgContext['org_id'] ?? 0);
         return $this->db->one(
             "SELECT user_id, character_id, access_token, refresh_token, expires_at, scopes_json, status, last_refresh_at, error_last
              FROM eve_token_buckets
@@ -692,20 +679,12 @@ final class EveSso
     ): void
     {
         $lastRefreshAt = $status === self::STATUS_ACTIVE ? gmdate('Y-m-d H:i:s') : null;
-
-        if ($bucket === 'basic') {
-            $this->db->run(
-                "UPDATE eve_tokens
-                 SET status=?, error_last=?, last_refresh_at=?, updated_at=NOW()
-                 WHERE character_id=? AND user_id=?
-                 LIMIT 1",
-                [$status, $errorLast, $lastRefreshAt, $characterId, $userId]
-            );
-            return;
+        $orgType = '';
+        $orgId = 0;
+        if ($bucket !== self::DEFAULT_BUCKET) {
+            $orgType = (string)($orgContext['org_type'] ?? '');
+            $orgId = (int)($orgContext['org_id'] ?? 0);
         }
-
-        $orgType = (string)($orgContext['org_type'] ?? '');
-        $orgId = (int)($orgContext['org_id'] ?? 0);
         $this->db->run(
             "UPDATE eve_token_buckets
              SET status=?, error_last=?, last_refresh_at=?, updated_at=NOW()
@@ -713,6 +692,11 @@ final class EveSso
              LIMIT 1",
             [$status, $errorLast, $lastRefreshAt, $characterId, $userId, $bucket, $orgType, $orgId]
         );
+    }
+
+    private function normalizeBucket(string $bucket): string
+    {
+        return $bucket === self::LEGACY_BUCKET ? self::DEFAULT_BUCKET : $bucket;
     }
 
     private function warmIdentity(int $characterId, string $accessToken): void

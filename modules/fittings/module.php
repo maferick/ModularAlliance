@@ -634,7 +634,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $sso = new \App\Core\EveSso($app->db);
-        $token = $sso->getAccessTokenForCharacter($cid, 'basic');
+        $token = $sso->getAccessTokenForCharacter($cid, 'default');
         if (!empty($token['expired']) || empty($token['access_token'])) {
             $_SESSION['fittings_save_flash'] = ['type' => 'warning', 'message' => 'Token expired or missing. Re-authorize your character in Character Link Hub.'];
             return Response::redirect('/fittings/fit/' . rawurlencode($fitSlug));
