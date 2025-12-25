@@ -210,6 +210,9 @@ final class EsiCache
         ?callable $refreshCallback = null
     ): mixed {
         $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus, $refreshCallback);
+        array $ignoreStatus = []
+    ): mixed {
+        $result = $this->getCachedAuthWithStatus($scopeKey, $urlKey, $ttlSeconds, $accessToken, $ignoreStatus);
         return $result['data'];
     }
 
@@ -287,6 +290,7 @@ final class EsiCache
                     [$status, $data] = $this->esi->getWithStatus($path, $tokenToUse);
                 }
             }
+            [$status, $data] = $this->esi->getWithStatus($path, $accessToken);
             if ($status >= 200 && $status < 300) {
                 $payload = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                 $this->db->run(
