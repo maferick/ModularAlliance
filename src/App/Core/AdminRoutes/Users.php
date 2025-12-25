@@ -18,7 +18,7 @@ final class Users
             $flash = $_SESSION['users_flash'] ?? null;
             unset($_SESSION['users_flash']);
 
-            $users = $app->db->all("SELECT id, character_id, character_name, is_superadmin, created_at FROM eve_users ORDER BY id DESC LIMIT 200");
+            $users = $app->db->all("SELECT id, public_id, character_id, character_name, is_superadmin, created_at FROM eve_users ORDER BY id DESC LIMIT 200");
             $groups = $app->db->all("SELECT id, slug, name, is_admin FROM groups ORDER BY is_admin DESC, name ASC");
             $ug = [];
             foreach ($app->db->all("SELECT user_id, group_id FROM eve_user_groups") as $r) {
@@ -44,26 +44,28 @@ final class Users
 
             foreach ($users as $u) {
                 $uid = (int)$u['id'];
+                $publicId = (string)($u['public_id'] ?? '');
                 $currentUserId = (int)($_SESSION['user_id'] ?? 0);
                 $flags = [];
                 if ((int)$u['is_superadmin'] === 1) $flags[] = "<span class='badge text-bg-danger'>superadmin</span>";
                 $flagsHtml = $flags ? implode(' ', $flags) : "<span class='badge text-bg-secondary'>standard</span>";
 
-                $formId = "user-form-{$uid}";
+                $formId = "user-form-{$publicId}";
                 $h .= "<tr><td><strong>" . htmlspecialchars($u['character_name']) . "</strong>
-                           <div class='text-muted small'>user_id={$uid} • character_id=" . (int)$u['character_id'] . "</div>
+                           <div class='text-muted small'>member_id=" . htmlspecialchars($publicId) . "</div>
                         </td>
                         <td>{$flagsHtml}</td>
                         <td>";
 
                 foreach ($groups as $g) {
                     $gid = (int)$g['id'];
+                    $gslug = (string)($g['slug'] ?? '');
                     $checked = !empty($ug[$uid][$gid]) ? "checked" : "";
                     $label = htmlspecialchars($g['name']);
                     $h .= "<div class='col-12 col-md-6 col-xl-4'>
                               <div class='form-check'>
-                                <input class='form-check-input' type='checkbox' name='group_ids[]' value='{$gid}' id='u{$uid}g{$gid}' {$checked} form='{$formId}'>
-                                <label class='form-check-label' for='u{$uid}g{$gid}'>{$label}</label>
+                                <input class='form-check-input' type='checkbox' name='group_slugs[]' value='" . htmlspecialchars($gslug) . "' id='u{$formId}g{$gslug}' {$checked} form='{$formId}'>
+                                <label class='form-check-label' for='u{$formId}g{$gslug}'>{$label}</label>
                               </div>
                             </div>";
                 }
@@ -72,11 +74,11 @@ final class Users
                 $h .= "</td>
                         <td class='text-nowrap'>
                           <form method='post' action='/admin/users/save' id='{$formId}' class='d-inline'>
-                            <input type='hidden' name='user_id' value='{$uid}'>
+                            <input type='hidden' name='user_id' value='" . htmlspecialchars($publicId) . "'>
                             <button class='btn btn-sm btn-success me-2' type='submit'>Save</button>
                           </form>
-                          <form method='post' action='/admin/users/delete' class='d-inline' onsubmit=\"return confirm('Delete user {$uid}? This cannot be undone.');\">
-                            <input type='hidden' name='user_id' value='{$uid}'>
+                          <form method='post' action='/admin/users/delete' class='d-inline' onsubmit=\"return confirm('Delete user {$publicId}? This cannot be undone.');\">
+                            <input type='hidden' name='user_id' value='" . htmlspecialchars($publicId) . "'>
                             <button class='btn btn-sm btn-outline-danger' {$deleteDisabled}>Delete</button>
                           </form>
                         </td>
@@ -88,14 +90,20 @@ final class Users
         }, ['right' => 'admin.users']);
 
         $registry->route('POST', '/admin/users/save', function (Request $req) use ($app): Response {
-            $uid = (int)($req->post['user_id'] ?? 0);
+            $publicId = trim((string)($req->post['user_id'] ?? ''));
+            if ($publicId === '') return Response::redirect('/admin/users');
+            $row = $app->db->one("SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$publicId]);
+            $uid = (int)($row['id'] ?? 0);
             if ($uid <= 0) return Response::redirect('/admin/users');
-            $ids = $req->post['group_ids'] ?? [];
-            if (!is_array($ids)) $ids = [];
+            $slugs = $req->post['group_slugs'] ?? [];
+            if (!is_array($slugs)) $slugs = [];
 
             $app->db->run("DELETE FROM eve_user_groups WHERE user_id=?", [$uid]);
-            foreach ($ids as $gid) {
-                $gid = (int)$gid;
+            foreach ($slugs as $slug) {
+                $slug = trim((string)$slug);
+                if ($slug === '') continue;
+                $groupRow = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$slug]);
+                $gid = (int)($groupRow['id'] ?? 0);
                 if ($gid <= 0) continue;
                 $app->db->run("INSERT IGNORE INTO eve_user_groups (user_id, group_id) VALUES (?, ?)", [$uid, $gid]);
             }
@@ -104,7 +112,9 @@ final class Users
         }, ['right' => 'admin.users']);
 
         $registry->route('POST', '/admin/users/delete', function (Request $req) use ($app): Response {
-            $targetId = (int)($req->post['user_id'] ?? 0);
+            $publicId = trim((string)($req->post['user_id'] ?? ''));
+            $targetRow = $publicId !== '' ? $app->db->one("SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$publicId]) : null;
+            $targetId = (int)($targetRow['id'] ?? 0);
             $currentUserId = (int)($_SESSION['user_id'] ?? 0);
             if ($targetId <= 0) return Response::redirect('/admin/users');
             if ($targetId === $currentUserId) {

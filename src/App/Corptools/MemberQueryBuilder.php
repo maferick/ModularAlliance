@@ -8,11 +8,12 @@ final class MemberQueryBuilder
     /** @return array{sql:string, params:array} */
     public function build(array $filters): array
     {
-        $sql = "SELECT ms.*, cs.character_name, cs.assets_count, cs.assets_value, cs.location_system_id, cs.location_region_id,
+        $sql = "SELECT ms.*, u.public_id AS user_public_id, cs.character_name, cs.assets_count, cs.assets_value, cs.location_system_id, cs.location_region_id,
                        cs.current_ship_type_id, cs.corp_roles_json, cs.corp_title, cs.home_station_id, cs.death_clone_location_id,
                        cs.jump_clone_location_id, cs.total_sp, cs.last_audit_at,
                        css.status AS scope_status, css.reason AS scope_reason, css.missing_scopes_json, css.token_expires_at, css.checked_at
                 FROM module_corptools_member_summary ms
+                JOIN eve_users u ON u.id = ms.user_id
                 JOIN module_corptools_character_summary cs ON cs.character_id = ms.main_character_id
                 LEFT JOIN module_corptools_character_scope_status css ON css.character_id = cs.character_id";
 
