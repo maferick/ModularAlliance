@@ -13,7 +13,7 @@ final class ScopePolicy
     public function listPolicies(): array
     {
         return $this->db->all(
-            "SELECT id, name, description, is_active, applies_to, required_scopes_json, optional_scopes_json, updated_at
+            "SELECT id, public_id, name, description, is_active, applies_to, required_scopes_json, optional_scopes_json, updated_at
              FROM corp_scope_policies
              ORDER BY updated_at DESC, id DESC"
         );
@@ -22,7 +22,7 @@ final class ScopePolicy
     public function getActivePolicyForContext(int $corpId, int $allianceId): ?array
     {
         $policies = $this->db->all(
-            "SELECT id, name, description, is_active, applies_to, required_scopes_json, optional_scopes_json
+            "SELECT id, public_id, name, description, is_active, applies_to, required_scopes_json, optional_scopes_json
              FROM corp_scope_policies
              WHERE is_active=1
              ORDER BY updated_at DESC, id DESC"
@@ -117,6 +117,7 @@ final class ScopePolicy
     {
         return [
             'id' => (int)($policy['id'] ?? 0),
+            'public_id' => (string)($policy['public_id'] ?? ''),
             'name' => (string)($policy['name'] ?? ''),
             'description' => (string)($policy['description'] ?? ''),
             'applies_to' => (string)($policy['applies_to'] ?? 'all_users'),

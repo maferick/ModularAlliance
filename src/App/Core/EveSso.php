@@ -546,10 +546,11 @@ final class EveSso
             return (int)$existing['id'];
         }
 
+        $publicId = Identifiers::generatePublicId($this->db, 'eve_users');
         $this->db->run(
-            "INSERT INTO eve_users (character_id, character_name, owner_hash, jwt_payload_json)
-             VALUES (?, ?, ?, ?)",
-            [$characterId, $name, $owner ?: null, json_encode($jwtPayload)]
+            "INSERT INTO eve_users (public_id, character_id, character_name, owner_hash, jwt_payload_json)
+             VALUES (?, ?, ?, ?, ?)",
+            [$publicId, $characterId, $name, $owner ?: null, json_encode($jwtPayload)]
         );
 
         $row = $this->db->one("SELECT id FROM eve_users WHERE character_id=? LIMIT 1", [$characterId]);
