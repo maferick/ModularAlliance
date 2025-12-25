@@ -143,7 +143,7 @@ return function (ModuleRegistry $registry): void {
 
     $ruleCatalog = $providerRegistry->rulesCatalog();
 
-    $logJobRun = function (string $jobKey, array $data) use ($app): void {
+    $logJobRun = function (string $jobKey, array $data): void use ($app) {
         $app->db->run(
             "INSERT INTO module_securegroups_job_runs\n"
             . " (job_key, started_at, ended_at, success, processed_count, changed_count, error_count, log_excerpt, details_json)\n"
