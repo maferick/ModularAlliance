@@ -205,7 +205,7 @@ final class Menu
         ];
 
         $mapped = $map[$normalized] ?? 'left';
-        if ($log) {
+        if ($log && !array_key_exists($normalized, $map)) {
             error_log("Menu area '{$original}' normalized to '{$mapped}'");
         }
         return $mapped;

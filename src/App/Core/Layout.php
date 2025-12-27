@@ -18,7 +18,8 @@ final class Layout
     ): string {
         $adminHtml = self::renderMenuBootstrap($siteAdminTree);
         $userHtml  = self::renderMenuBootstrap($userMenuTree);
-        $sideHtml  = self::renderSideMenuBootstrap($leftMemberTree, $leftAdminTree);
+        $currentPath = self::normalizePath($_SERVER['REQUEST_URI'] ?? '/');
+        $sideHtml  = self::renderSideMenuBootstrap($leftMemberTree, $leftAdminTree, $currentPath);
         $moduleHtml = self::renderModuleMenuBootstrap($moduleMenu);
 
         // Resolve branding centrally (future-proof: callers don't need to remember passing it)
@@ -218,26 +219,30 @@ final class Layout
         return $html;
     }
 
-    private static function renderSideMenuBootstrap(array $memberTree, array $adminTree): string
+    private static function renderSideMenuBootstrap(array $memberTree, array $adminTree, string $currentPath): string
     {
         $html = '';
         $sectionIndex = 0;
 
-        $renderSection = function (string $label, string $icon, array $tree, string $badgeClass) use (&$html, &$sectionIndex): void {
+        $renderSection = function (string $label, string $icon, array $tree, string $badgeClass) use (&$html, &$sectionIndex, $currentPath): void {
             if (empty($tree)) {
                 return;
             }
 
             $sectionIndex++;
             $collapseId = 'sidebar-section-' . $sectionIndex;
+            $expanded = self::treeHasActive($tree, $currentPath);
+            $expandedAttr = $expanded ? 'true' : 'false';
+            $collapseClass = $expanded ? ' collapse show' : ' collapse';
+            $badgeText = $expanded ? '-' : '+';
             $html .= '<li class="nav-item">';
-            $html .= '<button class="nav-link d-flex justify-content-between align-items-center w-100" type="button" data-bs-toggle="collapse" data-bs-target="#' . $collapseId . '" aria-expanded="false">';
+            $html .= '<button class="nav-link d-flex justify-content-between align-items-center w-100' . ($expanded ? ' active' : '') . '" type="button" data-bs-toggle="collapse" data-bs-target="#' . $collapseId . '" aria-expanded="' . $expandedAttr . '">';
             $html .= '<span><i class="bi ' . htmlspecialchars($icon) . ' me-2"></i>' . htmlspecialchars($label) . '</span>';
-            $html .= '<span class="badge ' . htmlspecialchars($badgeClass) . '">+</span>';
+            $html .= '<span class="badge ' . htmlspecialchars($badgeClass) . '">' . $badgeText . '</span>';
             $html .= '</button>';
-            $html .= '<div class="collapse" id="' . $collapseId . '">';
+            $html .= '<div class="' . $collapseClass . '" id="' . $collapseId . '">';
             $html .= '<ul class="nav flex-column ms-3 mt-1">';
-            $html .= self::renderSideMenuItems($tree);
+            $html .= self::renderSideMenuItems($tree, $currentPath);
             $html .= '</ul></div></li>';
         };
 
@@ -247,29 +252,69 @@ final class Layout
         return $html;
     }
 
-    private static function renderSideMenuItems(array $tree): string
+    private static function renderSideMenuItems(array $tree, string $currentPath): string
     {
         $html = '';
         foreach ($tree as $n) {
             $hasChildren = !empty($n['children']);
             if ($hasChildren) {
                 $nodeId = 'side-node-' . md5((string)$n['slug']);
+                $expanded = self::treeHasActive($n['children'], $currentPath) || self::urlMatchesPath($currentPath, (string)$n['url']);
+                $expandedAttr = $expanded ? 'true' : 'false';
+                $collapseClass = $expanded ? ' collapse show' : ' collapse';
+                $badgeText = $expanded ? '-' : '+';
                 $html .= '<li class="nav-item">';
-                $html .= '<button class="nav-link d-flex justify-content-between align-items-center w-100" type="button" data-bs-toggle="collapse" data-bs-target="#' . $nodeId . '" aria-expanded="false">';
+                $html .= '<button class="nav-link d-flex justify-content-between align-items-center w-100' . ($expanded ? ' active' : '') . '" type="button" data-bs-toggle="collapse" data-bs-target="#' . $nodeId . '" aria-expanded="' . $expandedAttr . '">';
                 $html .= '<span>' . htmlspecialchars($n['title']) . '</span>';
-                $html .= '<span class="badge text-bg-secondary">+</span>';
+                $html .= '<span class="badge text-bg-secondary">' . $badgeText . '</span>';
                 $html .= '</button>';
-                $html .= '<div class="collapse" id="' . $nodeId . '">';
+                $html .= '<div class="' . $collapseClass . '" id="' . $nodeId . '">';
                 $html .= '<ul class="nav flex-column ms-3 mt-1">';
-                $html .= self::renderSideMenuItems($n['children']);
+                $html .= self::renderSideMenuItems($n['children'], $currentPath);
                 $html .= '</ul></div></li>';
             } else {
+                $active = self::urlMatchesPath($currentPath, (string)$n['url']);
                 $html .= '<li class="nav-item">';
-                $html .= '<a class="nav-link" href="' . htmlspecialchars($n['url']) . '">' . htmlspecialchars($n['title']) . '</a>';
+                $html .= '<a class="nav-link' . ($active ? ' active' : '') . '" href="' . htmlspecialchars($n['url']) . '">' . htmlspecialchars($n['title']) . '</a>';
                 $html .= '</li>';
             }
         }
         return $html;
+    }
+
+    private static function normalizePath(string $path): string
+    {
+        $parsed = parse_url($path, PHP_URL_PATH);
+        $path = is_string($parsed) ? $parsed : $path;
+        if ($path === '') {
+            $path = '/';
+        }
+        return rtrim($path, '/') ?: '/';
+    }
+
+    private static function urlMatchesPath(string $currentPath, string $url): bool
+    {
+        if ($url === '') {
+            return false;
+        }
+        $normalized = self::normalizePath($url);
+        if ($normalized === '/') {
+            return $currentPath === '/';
+        }
+        return $currentPath === $normalized || str_starts_with($currentPath, $normalized . '/');
+    }
+
+    private static function treeHasActive(array $tree, string $currentPath): bool
+    {
+        foreach ($tree as $node) {
+            if (self::urlMatchesPath($currentPath, (string)($node['url'] ?? ''))) {
+                return true;
+            }
+            if (!empty($node['children']) && self::treeHasActive($node['children'], $currentPath)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static function renderModuleMenuBootstrap(?array $moduleMenu): string
