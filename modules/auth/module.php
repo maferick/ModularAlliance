@@ -8,6 +8,7 @@ Version: 1.0.0
 */
 
 use App\Core\EveSso;
+use App\Core\IdentityResolver;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
 use App\Core\Universe;
@@ -19,6 +20,8 @@ use App\Http\Response;
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
+    $universeShared = new Universe($app->db);
+    $identityResolver = new IdentityResolver($app->db, $universeShared);
 
     $registry->menu([
         'slug' => 'user.linking',
@@ -28,8 +31,8 @@ return function (ModuleRegistry $registry): void {
         'area' => 'user_top',
     ]);
 
-    $getScopeProfiles = function (int $userId) use ($app): array {
-        $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+    $getScopeProfiles = function (int $userId) use ($app, $identityResolver): array {
+        $scopePolicy = new ScopePolicy($app->db, $identityResolver);
         $scopeSet = $userId > 0 ? $scopePolicy->getEffectiveScopesForUser($userId) : ['required' => [], 'optional' => []];
         $memberScopes = array_values(array_unique(array_merge(
             $scopeSet['required'] ?? [],
@@ -87,7 +90,7 @@ return function (ModuleRegistry $registry): void {
         if (is_array($override) && !empty($override)) {
             $cfg['scopes'] = array_values(array_unique(array_filter($override, 'is_string')));
         } else {
-            $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+            $scopePolicy = new ScopePolicy($app->db, $identityResolver);
             $defaultPolicy = $scopePolicy->getDefaultPolicy();
             if ($defaultPolicy && !empty($defaultPolicy['required_scopes'])) {
                 $cfg['scopes'] = $defaultPolicy['required_scopes'];
@@ -116,7 +119,7 @@ return function (ModuleRegistry $registry): void {
             $characterId = (int)($result['character_id'] ?? 0);
             $bucket = (string)($result['bucket'] ?? 'default');
             if ($userId > 0 && $characterId > 0 && $bucket === 'member_audit') {
-                $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+                $scopePolicy = new ScopePolicy($app->db, $identityResolver);
                 $scopeSet = $scopePolicy->getEffectiveScopesForUser($userId);
                 $tokenRow = $app->db->one(
                     "SELECT access_token, scopes_json, expires_at
@@ -585,7 +588,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html(\App\Core\Layout::page('Scopes & Linking', $body, $leftTree, $adminTree, $userTree), 200);
     });
 
-    $registry->route('GET', '/me', function (Request $req) use ($app): Response {
+    $registry->route('GET', '/me', function (Request $req) use ($app, $universeShared, $identityResolver): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
@@ -601,7 +604,6 @@ return function (ModuleRegistry $registry): void {
         $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
         $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
 
-        $u = new Universe($app->db);
         $primary = $app->db->one(
             "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
             [$uid]
@@ -663,6 +665,16 @@ return function (ModuleRegistry $registry): void {
                 $summaryMap[(int)$row['character_id']] = $row;
             }
         }
+        $orgMap = $identityResolver->resolveCharacters(array_values(array_unique(array_map(fn($row) => (int)($row['character_id'] ?? 0), $pagedCharacters))));
+
+        $displayOrgName = function (?array $org, string $type): string {
+            if (!$org) return 'Unknown';
+            if (($org['org_status'] ?? '') !== 'fresh') return 'Unknown';
+            if ($type === 'corporation') {
+                return ((int)($org['corp_id'] ?? 0) > 0) ? (string)($org['corporation']['name'] ?? 'Unknown') : 'Unknown';
+            }
+            return ((int)($org['alliance_id'] ?? 0) > 0) ? (string)($org['alliance']['name'] ?? 'Unknown') : 'Unknown';
+        };
 
         $renderPagination = function (int $total, int $page, int $perPage, array $query): string {
             $pages = (int)ceil($total / max(1, $perPage));
@@ -689,16 +701,17 @@ return function (ModuleRegistry $registry): void {
         foreach ($pagedCharacters as $character) {
             $characterId = (int)($character['character_id'] ?? 0);
             if ($characterId <= 0) continue;
-            $profile = $u->characterProfile($characterId);
+            $profile = $universeShared->characterProfile($characterId);
             $portrait = $profile['character']['portrait']['px256x256'] ?? $profile['character']['portrait']['px128x128'] ?? null;
-            $corpName = htmlspecialchars((string)($profile['corporation']['name'] ?? '—'));
-            $allianceName = htmlspecialchars((string)($profile['alliance']['name'] ?? '—'));
+            $org = $orgMap[$characterId] ?? null;
+            $corpName = htmlspecialchars($displayOrgName($org, 'corporation'));
+            $allianceName = htmlspecialchars($displayOrgName($org, 'alliance'));
             $name = htmlspecialchars((string)($profile['character']['name'] ?? $character['character_name'] ?? 'Unknown'));
             $summary = $summaryMap[$characterId] ?? [];
             $totalSp = isset($summary['total_sp']) ? number_format((int)$summary['total_sp']) : '—';
             $lastLogin = htmlspecialchars((string)($summary['last_login_at'] ?? '—'));
             $locationId = (int)($summary['location_system_id'] ?? 0);
-            $location = $locationId > 0 ? htmlspecialchars($u->name('system', $locationId)) : '—';
+            $location = $locationId > 0 ? htmlspecialchars($universeShared->name('system', $locationId)) : '—';
             $mainBadge = !empty($character['is_main']) ? "<span class='badge bg-primary ms-2'>Main</span>" : '';
 
             $actions = '';

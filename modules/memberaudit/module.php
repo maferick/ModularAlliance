@@ -13,6 +13,7 @@ use App\Core\EsiCache;
 use App\Core\EsiClient;
 use App\Core\EveSso;
 use App\Core\HttpClient;
+use App\Core\IdentityResolver;
 use App\Core\Layout;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
@@ -27,6 +28,8 @@ use App\Http\Response;
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
     $moduleVersion = '1.0.0';
+    $universeShared = new Universe($app->db);
+    $identityResolver = new IdentityResolver($app->db, $universeShared);
 
     $registry->right('memberaudit.view', 'Access the Member Audit self-service tools.');
     $registry->right('memberaudit.leadership', 'Access Member Audit leadership dashboards.');
@@ -127,7 +130,7 @@ return function (ModuleRegistry $registry): void {
         return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
     };
 
-    $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+    $scopePolicy = new ScopePolicy($app->db, $identityResolver);
     $scopeAudit = new ScopeAuditService($app->db);
 
     $memberAuditScopes = [
@@ -679,20 +682,22 @@ return function (ModuleRegistry $registry): void {
           {$flowNote}";
     };
 
-    $registry->route('GET', '/memberaudit', function (Request $req) use ($app, $renderPage, $fetchMemberCharacters, $scopePolicy, $logAccess): Response {
+    $registry->route('GET', '/memberaudit', function (Request $req) use ($app, $renderPage, $fetchMemberCharacters, $scopePolicy, $logAccess, $identityResolver, $universeShared): Response {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($uid <= 0) return Response::redirect('/auth/login');
 
         $characters = $fetchMemberCharacters($uid);
-        $universe = new Universe($app->db);
+        $characterIds = array_values(array_unique(array_map(fn($row) => (int)($row['character_id'] ?? 0), $characters)));
+        $orgMap = $identityResolver->resolveCharacters($characterIds);
         $rows = '';
         foreach ($characters as $character) {
             $characterId = (int)($character['character_id'] ?? 0);
             if ($characterId <= 0) continue;
-            $profile = $universe->characterProfile($characterId);
+            $profile = $universeShared->characterProfile($characterId);
             $name = htmlspecialchars((string)($profile['character']['name'] ?? $character['character_name'] ?? 'Unknown'));
-            $corpName = htmlspecialchars((string)($profile['corporation']['name'] ?? '—'));
-            $allianceName = htmlspecialchars((string)($profile['alliance']['name'] ?? '—'));
+            $org = $orgMap[$characterId] ?? null;
+            $corpName = htmlspecialchars($org && ($org['org_status'] ?? '') === 'fresh' && (int)($org['corp_id'] ?? 0) > 0 ? (string)($org['corporation']['name'] ?? 'Unknown') : 'Unknown');
+            $allianceName = htmlspecialchars($org && ($org['org_status'] ?? '') === 'fresh' && (int)($org['alliance_id'] ?? 0) > 0 ? (string)($org['alliance']['name'] ?? 'Unknown') : 'Unknown');
             $rows .= "<tr>
                 <td>{$name}</td>
                 <td>{$corpName}</td>
@@ -751,7 +756,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/auth/login');
     }, ['right' => 'memberaudit.view']);
 
-    $registry->route('GET', '/memberaudit/character/{id}', function (Request $req) use ($app, $renderPage, $fetchMemberCharacters, $fetchAuditSnapshot, $memberAuditCategories, $renderAuditData, $logAccess): Response {
+    $registry->route('GET', '/memberaudit/character/{id}', function (Request $req) use ($app, $renderPage, $fetchMemberCharacters, $fetchAuditSnapshot, $memberAuditCategories, $renderAuditData, $logAccess, $universeShared): Response {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($uid <= 0) return Response::redirect('/auth/login');
         $characterId = (int)($req->params['id'] ?? 0);
@@ -767,8 +772,7 @@ return function (ModuleRegistry $registry): void {
             return Response::html($renderPage('Member Audit', "<div class='alert alert-warning'>Character not found.</div>"), 404);
         }
 
-        $universe = new Universe($app->db);
-        $profile = $universe->characterProfile($characterId);
+        $profile = $universeShared->characterProfile($characterId);
         $name = htmlspecialchars((string)($profile['character']['name'] ?? 'Unknown'));
         $tabs = '';
         $active = (string)($req->query['tab'] ?? 'assets');
@@ -784,7 +788,7 @@ return function (ModuleRegistry $registry): void {
         $snapshots = $fetchAuditSnapshot($characterId);
         $payload = $snapshots[$active]['data'] ?? [];
         $fetchedAt = htmlspecialchars((string)($snapshots[$active]['fetched_at'] ?? '—'));
-        $content = $renderAuditData($universe, $active, $payload);
+        $content = $renderAuditData($universeShared, $active, $payload);
 
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
             <div>
@@ -890,7 +894,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/memberaudit/share');
     }, ['right' => 'memberaudit.view']);
 
-    $registry->route('GET', '/memberaudit/share/{token}', function (Request $req) use ($app, $renderPage, $fetchAuditSnapshot, $memberAuditCategories, $renderAuditData, $resolveCharacterName, $logAccess): Response {
+    $registry->route('GET', '/memberaudit/share/{token}', function (Request $req) use ($app, $renderPage, $fetchAuditSnapshot, $memberAuditCategories, $renderAuditData, $resolveCharacterName, $logAccess, $universeShared): Response {
         $tokenValue = (string)($req->params['token'] ?? '');
         if ($tokenValue === '') {
             return Response::text('Missing token', 400);
@@ -924,8 +928,7 @@ return function (ModuleRegistry $registry): void {
             $selectedId = $characterIds[0];
         }
 
-        $universe = new Universe($app->db);
-        $profile = $universe->characterProfile($selectedId);
+        $profile = $universeShared->characterProfile($selectedId);
         $name = htmlspecialchars((string)($profile['character']['name'] ?? 'Unknown'));
 
         $active = (string)($req->query['tab'] ?? 'assets');
@@ -942,11 +945,11 @@ return function (ModuleRegistry $registry): void {
         $snapshots = $fetchAuditSnapshot($selectedId);
         $payload = $snapshots[$active]['data'] ?? [];
         $fetchedAt = htmlspecialchars((string)($snapshots[$active]['fetched_at'] ?? '—'));
-        $content = $renderAuditData($universe, $active, $payload);
+        $content = $renderAuditData($universeShared, $active, $payload);
 
         $characterOptions = '';
         foreach ($characterIds as $characterId) {
-            $characterName = htmlspecialchars($resolveCharacterName($universe, $characterId));
+            $characterName = htmlspecialchars($resolveCharacterName($universeShared, $characterId));
             $selected = $characterId === $selectedId ? 'selected' : '';
             $characterOptions .= "<option value='{$characterId}' {$selected}>{$characterName}</option>";
         }
@@ -971,7 +974,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Applicant Share', $body), 200);
     }, ['public' => true]);
 
-    $registry->route('GET', '/admin/memberaudit', function (Request $req) use ($app, $renderPage, $resolveEntityName, $logAccess): Response {
+    $registry->route('GET', '/admin/memberaudit', function (Request $req) use ($app, $renderPage, $resolveEntityName, $logAccess, $universeShared): Response {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         $search = trim((string)($req->query['q'] ?? ''));
         $params = [];
@@ -985,28 +988,30 @@ return function (ModuleRegistry $registry): void {
         $corpIds = array_values(array_filter(array_map('intval', $settings['general']['corp_ids'] ?? [])));
         if (!empty($corpIds)) {
             $placeholders = implode(',', array_fill(0, count($corpIds), '?'));
-            $whereParts[] = "ms.corp_id IN ({$placeholders})";
+            $whereParts[] = "co.corp_id IN ({$placeholders})";
             $params = array_merge($params, $corpIds);
         }
         $where = $whereParts ? 'WHERE ' . implode(' AND ', $whereParts) : '';
 
         $rows = $app->db->all(
-            "SELECT u.id AS user_id, u.character_name, u.character_id, ms.corp_id, ms.alliance_id, ms.audit_loaded, ms.last_login_at
+            "SELECT u.id AS user_id, u.character_name, u.character_id,
+                    co.corp_id AS corp_id, co.alliance_id AS alliance_id,
+                    ms.audit_loaded, ms.last_login_at
              FROM eve_users u
+             LEFT JOIN core_character_identities ci ON ci.user_id=u.id AND ci.is_main=1
+             LEFT JOIN core_character_orgs co ON co.character_id=ci.character_id
              LEFT JOIN module_corptools_member_summary ms ON ms.user_id=u.id
              {$where}
              ORDER BY u.character_name ASC",
             $params
         );
-
-        $universe = new Universe($app->db);
         $bodyRows = '';
         foreach ($rows as $row) {
             $userId = (int)($row['user_id'] ?? 0);
             $characterId = (int)($row['character_id'] ?? 0);
             $characterName = htmlspecialchars((string)($row['character_name'] ?? 'Unknown'));
-            $corpName = htmlspecialchars($resolveEntityName($universe, 'corporation', (int)($row['corp_id'] ?? 0)));
-            $allianceName = htmlspecialchars($resolveEntityName($universe, 'alliance', (int)($row['alliance_id'] ?? 0)));
+            $corpName = htmlspecialchars($resolveEntityName($universeShared, 'corporation', (int)($row['corp_id'] ?? 0)));
+            $allianceName = htmlspecialchars($resolveEntityName($universeShared, 'alliance', (int)($row['alliance_id'] ?? 0)));
             $auditLoaded = (int)($row['audit_loaded'] ?? 0) === 1 ? "<span class='badge bg-success'>Loaded</span>" : "<span class='badge bg-warning text-dark'>Missing</span>";
             $lastLogin = htmlspecialchars((string)($row['last_login_at'] ?? '—'));
             $bodyRows .= "<tr>
@@ -1043,7 +1048,7 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('Member Audit', $body), 200);
     }, ['right' => 'memberaudit.leadership']);
 
-    $registry->route('GET', '/admin/memberaudit/member/{id}', function (Request $req) use ($app, $renderPage, $fetchAuditSnapshot, $memberAuditCategories, $renderAuditData, $resolveCharacterName, $logAccess): Response {
+    $registry->route('GET', '/admin/memberaudit/member/{id}', function (Request $req) use ($app, $renderPage, $fetchAuditSnapshot, $memberAuditCategories, $renderAuditData, $resolveCharacterName, $logAccess, $universeShared): Response {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         $memberId = (int)($req->params['id'] ?? 0);
         if ($memberId <= 0) {
@@ -1058,7 +1063,10 @@ return function (ModuleRegistry $registry): void {
         $corpIds = array_values(array_filter(array_map('intval', $settings['general']['corp_ids'] ?? [])));
         if (!empty($corpIds)) {
             $memberCorp = $app->db->one(
-                "SELECT corp_id FROM module_corptools_member_summary WHERE user_id=? LIMIT 1",
+                "SELECT co.corp_id
+                 FROM core_character_identities ci
+                 LEFT JOIN core_character_orgs co ON co.character_id=ci.character_id
+                 WHERE ci.user_id=? AND ci.is_main=1 LIMIT 1",
                 [$memberId]
             );
             $corpId = (int)($memberCorp['corp_id'] ?? 0);
@@ -1082,8 +1090,7 @@ return function (ModuleRegistry $registry): void {
             $selectedId = $characterIds[0];
         }
 
-        $universe = new Universe($app->db);
-        $profile = $universe->characterProfile($selectedId);
+        $profile = $universeShared->characterProfile($selectedId);
         $name = htmlspecialchars((string)($profile['character']['name'] ?? 'Unknown'));
         $tabs = '';
         $active = (string)($req->query['tab'] ?? 'assets');
@@ -1099,11 +1106,11 @@ return function (ModuleRegistry $registry): void {
         $snapshots = $fetchAuditSnapshot($selectedId);
         $payload = $snapshots[$active]['data'] ?? [];
         $fetchedAt = htmlspecialchars((string)($snapshots[$active]['fetched_at'] ?? '—'));
-        $content = $renderAuditData($universe, $active, $payload);
+        $content = $renderAuditData($universeShared, $active, $payload);
 
         $characterOptions = '';
         foreach ($characterIds as $characterId) {
-            $characterName = htmlspecialchars($resolveCharacterName($universe, $characterId));
+            $characterName = htmlspecialchars($resolveCharacterName($universeShared, $characterId));
             $selected = $characterId === $selectedId ? 'selected' : '';
             $characterOptions .= "<option value='{$characterId}' {$selected}>{$characterName}</option>";
         }
@@ -1476,7 +1483,9 @@ return function (ModuleRegistry $registry): void {
         $memberAuditCategories,
         $memberAuditScopes,
         $scopePolicy,
-        $scopeAudit
+        $scopeAudit,
+        $identityResolver,
+        $universeShared
     ): array {
         $cfg = $app->config['eve_sso'] ?? [];
         $sso = new EveSso($app->db, $cfg);
@@ -1497,6 +1506,15 @@ return function (ModuleRegistry $registry): void {
             $userId = (int)($row['user_id'] ?? 0);
             $characterId = (int)($row['character_id'] ?? 0);
             if ($userId <= 0 || $characterId <= 0) continue;
+
+            $mainRow = $app->db->one("SELECT character_id FROM eve_users WHERE id=? LIMIT 1", [$userId]);
+            $mainCharacterId = (int)($mainRow['character_id'] ?? 0);
+            $identityResolver->upsertIdentity($characterId, $userId, $mainCharacterId > 0 && $mainCharacterId === $characterId);
+
+            $profile = $universeShared->characterProfile($characterId);
+            $corpId = (int)($profile['corporation']['id'] ?? 0);
+            $allianceId = (int)($profile['alliance']['id'] ?? 0);
+            $identityResolver->upsertOrgMapping($characterId, $corpId, $allianceId);
 
             $scopeSet = $scopePolicy->getEffectiveScopesForUser($userId);
             $requiredScopes = $scopeSet['required'] ?? [];

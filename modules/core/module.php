@@ -9,6 +9,7 @@ Module Slug: core
 */
 
 use App\Core\AdminRoutes;
+use App\Core\IdentityResolver;
 use App\Core\Layout;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
@@ -17,6 +18,8 @@ use App\Http\Response;
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
+    $universeShared = new Universe($app->db);
+    $identityResolver = new IdentityResolver($app->db, $universeShared);
 
     $registry->right('admin.access', 'Access admin dashboard');
     $registry->right('admin.settings', 'Manage site settings');
@@ -44,7 +47,7 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('GET', '/health', fn() => Response::text("OK\n", 200), ['public' => true]);
 
-    $registry->route('GET', '/', function () use ($app, $hasRight): Response {
+    $registry->route('GET', '/', function () use ($app, $hasRight, $universeShared, $identityResolver): Response {
         $leftTree  = $app->menu->tree('left', $hasRight);
         $adminTree = $app->menu->tree('admin_top', $hasRight);
         $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
@@ -64,19 +67,17 @@ return function (ModuleRegistry $registry): void {
             return Response::html(Layout::page('Dashboard', $body, $leftTree, $adminTree, $userTree), 200);
         }
 
-        $u = new Universe($app->db);
-        $p = $u->characterProfile($cid);
+        $p = $universeShared->characterProfile($cid);
+        $org = $identityResolver->resolveCharacter($cid);
 
         $char = htmlspecialchars($p['character']['name'] ?? 'Unknown');
-        $corp = htmlspecialchars($p['corporation']['name'] ?? '—');
-        $corpT = htmlspecialchars($p['corporation']['ticker'] ?? '');
-        $all  = htmlspecialchars($p['alliance']['name'] ?? '—');
-        $allT = htmlspecialchars($p['alliance']['ticker'] ?? '');
+        $corp = htmlspecialchars(($org['org_status'] ?? '') === 'fresh' && (int)($org['corp_id'] ?? 0) > 0 ? (string)($org['corporation']['name'] ?? 'Unknown') : 'Unknown');
+        $all  = htmlspecialchars(($org['org_status'] ?? '') === 'fresh' && (int)($org['alliance_id'] ?? 0) > 0 ? (string)($org['alliance']['name'] ?? 'Unknown') : 'Unknown');
 
         $body = "<h1>Dashboard</h1>
                  <p>Welcome back, <strong>{$char}</strong>.</p>
-                 <p>Corporation: <strong>{$corp}</strong>" . ($corpT !== '' ? " [{$corpT}]" : "") . "</p>
-                 <p>Alliance: <strong>{$all}</strong>" . ($allT !== '' ? " [{$allT}]" : "") . "</p>";
+                 <p>Corporation: <strong>{$corp}</strong></p>
+                 <p>Alliance: <strong>{$all}</strong></p>";
 
         return Response::html(Layout::page('Dashboard', $body, $leftTree, $adminTree, $userTree), 200);
     });

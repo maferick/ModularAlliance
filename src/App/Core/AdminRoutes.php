@@ -8,6 +8,7 @@ use App\Core\AdminRoutes\Home;
 use App\Core\AdminRoutes\Menu;
 use App\Core\AdminRoutes\Rights;
 use App\Core\AdminRoutes\Settings;
+use App\Core\IdentityResolver;
 use App\Core\Settings as CoreSettings;
 use App\Core\AdminRoutes\Users;
 use App\Http\Response;
@@ -36,13 +37,14 @@ final class AdminRoutes
                 $cid = (int)($_SESSION['character_id'] ?? 0);
                 if ($cid > 0) {
                     $u = new Universe($app->db);
-                    $p = $u->characterProfile($cid);
-                    if ($type === 'alliance' && !empty($p['alliance']['id'])) {
-                        $id = (int)$p['alliance']['id'];
-                        if ($brandName === 'killsineve.online' && !empty($p['alliance']['name'])) $brandName = (string)$p['alliance']['name'];
-                    } elseif (!empty($p['corporation']['id'])) {
-                        $id = (int)$p['corporation']['id'];
-                        if ($brandName === 'killsineve.online' && !empty($p['corporation']['name'])) $brandName = (string)$p['corporation']['name'];
+                    $identityResolver = new IdentityResolver($app->db, $u);
+                    $org = $identityResolver->resolveCharacter($cid);
+                    if ($type === 'alliance' && !empty($org['alliance_id'])) {
+                        $id = (int)$org['alliance_id'];
+                        if ($brandName === 'killsineve.online') $brandName = $u->name('alliance', $id);
+                    } elseif (!empty($org['corp_id'])) {
+                        $id = (int)$org['corp_id'];
+                        if ($brandName === 'killsineve.online') $brandName = $u->name('corporation', $id);
                     }
                 }
             }

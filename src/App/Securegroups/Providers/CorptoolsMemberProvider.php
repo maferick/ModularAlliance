@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace App\Securegroups\Providers;
 
 use App\Core\Db;
+use App\Core\IdentityResolver;
+use App\Core\Universe;
 use App\Securegroups\ProviderInterface;
 use App\Securegroups\RuleComparator;
 
@@ -79,7 +81,7 @@ final class CorptoolsMemberProvider implements ProviderInterface
     public function evaluateRule(int $userId, array $rule, array $context = []): array
     {
         $summary = $this->db->one(
-            "SELECT corp_id, alliance_id, highest_sp, last_login_at, corp_joined_at, audit_loaded, main_character_name\n"
+            "SELECT main_character_id, highest_sp, last_login_at, corp_joined_at, audit_loaded, main_character_name\n"
             . " FROM module_corptools_member_summary WHERE user_id=? LIMIT 1",
             [$userId]
         );
@@ -88,13 +90,19 @@ final class CorptoolsMemberProvider implements ProviderInterface
             return $this->unknown('No CorpTools member summary available.');
         }
 
+        $identityResolver = new IdentityResolver($this->db, new Universe($this->db));
+        $mainCharacterId = (int)($summary['main_character_id'] ?? 0);
+        $org = $mainCharacterId > 0 ? $identityResolver->resolveCharacter($mainCharacterId) : [];
+        $corpId = (int)($org['corp_id'] ?? 0);
+        $allianceId = (int)($org['alliance_id'] ?? 0);
+
         $ruleKey = (string)($rule['rule_key'] ?? '');
         $operator = (string)($rule['operator'] ?? 'equals');
         $expected = $this->normalizeValue($rule['value'] ?? null, $ruleKey);
 
         return match ($ruleKey) {
-            'corp_id' => $this->compareRule($operator, (int)($summary['corp_id'] ?? 0), $expected, 'corp_id'),
-            'alliance_id' => $this->compareRule($operator, (int)($summary['alliance_id'] ?? 0), $expected, 'alliance_id'),
+            'corp_id' => $this->compareRule($operator, $corpId, $expected, 'corp_id'),
+            'alliance_id' => $this->compareRule($operator, $allianceId, $expected, 'alliance_id'),
             'highest_sp' => $this->compareRule($operator, (int)($summary['highest_sp'] ?? 0), $expected, 'highest_sp'),
             'last_login_days' => $this->compareDaysSince($operator, $summary['last_login_at'] ?? null, $expected, 'last_login_at'),
             'corp_join_days' => $this->compareDaysSince($operator, $summary['corp_joined_at'] ?? null, $expected, 'corp_joined_at'),

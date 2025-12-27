@@ -96,6 +96,11 @@ CorpTools settings are stored in `module_corptools_settings` and configured via 
 - **Pinger**: webhook URL + optional shared secret
 - **Filters**: default filter baselines for member queries
 
+## Identity & Org Mapping
+CorpTools uses a canonical identity table (`core_character_identities`) and a separate org mapping table (`core_character_orgs`) to keep character data and corporation/alliance data separate. Org names are resolved via `universe_entities`, and only IDs + timestamps are stored in the mapping table.
+
+If corp/alliance data looks stale or inconsistent, use **Admin → CorpTools → Identity Diagnostics** to review mismatches and rebuild mappings. The rebuild action re-derives identity + org mappings from existing summary/link tables and refreshes timestamps.
+
 ## Admin dashboards
 - **Status**: `/admin/corptools/status` for health signals and last successful syncs.
 - **Cron Job Manager**: `/admin/system/cron` for job schedules, logs, and manual runs.

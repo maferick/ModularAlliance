@@ -114,24 +114,35 @@ final class SecureGroupService
     /** @return array<string, mixed> */
     public function buildUserContext(int $userId): array
     {
-        $main = $this->db->one(
-            "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
+        $identityRows = $this->db->all(
+            "SELECT character_id, is_main FROM core_character_identities WHERE user_id=?",
             [$userId]
         );
-        $mainCharacterId = (int)($main['character_id'] ?? 0);
-        $mainName = (string)($main['character_name'] ?? '');
-
-        $altRows = $this->db->all(
-            "SELECT character_id FROM module_charlink_links WHERE user_id=?",
-            [$userId]
-        );
+        $mainCharacterId = 0;
         $altIds = [];
-        foreach ($altRows as $row) {
-            $altId = (int)($row['character_id'] ?? 0);
-            if ($altId > 0 && $altId !== $mainCharacterId) {
-                $altIds[] = $altId;
+        foreach ($identityRows as $row) {
+            $cid = (int)($row['character_id'] ?? 0);
+            if ($cid <= 0) continue;
+            if ((int)($row['is_main'] ?? 0) === 1) {
+                $mainCharacterId = $cid;
+            } else {
+                $altIds[] = $cid;
             }
         }
+
+        if ($mainCharacterId === 0) {
+            $main = $this->db->one(
+                "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
+                [$userId]
+            );
+            $mainCharacterId = (int)($main['character_id'] ?? 0);
+        }
+
+        $mainNameRow = $this->db->one(
+            "SELECT character_name FROM eve_users WHERE id=? LIMIT 1",
+            [$userId]
+        );
+        $mainName = (string)($mainNameRow['character_name'] ?? '');
 
         return [
             'user_id' => $userId,

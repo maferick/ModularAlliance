@@ -11,6 +11,7 @@ Module Slug: charlink
 use App\Core\Layout;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
+use App\Core\IdentityResolver;
 use App\Core\Universe;
 use App\Corptools\ScopePolicy;
 use App\Http\Request;
@@ -18,6 +19,8 @@ use App\Http\Response;
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
+    $universeShared = new Universe($app->db);
+    $identityResolver = new IdentityResolver($app->db, $universeShared);
 
     $registry->right('charlink.view', 'Access the character link hub.');
     $registry->right('charlink.audit', 'Audit character link targets.');
@@ -257,12 +260,12 @@ return function (ModuleRegistry $registry): void {
         ];
     };
 
-    $registry->route('GET', '/charlink', function () use ($app, $renderPage, $loadTargets, $tokenInfo): Response {
+    $registry->route('GET', '/charlink', function () use ($app, $renderPage, $loadTargets, $tokenInfo, $identityResolver, $universeShared): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
-        $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+        $scopePolicy = new ScopePolicy($app->db, $identityResolver);
         $scopeSet = $scopePolicy->getEffectiveScopesForUser($uid);
         $requiredScopes = $scopeSet['required'] ?? [];
         $optionalScopes = $scopeSet['optional'] ?? [];
@@ -299,14 +302,13 @@ return function (ModuleRegistry $registry): void {
         $tokenExpiresAt = $tokenData['expires_at_ts'] ?? null;
         $requiredMissing = array_values(array_diff($requiredScopes, $tokenScopes));
 
-        $u = new Universe($app->db);
-        $profile = $u->characterProfile($cid);
+        $profile = $universeShared->characterProfile($cid);
         $charName = htmlspecialchars($profile['character']['name'] ?? 'Unknown');
         $portrait = $profile['character']['portrait']['px128x128']
             ?? $profile['character']['portrait']['px64x64']
             ?? null;
-        $corpName = htmlspecialchars($profile['corporation']['name'] ?? 'Unknown');
-        $corpTicker = htmlspecialchars($profile['corporation']['ticker'] ?? '');
+        $org = $identityResolver->resolveCharacter($cid);
+        $corpName = htmlspecialchars(($org['org_status'] ?? '') === 'fresh' && (int)($org['corp_id'] ?? 0) > 0 ? (string)($org['corporation']['name'] ?? 'Unknown') : 'Unknown');
 
         $flash = $_SESSION['charlink_hub_flash'] ?? null;
         unset($_SESSION['charlink_hub_flash']);
@@ -399,7 +401,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $portraitHtml = $portrait ? "<img src='" . htmlspecialchars($portrait) . "' width='64' height='64' style='border-radius:10px;'>" : '';
-        $corpLabel = $corpTicker !== '' ? "{$corpName} [{$corpTicker}]" : $corpName;
+        $corpLabel = $corpName;
 
         $requiredBadges = '';
         if (!empty($requiredScopes)) {
@@ -447,7 +449,7 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
-        $scopePolicy = new ScopePolicy($app->db, new Universe($app->db));
+        $scopePolicy = new ScopePolicy($app->db, $identityResolver);
         $scopeSet = $scopePolicy->getEffectiveScopesForUser($uid);
         $requiredScopes = $scopeSet['required'] ?? [];
         $optionalScopes = $scopeSet['optional'] ?? [];
@@ -491,7 +493,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/auth/login');
     }, ['right' => 'charlink.view']);
 
-    $registry->route('GET', '/charlink/audit', function (Request $req) use ($app, $renderPage, $loadTargets): Response {
+    $registry->route('GET', '/charlink/audit', function (Request $req) use ($app, $renderPage, $loadTargets, $identityResolver, $universeShared): Response {
         $targets = $loadTargets();
         $targetMap = [];
         foreach ($targets as $t) {
@@ -524,7 +526,6 @@ return function (ModuleRegistry $registry): void {
             $groupMap[$userId][] = $name;
         }
 
-        $u = new Universe($app->db);
         $corpOptions = [];
         $groupOptions = [];
         $targetOptions = [];
@@ -557,10 +558,11 @@ return function (ModuleRegistry $registry): void {
                 continue;
             }
 
-            $profile = $u->characterProfile($characterId);
-            $corpName = (string)($profile['corporation']['name'] ?? '');
-            $corpTicker = (string)($profile['corporation']['ticker'] ?? '');
-            $corpLabel = $corpTicker !== '' ? "{$corpName} [{$corpTicker}]" : $corpName;
+            $profile = $universeShared->characterProfile($characterId);
+            $org = $identityResolver->resolveCharacter($characterId);
+            $corpLabel = ($org['org_status'] ?? '') === 'fresh' && (int)($org['corp_id'] ?? 0) > 0
+                ? (string)($org['corporation']['name'] ?? 'Unknown')
+                : 'Unknown';
 
             if ($corpLabel !== '') {
                 $corpOptions[$corpLabel] = true;

@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
+use App\Core\IdentityResolver;
 use App\Core\ModuleRegistry;
 use App\Core\Settings as CoreSettings;
 use App\Core\Universe;
@@ -26,17 +27,16 @@ final class Settings
             $cid = (int)($_SESSION['character_id'] ?? 0);
             if ($cid > 0) {
                 $u = new Universe($app->db);
-                $p = $u->characterProfile($cid);
+                $identityResolver = new IdentityResolver($app->db, $u);
+                $org = $identityResolver->resolveCharacter($cid);
 
-                if (!empty($p['corporation']['id'])) {
-                    $label = (string)($p['corporation']['name'] ?? 'Corporation');
-                    if (!empty($p['corporation']['ticker'])) $label .= " [" . (string)$p['corporation']['ticker'] . "]";
-                    $options[] = ['type' => 'corporation', 'id' => (int)$p['corporation']['id'], 'label' => $label];
+                if (($org['org_status'] ?? '') === 'fresh' && !empty($org['corp_id'])) {
+                    $label = $u->name('corporation', (int)$org['corp_id']);
+                    $options[] = ['type' => 'corporation', 'id' => (int)$org['corp_id'], 'label' => $label];
                 }
-                if (!empty($p['alliance']['id'])) {
-                    $label = (string)($p['alliance']['name'] ?? 'Alliance');
-                    if (!empty($p['alliance']['ticker'])) $label .= " [" . (string)$p['alliance']['ticker'] . "]";
-                    $options[] = ['type' => 'alliance', 'id' => (int)$p['alliance']['id'], 'label' => $label];
+                if (($org['org_status'] ?? '') === 'fresh' && !empty($org['alliance_id'])) {
+                    $label = $u->name('alliance', (int)$org['alliance_id']);
+                    $options[] = ['type' => 'alliance', 'id' => (int)$org['alliance_id'], 'label' => $label];
                 }
             }
 

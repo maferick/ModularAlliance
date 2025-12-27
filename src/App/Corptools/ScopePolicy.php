@@ -4,11 +4,11 @@ declare(strict_types=1);
 namespace App\Corptools;
 
 use App\Core\Db;
-use App\Core\Universe;
+use App\Core\IdentityResolver;
 
 final class ScopePolicy
 {
-    public function __construct(private Db $db, private Universe $universe) {}
+    public function __construct(private Db $db, private IdentityResolver $identityResolver) {}
 
     public function listPolicies(): array
     {
@@ -61,9 +61,9 @@ final class ScopePolicy
         $allianceId = 0;
 
         if ($mainCharacterId > 0) {
-            $profile = $this->universe->characterProfile($mainCharacterId);
-            $corpId = (int)($profile['corporation']['id'] ?? 0);
-            $allianceId = (int)($profile['alliance']['id'] ?? 0);
+            $org = $this->identityResolver->resolveCharacter($mainCharacterId);
+            $corpId = (int)($org['corp_id'] ?? 0);
+            $allianceId = (int)($org['alliance_id'] ?? 0);
         }
 
         return $this->getEffectiveScopesForContext($userId, $corpId, $allianceId);
