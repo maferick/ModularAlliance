@@ -65,7 +65,9 @@ SQL);
         try {
             if ($useTx) $this->db->begin();
 
-            db_exec($this->db, $sql);
+            foreach ($this->splitSqlStatements($sql) as $statement) {
+                db_exec($this->db, $statement);
+            }
 
             if ($useTx && $this->db->inTx()) $this->db->commit();
 
@@ -97,5 +99,81 @@ SQL);
     {
         $root = rtrim((string)APP_ROOT, '/') . '/';
         return str_starts_with($path, $root) ? substr($path, strlen($root)) : $path;
+    }
+
+    private function splitSqlStatements(string $sql): array
+    {
+        $statements = [];
+        $buffer = '';
+        $inSingle = false;
+        $inDouble = false;
+        $inLineComment = false;
+        $inBlockComment = false;
+        $length = strlen($sql);
+
+        for ($i = 0; $i < $length; $i++) {
+            $ch = $sql[$i];
+            $next = $i + 1 < $length ? $sql[$i + 1] : '';
+
+            if ($inLineComment) {
+                if ($ch === "\n") {
+                    $inLineComment = false;
+                    $buffer .= $ch;
+                }
+                continue;
+            }
+
+            if ($inBlockComment) {
+                if ($ch === '*' && $next === '/') {
+                    $inBlockComment = false;
+                    $i++;
+                }
+                continue;
+            }
+
+            if (!$inSingle && !$inDouble) {
+                $prev = $i > 0 ? $sql[$i - 1] : '';
+                if ($ch === '-' && $next === '-' && ($prev === '' || ctype_space($prev))) {
+                    $inLineComment = true;
+                    $i++;
+                    continue;
+                }
+                if ($ch === '/' && $next === '*') {
+                    $inBlockComment = true;
+                    $i++;
+                    continue;
+                }
+            }
+
+            if ($ch === "'" && !$inDouble) {
+                $escaped = $i > 0 && $sql[$i - 1] === '\\';
+                if (!$escaped) {
+                    $inSingle = !$inSingle;
+                }
+            } elseif ($ch === '"' && !$inSingle) {
+                $escaped = $i > 0 && $sql[$i - 1] === '\\';
+                if (!$escaped) {
+                    $inDouble = !$inDouble;
+                }
+            }
+
+            if ($ch === ';' && !$inSingle && !$inDouble) {
+                $statement = trim($buffer);
+                if ($statement !== '') {
+                    $statements[] = $statement;
+                }
+                $buffer = '';
+                continue;
+            }
+
+            $buffer .= $ch;
+        }
+
+        $statement = trim($buffer);
+        if ($statement !== '') {
+            $statements[] = $statement;
+        }
+
+        return $statements;
     }
 }
