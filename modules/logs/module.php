@@ -137,6 +137,6 @@ return function (ModuleRegistry $registry): void {
             . '</div>'
             . $pager;
 
-        return Response::html(Layout::page('Access Logs', $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
+        return Response::html(Layout::page('Access Logs', $body, $menus['left'], $menus['admin_top'], $menus['user'], $menus['top_left']), 200);
     }, ['right' => 'admin.logs']);
 };

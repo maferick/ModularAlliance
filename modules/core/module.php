@@ -42,7 +42,7 @@ return function (ModuleRegistry $registry): void {
     $registry->menu(['slug' => 'admin.cache', 'title' => 'ESI Cache', 'url' => '/admin/cache', 'sort_order' => 20, 'area' => 'site_admin_top', 'right_slug' => 'admin.cache']);
     $registry->menu(['slug' => 'admin.rights', 'title' => 'Rights', 'url' => '/admin/rights', 'sort_order' => 25, 'area' => 'site_admin_top', 'right_slug' => 'admin.rights']);
     $registry->menu(['slug' => 'admin.users', 'title' => 'Users & Groups', 'url' => '/admin/users', 'sort_order' => 30, 'area' => 'site_admin_top', 'right_slug' => 'admin.users']);
-    $registry->menu(['slug' => 'admin.menu', 'title' => 'Menu Editor', 'url' => '/admin/menu', 'sort_order' => 40, 'area' => 'site_admin_top', 'right_slug' => 'admin.menu']);
+    $registry->menu(['slug' => 'admin.menu', 'title' => 'Menu Builder', 'url' => '/admin/menu-builder', 'sort_order' => 40, 'area' => 'site_admin_top', 'right_slug' => 'admin.menu']);
 
     $rights = new Rights($app->db);
     $hasRight = function (string $right) use ($rights): bool {
@@ -89,7 +89,7 @@ return function (ModuleRegistry $registry): void {
             $body = "<h1>Dashboard</h1>
                      <p>You are not logged in.</p>
                      <p><a href='/auth/login'>Login with EVE SSO</a></p>";
-            return Response::html(Layout::page('Dashboard', $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
+            return Response::html(Layout::page('Dashboard', $body, $menus['left'], $menus['admin_top'], $menus['user'], $menus['top_left']), 200);
         }
 
         $p = $universeShared->characterProfile($cid);
@@ -105,7 +105,7 @@ return function (ModuleRegistry $registry): void {
                  <p>Corporation: <strong>{$corp}</strong></p>
                  <p>Alliance: <strong>{$all}</strong></p>";
 
-        return Response::html(Layout::page('Dashboard', $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
+        return Response::html(Layout::page('Dashboard', $body, $menus['left'], $menus['admin_top'], $menus['user'], $menus['top_left']), 200);
     });
 
     AdminRoutes::register($app, $registry, $hasRight);

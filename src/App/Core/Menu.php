@@ -7,11 +7,15 @@ final class Menu
 {
     public function __construct(private readonly Db $db) {}
 
+    public const AREA_LEFT = 'left';
+    public const AREA_ADMIN_TOP = 'admin_top';
+    public const AREA_USER_TOP = 'user_top';
+    public const AREA_TOP_LEFT = 'top_left';
+
     public const AREA_LEFT_MEMBER = 'left_member';
     public const AREA_LEFT_ADMIN = 'left_admin';
     public const AREA_MODULE_TOP = 'module_top';
     public const AREA_SITE_ADMIN = 'site_admin_top';
-    public const AREA_USER_TOP = 'user_top';
 
     public function register(array $item): void
     {
@@ -105,9 +109,8 @@ final class Menu
 
     public function layoutMenus(string $path, callable $hasRight, bool $loggedIn): array
     {
-        $leftMember = $this->tree(self::AREA_LEFT_MEMBER, $hasRight);
-        $leftAdmin = $this->tree(self::AREA_LEFT_ADMIN, $hasRight);
-        $siteAdmin = $this->tree(self::AREA_SITE_ADMIN, $hasRight);
+        $left = $this->tree(self::AREA_LEFT, $hasRight);
+        $adminTop = $this->tree(self::AREA_ADMIN_TOP, $hasRight);
         $user = $this->tree(self::AREA_USER_TOP, fn(string $r) => true);
 
         if ($loggedIn) {
@@ -116,15 +119,14 @@ final class Menu
             $user = array_values(array_filter($user, fn($n) => $n['slug'] === 'user.login'));
         }
 
-        $moduleTree = $this->tree(self::AREA_MODULE_TOP, $hasRight);
+        $moduleTree = $this->tree(self::AREA_TOP_LEFT, $hasRight);
         $moduleContext = self::selectModuleContext($moduleTree, $path);
 
         return [
-            'left_member' => $leftMember,
-            'left_admin' => $leftAdmin,
-            'site_admin' => $siteAdmin,
+            'left' => $left,
+            'admin_top' => $adminTop,
             'user' => $user,
-            'module' => $moduleContext,
+            'top_left' => $moduleContext,
         ];
     }
 
@@ -174,37 +176,37 @@ final class Menu
         ];
     }
 
-    private static function normalizeArea(string $area, bool $log = false): string
+    public static function normalizeArea(string $area, bool $log = false): string
     {
         $original = trim($area);
         if ($original === '') {
-            return 'left';
+            return self::AREA_LEFT;
         }
 
         $normalized = strtolower($original);
-        $valid = ['left', 'admin_top', 'user_top'];
+        $valid = [self::AREA_LEFT, self::AREA_ADMIN_TOP, self::AREA_USER_TOP, self::AREA_TOP_LEFT];
         if (in_array($normalized, $valid, true)) {
             return $normalized;
         }
 
         $map = [
-            self::AREA_LEFT_MEMBER => 'left',
-            self::AREA_LEFT_ADMIN => 'left',
-            self::AREA_MODULE_TOP => 'admin_top',
-            self::AREA_SITE_ADMIN => 'admin_top',
-            self::AREA_USER_TOP => 'user_top',
-            'admin' => 'admin_top',
-            'admin_left' => 'left',
-            'admin_hr' => 'admin_top',
-            'hr' => 'admin_top',
-            'member_left' => 'left',
-            'members' => 'left',
-            'top_left' => 'left',
-            'member_top' => 'user_top',
-            'user' => 'user_top',
+            self::AREA_LEFT_MEMBER => self::AREA_LEFT,
+            self::AREA_LEFT_ADMIN => self::AREA_LEFT,
+            self::AREA_MODULE_TOP => self::AREA_TOP_LEFT,
+            self::AREA_SITE_ADMIN => self::AREA_ADMIN_TOP,
+            self::AREA_USER_TOP => self::AREA_USER_TOP,
+            'admin' => self::AREA_ADMIN_TOP,
+            'admin_left' => self::AREA_LEFT,
+            'admin_hr' => self::AREA_ADMIN_TOP,
+            'hr' => self::AREA_ADMIN_TOP,
+            'member_left' => self::AREA_LEFT,
+            'members' => self::AREA_LEFT,
+            'top_left' => self::AREA_TOP_LEFT,
+            'member_top' => self::AREA_USER_TOP,
+            'user' => self::AREA_USER_TOP,
         ];
 
-        $mapped = $map[$normalized] ?? 'left';
+        $mapped = $map[$normalized] ?? self::AREA_LEFT;
         if ($log && !array_key_exists($normalized, $map)) {
             error_log("Menu area '{$original}' normalized to '{$mapped}'");
         }

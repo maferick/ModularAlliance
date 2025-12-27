@@ -585,7 +585,7 @@ return function (ModuleRegistry $registry): void {
                   {$memberCard}
                   {$notes}";
 
-        return Response::html(\App\Core\Layout::page('Scopes & Linking', $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
+        return Response::html(\App\Core\Layout::page('Scopes & Linking', $body, $menus['left'], $menus['admin_top'], $menus['user'], $menus['top_left']), 200);
     });
 
     $registry->route('GET', '/me', function (Request $req) use ($app, $universeShared, $identityResolver): Response {
@@ -822,6 +822,6 @@ return function (ModuleRegistry $registry): void {
                   {$listHtml}
                   {$pagination}";
 
-        return Response::html(\App\Core\Layout::page('Profile', $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
+        return Response::html(\App\Core\Layout::page('Profile', $body, $menus['left'], $menus['admin_top'], $menus['user'], $menus['top_left']), 200);
     });
 };
