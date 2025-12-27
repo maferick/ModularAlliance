@@ -71,23 +71,19 @@ SQL);
 
             if ($useTx && $this->db->inTx()) $this->db->commit();
 
-            db_exec(
-                $this->db,
-                "INSERT INTO migration_log (module_slug, file_path, checksum, status, message, ran_at)
-                 VALUES (?, ?, ?, 'applied', '', NOW())",
-                [$moduleSlug, $path, $checksum]
-            );
+            $this->recordMigration($moduleSlug, $path, $checksum, 'applied', '');
 
             echo "[OK] {$moduleSlug}: {$path}\n";
         } catch (\Throwable $e) {
             if ($useTx && $this->db->inTx()) $this->db->rollback();
 
             try {
-                db_exec(
-                    $this->db,
-                    "INSERT INTO migration_log (module_slug, file_path, checksum, status, message, ran_at)
-                     VALUES (?, ?, ?, 'failed', ?, NOW())",
-                    [$moduleSlug, $path, $checksum, substr($e->getMessage(), 0, 255)]
+                $this->recordMigration(
+                    $moduleSlug,
+                    $path,
+                    $checksum,
+                    'failed',
+                    substr($e->getMessage(), 0, 255)
                 );
             } catch (\Throwable $ignore) {}
 
@@ -99,6 +95,33 @@ SQL);
     {
         $root = rtrim((string)APP_ROOT, '/') . '/';
         return str_starts_with($path, $root) ? substr($path, strlen($root)) : $path;
+    }
+
+    private function recordMigration(
+        string $moduleSlug,
+        string $path,
+        string $checksum,
+        string $status,
+        string $message
+    ): void {
+        $updated = db_exec(
+            $this->db,
+            "UPDATE migration_log
+             SET status=?, message=?, ran_at=NOW()
+             WHERE module_slug=? AND file_path=? AND checksum=?",
+            [$status, $message, $moduleSlug, $path, $checksum]
+        );
+
+        if ($updated > 0) {
+            return;
+        }
+
+        db_exec(
+            $this->db,
+            "INSERT INTO migration_log (module_slug, file_path, checksum, status, message, ran_at)
+             VALUES (?, ?, ?, ?, ?, NOW())",
+            [$moduleSlug, $path, $checksum, $status, $message]
+        );
     }
 
     private function splitSqlStatements(string $sql): array
