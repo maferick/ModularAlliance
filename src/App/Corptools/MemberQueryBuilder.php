@@ -11,7 +11,7 @@ final class MemberQueryBuilder
         $sql = "SELECT ms.*, u.public_id AS user_public_id, cs.character_name, cs.assets_count, cs.assets_value, cs.location_system_id, cs.location_region_id,
                        cs.current_ship_type_id, cs.corp_roles_json, cs.corp_title, cs.home_station_id, cs.death_clone_location_id,
                        cs.jump_clone_location_id, cs.total_sp, cs.last_audit_at,
-                       co.corp_id AS corp_id, co.alliance_id AS alliance_id,
+                       co.corp_id AS org_corp_id, co.alliance_id AS org_alliance_id,
                        css.status AS scope_status, css.reason AS scope_reason, css.missing_scopes_json, css.token_expires_at, css.checked_at
                 FROM module_corptools_member_summary ms
                 JOIN eve_users u ON u.id = ms.user_id
