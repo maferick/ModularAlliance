@@ -17,18 +17,10 @@ function killstats_render_page(App $app, string $title, string $bodyHtml): strin
         return $rights->userHasRight($uid, $right);
     };
 
-    $leftTree = $app->menu->tree('left', $hasRight);
-    $adminTree = $app->menu->tree('admin_top', $hasRight);
-    $userTree = $app->menu->tree('user_top', fn(string $r) => true);
-
     $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
-    if ($loggedIn) {
-        $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
-    } else {
-        $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] === 'user.login'));
-    }
+    $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
-    return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
+    return Layout::page($title, $bodyHtml, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']);
 }
 
 function killstats_scope_name(Universe $universe, string $identityType, int $memberId): string

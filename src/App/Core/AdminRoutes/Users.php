@@ -45,15 +45,14 @@ final class Users
             foreach ($users as $u) {
                 $uid = (int)$u['id'];
                 $publicId = (string)($u['public_id'] ?? '');
+                $characterName = (string)($u['character_name'] ?? 'Unknown');
                 $currentUserId = (int)($_SESSION['user_id'] ?? 0);
                 $flags = [];
                 if ((int)$u['is_superadmin'] === 1) $flags[] = "<span class='badge text-bg-danger'>superadmin</span>";
                 $flagsHtml = $flags ? implode(' ', $flags) : "<span class='badge text-bg-secondary'>standard</span>";
 
                 $formId = "user-form-{$publicId}";
-                $h .= "<tr><td><strong>" . htmlspecialchars($u['character_name']) . "</strong>
-                           <div class='text-muted small'>member_id=" . htmlspecialchars($publicId) . "</div>
-                        </td>
+                $h .= "<tr><td><strong>" . htmlspecialchars($characterName) . "</strong></td>
                         <td>{$flagsHtml}</td>
                         <td>";
 
@@ -71,13 +70,14 @@ final class Users
                 }
 
                 $deleteDisabled = $uid === $currentUserId ? "disabled" : "";
+                $confirmName = htmlspecialchars($characterName);
                 $h .= "</td>
                         <td class='text-nowrap'>
                           <form method='post' action='/admin/users/save' id='{$formId}' class='d-inline'>
                             <input type='hidden' name='user_id' value='" . htmlspecialchars($publicId) . "'>
                             <button class='btn btn-sm btn-success me-2' type='submit'>Save</button>
                           </form>
-                          <form method='post' action='/admin/users/delete' class='d-inline' onsubmit=\"return confirm('Delete user {$publicId}? This cannot be undone.');\">
+                          <form method='post' action='/admin/users/delete' class='d-inline' onsubmit=\"return confirm('Delete user {$confirmName}? This cannot be undone.');\">
                             <input type='hidden' name='user_id' value='" . htmlspecialchars($publicId) . "'>
                             <button class='btn btn-sm btn-outline-danger' {$deleteDisabled}>Delete</button>
                           </form>

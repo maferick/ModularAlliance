@@ -20,10 +20,8 @@ final class AdminRoutes
     {
         // Admin renderer (shared)
         $render = function (string $title, string $bodyHtml) use ($app, $hasRight): Response {
-            $leftTree  = $app->menu->tree('left', $hasRight);
-            $adminTree = $app->menu->tree('admin_top', $hasRight);
-            $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
-            $userTree  = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
+            $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
+            $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
             // Brand (settings-driven, safe fallbacks)
             $settings = new CoreSettings($app->db);
@@ -56,7 +54,7 @@ final class AdminRoutes
                     : "https://images.evetech.net/corporations/{$id}/logo?size=64";
             }
 
-            return Response::html(Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree, $brandName, $brandLogoUrl), 200);
+            return Response::html(Layout::page($title, $bodyHtml, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module'], $brandName, $brandLogoUrl), 200);
         };
 
         Home::register($app, $registry, $render);

@@ -43,7 +43,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Member Audit',
         'url' => '/memberaudit',
         'sort_order' => 46,
-        'area' => 'left',
+        'area' => 'left_member',
         'right_slug' => 'memberaudit.view',
     ]);
     $registry->menu([
@@ -51,7 +51,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'My Audit',
         'url' => '/memberaudit',
         'sort_order' => 47,
-        'area' => 'left',
+        'area' => 'left_member',
         'parent_slug' => 'memberaudit.tools',
         'right_slug' => 'memberaudit.view',
     ]);
@@ -60,7 +60,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Authorize/Upgrade Scopes',
         'url' => '/memberaudit/authorize',
         'sort_order' => 48,
-        'area' => 'left',
+        'area' => 'left_member',
         'parent_slug' => 'memberaudit.tools',
         'right_slug' => 'memberaudit.view',
     ]);
@@ -69,7 +69,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Applicant Share',
         'url' => '/memberaudit/share',
         'sort_order' => 49,
-        'area' => 'left',
+        'area' => 'left_member',
         'parent_slug' => 'memberaudit.tools',
         'right_slug' => 'memberaudit.view',
     ]);
@@ -79,7 +79,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Member Audit',
         'url' => '/admin/memberaudit',
         'sort_order' => 55,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'memberaudit.leadership',
     ]);
     $registry->menu([
@@ -87,7 +87,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Members',
         'url' => '/admin/memberaudit',
         'sort_order' => 56,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'parent_slug' => 'admin.memberaudit',
         'right_slug' => 'memberaudit.leadership',
     ]);
@@ -96,7 +96,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Skill Sets',
         'url' => '/admin/memberaudit/skill-sets',
         'sort_order' => 57,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'parent_slug' => 'admin.memberaudit',
         'right_slug' => 'memberaudit.skillsets.manage',
     ]);
@@ -105,7 +105,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Reports',
         'url' => '/admin/memberaudit/reports',
         'sort_order' => 58,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'parent_slug' => 'admin.memberaudit',
         'right_slug' => 'memberaudit.leadership',
     ]);
@@ -118,18 +118,10 @@ return function (ModuleRegistry $registry): void {
             return $rights->userHasRight($uid, $right);
         };
 
-        $leftTree = $app->menu->tree('left', $hasRight);
-        $adminTree = $app->menu->tree('admin_top', $hasRight);
-        $userTree = $app->menu->tree('user_top', fn(string $r) => true);
-
         $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
-        if ($loggedIn) {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
-        } else {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] === 'user.login'));
-        }
+        $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
-        return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
+        return Layout::page($title, $bodyHtml, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']);
     };
 
     $scopePolicy = new ScopePolicy($app->db, $identityResolver);

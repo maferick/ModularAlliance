@@ -46,18 +46,28 @@ final class Menu
             $msgHtml = $msg !== '' ? "<div class='alert alert-info'>" . htmlspecialchars($msg) . "</div>" : "";
 
             $h = $msgHtml . "<h1>Menu Editor</h1>
-                  <p class='text-muted'>Adjust menu overrides without changing module defaults. Leave fields blank to revert to defaults.</p>";
+                  <p class='text-muted'>Adjust menu overrides without changing module defaults. Leave fields blank to revert to defaults. Use the quick actions to move, enable, or disable items.</p>";
 
-            $h .= "<div class='table-responsive'><table class='table table-sm table-striped align-middle'>
-                    <thead>
-                      <tr>
-                        <th>Slug</th>
-                        <th>Effective</th>
-                        <th>Override</th>
-                      </tr>
-                    </thead><tbody>";
-
+            $grouped = [];
             foreach ($menuRows as $row) {
+                $effectiveArea = $row['o_area'] ?? $row['r_area'];
+                $grouped[$effectiveArea][] = $row;
+            }
+            ksort($grouped);
+
+            foreach ($grouped as $area => $rows) {
+                $h .= "<h2 class='h5 mt-4'>Area: " . htmlspecialchars((string)$area) . "</h2>";
+                $h .= "<div class='table-responsive'><table class='table table-sm table-striped align-middle'>
+                        <thead>
+                          <tr>
+                            <th>Slug</th>
+                            <th>Effective</th>
+                            <th>Override</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead><tbody>";
+
+                foreach ($rows as $row) {
                 $slug = (string)$row['slug'];
                 $effectiveTitle = $row['o_title'] ?? $row['r_title'];
                 $effectiveUrl = $row['o_url'] ?? $row['r_url'];
@@ -105,6 +115,9 @@ final class Menu
                 $areaVal = (string)($row['o_area'] ?? '');
                 $enabledVal = ($row['o_enabled'] === null) ? '' : (string)$row['o_enabled'];
 
+                $toggleTarget = (int)($effectiveEnabled ?? 1) === 1 ? 0 : 1;
+                $toggleLabel = $toggleTarget === 1 ? 'Enable' : 'Disable';
+
                 $h .= "<tr>
                         <td><strong>" . htmlspecialchars($slug) . "</strong>{$overrideBadge}
                           <div class='small text-muted'>Default: " . implode(" • ", $defaultBits) . "</div>
@@ -135,8 +148,10 @@ final class Menu
                               <label class='form-label'>Area</label>
                               <select class='form-select form-select-sm' name='area'>
                                 <option value='' " . ($areaVal === '' ? 'selected' : '') . ">Default (" . htmlspecialchars((string)$row['r_area']) . ")</option>
-                                <option value='left' " . ($areaVal === 'left' ? 'selected' : '') . ">left</option>
-                                <option value='admin_top' " . ($areaVal === 'admin_top' ? 'selected' : '') . ">admin_top</option>
+                                <option value='left_member' " . ($areaVal === 'left_member' ? 'selected' : '') . ">left_member</option>
+                                <option value='left_admin' " . ($areaVal === 'left_admin' ? 'selected' : '') . ">left_admin</option>
+                                <option value='module_top' " . ($areaVal === 'module_top' ? 'selected' : '') . ">module_top</option>
+                                <option value='site_admin_top' " . ($areaVal === 'site_admin_top' ? 'selected' : '') . ">site_admin_top</option>
                                 <option value='user_top' " . ($areaVal === 'user_top' ? 'selected' : '') . ">user_top</option>
                               </select>
                             </div>
@@ -158,10 +173,28 @@ final class Menu
                             </div>
                           </form>
                         </td>
+                        <td class='text-nowrap'>
+                          <form method='post' action='/admin/menu/move' class='d-inline'>
+                            <input type='hidden' name='slug' value='" . htmlspecialchars($slug) . "'>
+                            <input type='hidden' name='direction' value='up'>
+                            <button class='btn btn-sm btn-outline-light' type='submit'>&uarr;</button>
+                          </form>
+                          <form method='post' action='/admin/menu/move' class='d-inline'>
+                            <input type='hidden' name='slug' value='" . htmlspecialchars($slug) . "'>
+                            <input type='hidden' name='direction' value='down'>
+                            <button class='btn btn-sm btn-outline-light' type='submit'>&darr;</button>
+                          </form>
+                          <form method='post' action='/admin/menu/toggle' class='d-inline ms-1'>
+                            <input type='hidden' name='slug' value='" . htmlspecialchars($slug) . "'>
+                            <input type='hidden' name='enabled' value='" . (string)$toggleTarget . "'>
+                            <button class='btn btn-sm btn-outline-warning' type='submit'>" . htmlspecialchars($toggleLabel) . "</button>
+                          </form>
+                        </td>
                       </tr>";
-            }
+                }
 
-            $h .= "</tbody></table></div>";
+                $h .= "</tbody></table></div>";
+            }
 
             if (!empty($allSlugs)) {
                 $h .= "<datalist id='menu-parent-slugs'>";
@@ -211,7 +244,7 @@ final class Menu
             }
 
             $area = $area === '' ? null : $area;
-            $allowedAreas = ['left', 'admin_top', 'user_top'];
+            $allowedAreas = ['left_member', 'left_admin', 'module_top', 'site_admin_top', 'user_top'];
             if ($area !== null && !in_array($area, $allowedAreas, true)) {
                 $area = null;
             }
@@ -241,6 +274,93 @@ final class Menu
             );
 
             return Response::redirect('/admin/menu?msg=' . rawurlencode("Overrides saved for {$slug}."));
+        }, ['right' => 'admin.menu']);
+
+        $registry->route('POST', '/admin/menu/move', function (Request $req) use ($app): Response {
+            $slug = trim((string)($req->post['slug'] ?? ''));
+            $direction = (string)($req->post['direction'] ?? '');
+            if ($slug === '' || !in_array($direction, ['up', 'down'], true)) {
+                return Response::redirect('/admin/menu?msg=' . rawurlencode('Invalid move request.'));
+            }
+
+            $rows = db_all($app->db, 
+                "SELECT r.slug,
+                        COALESCE(o.sort_order, r.sort_order) AS sort_order,
+                        COALESCE(o.area, r.area) AS area
+                 FROM menu_registry r
+                 LEFT JOIN menu_overrides o ON o.slug = r.slug
+                 ORDER BY COALESCE(o.area, r.area) ASC,
+                          COALESCE(o.sort_order, r.sort_order) ASC,
+                          r.slug ASC"
+            );
+
+            $index = null;
+            $area = null;
+            foreach ($rows as $i => $row) {
+                if ((string)($row['slug'] ?? '') === $slug) {
+                    $index = $i;
+                    $area = (string)($row['area'] ?? '');
+                    break;
+                }
+            }
+            if ($index === null) {
+                return Response::redirect('/admin/menu?msg=' . rawurlencode('Menu item not found.'));
+            }
+
+            $areaRows = array_values(array_filter($rows, fn($row) => (string)($row['area'] ?? '') === $area));
+            $areaIndex = null;
+            foreach ($areaRows as $i => $row) {
+                if ((string)($row['slug'] ?? '') === $slug) {
+                    $areaIndex = $i;
+                    break;
+                }
+            }
+            if ($areaIndex === null) {
+                return Response::redirect('/admin/menu?msg=' . rawurlencode('Menu item not found in area.'));
+            }
+
+            $swapIndex = $direction === 'up' ? $areaIndex - 1 : $areaIndex + 1;
+            if ($swapIndex < 0 || $swapIndex >= count($areaRows)) {
+                return Response::redirect('/admin/menu?msg=' . rawurlencode('Menu item already at boundary.'));
+            }
+
+            $current = $areaRows[$areaIndex];
+            $neighbor = $areaRows[$swapIndex];
+            $currentSort = (int)($current['sort_order'] ?? 0);
+            $neighborSort = (int)($neighbor['sort_order'] ?? 0);
+
+            db_exec($app->db, 
+                "INSERT INTO menu_overrides (slug, sort_order)
+                 VALUES (?, ?)
+                 ON DUPLICATE KEY UPDATE sort_order=VALUES(sort_order)",
+                [(string)$current['slug'], $neighborSort]
+            );
+            db_exec($app->db, 
+                "INSERT INTO menu_overrides (slug, sort_order)
+                 VALUES (?, ?)
+                 ON DUPLICATE KEY UPDATE sort_order=VALUES(sort_order)",
+                [(string)$neighbor['slug'], $currentSort]
+            );
+
+            return Response::redirect('/admin/menu?msg=' . rawurlencode("Reordered {$slug}."));
+        }, ['right' => 'admin.menu']);
+
+        $registry->route('POST', '/admin/menu/toggle', function (Request $req) use ($app): Response {
+            $slug = trim((string)($req->post['slug'] ?? ''));
+            $enabledRaw = (string)($req->post['enabled'] ?? '');
+            if ($slug === '' || !in_array($enabledRaw, ['0', '1'], true)) {
+                return Response::redirect('/admin/menu?msg=' . rawurlencode('Invalid toggle request.'));
+            }
+
+            $enabled = (int)$enabledRaw;
+            db_exec($app->db, 
+                "INSERT INTO menu_overrides (slug, enabled)
+                 VALUES (?, ?)
+                 ON DUPLICATE KEY UPDATE enabled=VALUES(enabled)",
+                [$slug, $enabled]
+            );
+
+            return Response::redirect('/admin/menu?msg=' . rawurlencode("Updated {$slug} enabled state."));
         }, ['right' => 'admin.menu']);
     }
 }

@@ -32,7 +32,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Fittings',
         'url' => '/fittings',
         'sort_order' => 40,
-        'area' => 'left',
+        'area' => 'left_member',
         'right_slug' => 'fittings.access_fittings',
     ]);
 
@@ -41,8 +41,53 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Fittings',
         'url' => '/admin/fittings',
         'sort_order' => 60,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'fittings.manage',
+    ]);
+
+    $registry->menu([
+        'slug' => 'module.fittings',
+        'title' => 'Fittings',
+        'url' => '/fittings',
+        'sort_order' => 10,
+        'area' => 'module_top',
+        'right_slug' => 'fittings.access_fittings',
+    ]);
+    $registry->menu([
+        'slug' => 'module.fittings.browse',
+        'title' => 'Browse',
+        'url' => '/fittings',
+        'sort_order' => 11,
+        'area' => 'module_top',
+        'parent_slug' => 'module.fittings',
+        'right_slug' => 'fittings.access_fittings',
+    ]);
+    $registry->menu([
+        'slug' => 'module.fittings.doctrines',
+        'title' => 'Doctrines',
+        'url' => '/fittings/doctrines',
+        'sort_order' => 12,
+        'area' => 'module_top',
+        'parent_slug' => 'module.fittings',
+        'right_slug' => 'fittings.access_fittings',
+    ]);
+    $registry->menu([
+        'slug' => 'module.fittings.categories',
+        'title' => 'Categories',
+        'url' => '/fittings/categories',
+        'sort_order' => 13,
+        'area' => 'module_top',
+        'parent_slug' => 'module.fittings',
+        'right_slug' => 'fittings.access_fittings',
+    ]);
+    $registry->menu([
+        'slug' => 'module.fittings.skills_check',
+        'title' => 'Skills Check',
+        'url' => '/fittings/skills-check',
+        'sort_order' => 14,
+        'area' => 'module_top',
+        'parent_slug' => 'module.fittings',
+        'right_slug' => 'fittings.access_fittings',
     ]);
 
     $csrfToken = fn(string $key): string => fittings_csrf_token($key);
@@ -405,6 +450,40 @@ return function (ModuleRegistry $registry): void {
           <div class='mt-3'>{$pager}</div>";
 
         return Response::html($renderPage('Fittings', $body), 200);
+    });
+
+    $registry->route('GET', '/fittings/doctrines', function () use ($app, $renderPage, $requireLogin, $requireRight): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('fittings.access_fittings')) return $resp;
+
+        $rows = db_all($app->db, "SELECT name, description FROM module_fittings_doctrines WHERE is_active=1 ORDER BY name ASC");
+        $items = '';
+        foreach ($rows as $row) {
+            $name = htmlspecialchars((string)($row['name'] ?? ''));
+            $desc = htmlspecialchars((string)($row['description'] ?? ''));
+            $descHtml = $desc !== '' ? "<div class='text-muted small'>{$desc}</div>" : "<div class='text-muted small'>No description.</div>";
+            $items .= "<div class='card card-body mb-2'><div class='fw-semibold'>{$name}</div>{$descHtml}</div>";
+        }
+        if ($items === '') {
+            $items = "<div class='text-muted'>No doctrines are available yet.</div>";
+        }
+
+        $body = "<h1 class='mb-3'>Doctrines</h1>{$items}";
+
+        return Response::html($renderPage('Doctrines', $body), 200);
+    });
+
+    $registry->route('GET', '/fittings/skills-check', function () use ($renderPage, $requireLogin, $requireRight): Response {
+        if ($resp = $requireLogin()) return $resp;
+        if ($resp = $requireRight('fittings.access_fittings')) return $resp;
+
+        $body = "<h1 class='mb-3'>Skills Check</h1>
+                 <div class='card card-body'>
+                   <div class='fw-semibold mb-2'>Coming soon</div>
+                   <div class='text-muted'>This area will compare your skills against doctrine requirements once configured by admins.</div>
+                 </div>";
+
+        return Response::html($renderPage('Skills Check', $body), 200);
     });
 
     $registry->route('GET', '/fittings/fit/{slug}', function (Request $req) use ($app, $renderPage, $requireLogin, $requireRight, $getVisibleCategories, $buildBuyAll): Response {

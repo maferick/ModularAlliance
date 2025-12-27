@@ -34,7 +34,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Secure Groups',
         'url' => '/securegroups',
         'sort_order' => 60,
-        'area' => 'left',
+        'area' => 'left_member',
     ]);
 
     $registry->menu([
@@ -42,7 +42,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Admin / HR Tools',
         'url' => '/admin/securegroups',
         'sort_order' => 70,
-        'area' => 'left',
+        'area' => 'left_admin',
         'right_slug' => 'securegroups.admin',
     ]);
     $registry->menu([
@@ -50,7 +50,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Secure Groups',
         'url' => '/admin/securegroups',
         'sort_order' => 71,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'securegroups.admin_tools',
         'right_slug' => 'securegroups.admin',
     ]);
@@ -59,7 +59,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Groups',
         'url' => '/admin/securegroups/groups',
         'sort_order' => 72,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'securegroups.admin_tools',
         'right_slug' => 'securegroups.admin',
     ]);
@@ -68,7 +68,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Requests',
         'url' => '/admin/securegroups/requests',
         'sort_order' => 73,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'securegroups.admin_tools',
         'right_slug' => 'securegroups.admin',
     ]);
@@ -77,7 +77,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Enforcement Logs',
         'url' => '/admin/securegroups/logs',
         'sort_order' => 74,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'securegroups.admin_tools',
         'right_slug' => 'securegroups.admin',
     ]);
@@ -86,7 +86,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Manual Overrides',
         'url' => '/admin/securegroups/overrides',
         'sort_order' => 75,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'securegroups.admin_tools',
         'right_slug' => 'securegroups.admin',
     ]);
@@ -96,7 +96,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Secure Groups',
         'url' => '/admin/securegroups',
         'sort_order' => 50,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'securegroups.admin',
     ]);
     $registry->menu([
@@ -104,7 +104,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Groups',
         'url' => '/admin/securegroups/groups',
         'sort_order' => 51,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'parent_slug' => 'admin.securegroups',
         'right_slug' => 'securegroups.admin',
     ]);
@@ -113,7 +113,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Requests',
         'url' => '/admin/securegroups/requests',
         'sort_order' => 52,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'parent_slug' => 'admin.securegroups',
         'right_slug' => 'securegroups.admin',
     ]);
@@ -122,8 +122,32 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Cron Manager',
         'url' => '/admin/system/cron',
         'sort_order' => 53,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'securegroups.admin',
+    ]);
+
+    $registry->menu([
+        'slug' => 'module.securegroups',
+        'title' => 'Secure Groups',
+        'url' => '/securegroups',
+        'sort_order' => 10,
+        'area' => 'module_top',
+    ]);
+    $registry->menu([
+        'slug' => 'module.securegroups.status',
+        'title' => 'Status',
+        'url' => '/securegroups',
+        'sort_order' => 11,
+        'area' => 'module_top',
+        'parent_slug' => 'module.securegroups',
+    ]);
+    $registry->menu([
+        'slug' => 'module.securegroups.applications',
+        'title' => 'Applications',
+        'url' => '/securegroups/applications',
+        'sort_order' => 12,
+        'area' => 'module_top',
+        'parent_slug' => 'module.securegroups',
     ]);
 
     $renderPage = function (string $title, string $bodyHtml) use ($app): string {
@@ -134,18 +158,10 @@ return function (ModuleRegistry $registry): void {
             return $rights->userHasRight($uid, $right);
         };
 
-        $leftTree = $app->menu->tree('left', $hasRight);
-        $adminTree = $app->menu->tree('admin_top', $hasRight);
-        $userTree = $app->menu->tree('user_top', fn(string $r) => true);
-
         $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
-        if ($loggedIn) {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
-        } else {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] === 'user.login'));
-        }
+        $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
-        return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
+        return Layout::page($title, $bodyHtml, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']);
     };
 
     $requireLogin = function (): ?Response {
@@ -708,6 +724,49 @@ return function (ModuleRegistry $registry): void {
             </div>";
 
         return Response::html($renderPage('My Secure Groups', $body), 200);
+    });
+
+    $registry->route('GET', '/securegroups/applications', function () use ($app, $renderPage, $requireLogin): Response {
+        if ($resp = $requireLogin()) return $resp;
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+
+        $rows = db_all($app->db, 
+            "SELECT r.status, r.created_at, r.decided_at, r.note, r.admin_note, g.display_name\n"
+            . " FROM module_secgroups_requests r\n"
+            . " JOIN module_secgroups_groups g ON g.id=r.group_id\n"
+            . " WHERE r.user_id=?\n"
+            . " ORDER BY r.created_at DESC",
+            [$uid]
+        );
+
+        $rowsHtml = '';
+        foreach ($rows as $row) {
+            $rowsHtml .= "<tr>
+                <td>" . htmlspecialchars((string)($row['display_name'] ?? '')) . "</td>
+                <td>" . htmlspecialchars((string)($row['status'] ?? '')) . "</td>
+                <td>" . htmlspecialchars((string)($row['created_at'] ?? '')) . "</td>
+                <td>" . htmlspecialchars((string)($row['decided_at'] ?? '—')) . "</td>
+                <td>" . htmlspecialchars((string)($row['note'] ?? '')) . "</td>
+                <td>" . htmlspecialchars((string)($row['admin_note'] ?? '')) . "</td>
+              </tr>";
+        }
+        if ($rowsHtml === '') {
+            $rowsHtml = "<tr><td colspan='6' class='text-muted'>No applications submitted.</td></tr>";
+        }
+
+        $body = "<h1 class='mb-3'>Applications</h1>
+            <div class='card'>
+              <div class='table-responsive'>
+                <table class='table table-striped mb-0'>
+                  <thead><tr>
+                    <th>Group</th><th>Status</th><th>Submitted</th><th>Decided</th><th>Note</th><th>Admin Note</th>
+                  </tr></thead>
+                  <tbody>{$rowsHtml}</tbody>
+                </table>
+              </div>
+            </div>";
+
+        return Response::html($renderPage('Applications', $body), 200);
     });
 
     $registry->route('GET', '/securegroups/group/{slug}', function (Request $req) use ($app, $renderPage, $requireLogin, $resolveGroupId): Response {
@@ -2317,7 +2376,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
         $rows = db_all($app->db, 
-            "SELECT r.*, r.public_id AS request_public_id, g.display_name, u.character_name, u.public_id AS user_public_id\n"
+            "SELECT r.*, r.public_id AS request_public_id, g.display_name, u.character_name\n"
             . " FROM module_secgroups_requests r\n"
             . " JOIN module_secgroups_groups g ON g.id=r.group_id\n"
             . " JOIN eve_users u ON u.id=r.user_id\n"
@@ -2327,10 +2386,10 @@ return function (ModuleRegistry $registry): void {
         $tableRows = '';
         foreach ($rows as $row) {
             $rid = (string)($row['request_public_id'] ?? '');
+            $memberName = (string)($row['character_name'] ?? 'Unknown');
             $tableRows .= "<tr>
                 <td>" . htmlspecialchars((string)($row['display_name'] ?? '')) . "</td>
-                <td>" . htmlspecialchars((string)($row['character_name'] ?? '')) . "</td>
-                <td>" . htmlspecialchars((string)($row['user_public_id'] ?? '')) . "</td>
+                <td>" . htmlspecialchars($memberName) . "</td>
                 <td>" . htmlspecialchars((string)($row['status'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($row['created_at'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($row['note'] ?? '')) . "</td>
@@ -2347,14 +2406,14 @@ return function (ModuleRegistry $registry): void {
             </tr>";
         }
         if ($tableRows === '') {
-            $tableRows = "<tr><td colspan='7' class='text-muted'>No requests.</td></tr>";
+            $tableRows = "<tr><td colspan='6' class='text-muted'>No requests.</td></tr>";
         }
 
         $body = "<h1 class='mb-3'>Secure Group Requests</h1>
             <div class='card'>
               <div class='table-responsive'>
                 <table class='table table-striped mb-0'>
-                  <thead><tr><th>Group</th><th>User</th><th>Member ID</th><th>Status</th><th>Submitted</th><th>Note</th><th>Actions</th></tr></thead>
+                  <thead><tr><th>Group</th><th>Member</th><th>Status</th><th>Submitted</th><th>Note</th><th>Actions</th></tr></thead>
                   <tbody>{$tableRows}</tbody>
                 </table>
               </div>
@@ -2432,7 +2491,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
         $rows = db_all($app->db, 
-            "SELECT l.*, g.display_name, u.character_name, u.public_id AS user_public_id\n"
+            "SELECT l.*, g.display_name, u.character_name\n"
             . " FROM module_secgroups_logs l\n"
             . " JOIN module_secgroups_groups g ON g.id=l.group_id\n"
             . " JOIN eve_users u ON u.id=l.user_id\n"
@@ -2440,10 +2499,10 @@ return function (ModuleRegistry $registry): void {
         );
         $tableRows = '';
         foreach ($rows as $row) {
+            $memberName = (string)($row['character_name'] ?? 'Unknown');
             $tableRows .= "<tr>
                 <td>" . htmlspecialchars((string)($row['display_name'] ?? '')) . "</td>
-                <td>" . htmlspecialchars((string)($row['character_name'] ?? '')) . "</td>
-                <td>" . htmlspecialchars((string)($row['user_public_id'] ?? '')) . "</td>
+                <td>" . htmlspecialchars($memberName) . "</td>
                 <td>" . htmlspecialchars((string)($row['action'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($row['source'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($row['message'] ?? '')) . "</td>
@@ -2451,14 +2510,14 @@ return function (ModuleRegistry $registry): void {
             </tr>";
         }
         if ($tableRows === '') {
-            $tableRows = "<tr><td colspan='7' class='text-muted'>No logs yet.</td></tr>";
+            $tableRows = "<tr><td colspan='6' class='text-muted'>No logs yet.</td></tr>";
         }
 
         $body = "<h1 class='mb-3'>Secure Group Logs</h1>
             <div class='card'>
               <div class='table-responsive'>
                 <table class='table table-striped mb-0'>
-                  <thead><tr><th>Group</th><th>User</th><th>Member ID</th><th>Action</th><th>Source</th><th>Message</th><th>When</th></tr></thead>
+                  <thead><tr><th>Group</th><th>Member</th><th>Action</th><th>Source</th><th>Message</th><th>When</th></tr></thead>
                   <tbody>{$tableRows}</tbody>
                 </table>
               </div>
@@ -2484,10 +2543,10 @@ return function (ModuleRegistry $registry): void {
             $userPublicId = (string)($override['user_public_id'] ?? '');
             $createdAt = (string)($override['created_at'] ?? '');
             $createdParam = rawurlencode($createdAt);
+            $memberName = (string)($override['character_name'] ?? 'Unknown');
             $rows .= "<tr>
                 <td>" . htmlspecialchars((string)($override['display_name'] ?? '')) . "</td>
-                <td>" . htmlspecialchars((string)($override['character_name'] ?? '')) . "</td>
-                <td>" . htmlspecialchars((string)($override['user_public_id'] ?? '')) . "</td>
+                <td>" . htmlspecialchars($memberName) . "</td>
                 <td>" . htmlspecialchars((string)($override['forced_state'] ?? '')) . "</td>
                 <td>" . htmlspecialchars((string)($override['expires_at'] ?? '—')) . "</td>
                 <td>" . htmlspecialchars((string)($override['reason'] ?? '')) . "</td>
@@ -2501,7 +2560,7 @@ return function (ModuleRegistry $registry): void {
             </tr>";
         }
         if ($rows === '') {
-            $rows = "<tr><td colspan='8' class='text-muted'>No overrides.</td></tr>";
+            $rows = "<tr><td colspan='7' class='text-muted'>No overrides.</td></tr>";
         }
 
         $groupOptions = '';
@@ -2519,7 +2578,7 @@ return function (ModuleRegistry $registry): void {
                       <select class='form-select' name='group_slug'>{$groupOptions}</select>
                     </div>
                     <div class='col-md-3'>
-                      <label class='form-label'>Member ID</label>
+                      <label class='form-label'>Member Public ID</label>
                       <input class='form-control' name='user_public_id' required>
                     </div>
                     <div class='col-md-2'>
@@ -2545,7 +2604,7 @@ return function (ModuleRegistry $registry): void {
             <div class='card'>
               <div class='table-responsive'>
                 <table class='table table-striped mb-0'>
-                  <thead><tr><th>Group</th><th>User</th><th>Member ID</th><th>State</th><th>Expires</th><th>Reason</th><th>Created</th><th>Actions</th></tr></thead>
+                  <thead><tr><th>Group</th><th>Member</th><th>State</th><th>Expires</th><th>Reason</th><th>Created</th><th>Actions</th></tr></thead>
                   <tbody>{$rows}</tbody>
                 </table>
               </div>

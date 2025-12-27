@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS menu_registry (
   url VARCHAR(255) NOT NULL,
   parent_slug VARCHAR(128) NULL,
   sort_order INT NOT NULL DEFAULT 10,
-  area ENUM('left','admin_top') NOT NULL DEFAULT 'left',
+  area ENUM('left','admin_top','user_top','left_member','left_admin','module_top','site_admin_top') NOT NULL DEFAULT 'left_member',
   right_slug VARCHAR(128) NULL,
   enabled TINYINT(1) NOT NULL DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -16,8 +16,7 @@ CREATE TABLE IF NOT EXISTS menu_overrides (
   url VARCHAR(255) NULL,
   parent_slug VARCHAR(128) NULL,
   sort_order INT NULL,
-  area ENUM('left','admin_top') NULL,
+  area ENUM('left','admin_top','user_top','left_member','left_admin','module_top','site_admin_top') NULL,
   right_slug VARCHAR(128) NULL,
   enabled TINYINT(1) NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-

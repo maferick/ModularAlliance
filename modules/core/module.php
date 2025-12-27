@@ -34,15 +34,15 @@ return function (ModuleRegistry $registry): void {
     $registry->right('admin.users', 'Manage users & groups');
     $registry->right('admin.menu', 'Edit menu overrides');
 
-    $registry->menu(['slug' => 'home', 'title' => 'Dashboard', 'url' => '/', 'sort_order' => 10, 'area' => 'left']);
-    $registry->menu(['slug' => 'profile', 'title' => 'Profile', 'url' => '/me', 'sort_order' => 20, 'area' => 'left']);
+    $registry->menu(['slug' => 'home', 'title' => 'Dashboard', 'url' => '/', 'sort_order' => 10, 'area' => 'left_member']);
+    $registry->menu(['slug' => 'profile', 'title' => 'Profile', 'url' => '/me', 'sort_order' => 20, 'area' => 'left_member']);
 
-    $registry->menu(['slug' => 'admin.root', 'title' => 'Admin Home', 'url' => '/admin', 'sort_order' => 10, 'area' => 'admin_top', 'right_slug' => 'admin.access']);
-    $registry->menu(['slug' => 'admin.settings', 'title' => 'Settings', 'url' => '/admin/settings', 'sort_order' => 15, 'area' => 'admin_top', 'right_slug' => 'admin.settings']);
-    $registry->menu(['slug' => 'admin.cache', 'title' => 'ESI Cache', 'url' => '/admin/cache', 'sort_order' => 20, 'area' => 'admin_top', 'right_slug' => 'admin.cache']);
-    $registry->menu(['slug' => 'admin.rights', 'title' => 'Rights', 'url' => '/admin/rights', 'sort_order' => 25, 'area' => 'admin_top', 'right_slug' => 'admin.rights']);
-    $registry->menu(['slug' => 'admin.users', 'title' => 'Users & Groups', 'url' => '/admin/users', 'sort_order' => 30, 'area' => 'admin_top', 'right_slug' => 'admin.users']);
-    $registry->menu(['slug' => 'admin.menu', 'title' => 'Menu Editor', 'url' => '/admin/menu', 'sort_order' => 40, 'area' => 'admin_top', 'right_slug' => 'admin.menu']);
+    $registry->menu(['slug' => 'admin.root', 'title' => 'Admin Home', 'url' => '/admin', 'sort_order' => 10, 'area' => 'site_admin_top', 'right_slug' => 'admin.access']);
+    $registry->menu(['slug' => 'admin.settings', 'title' => 'Settings', 'url' => '/admin/settings', 'sort_order' => 15, 'area' => 'site_admin_top', 'right_slug' => 'admin.settings']);
+    $registry->menu(['slug' => 'admin.cache', 'title' => 'ESI Cache', 'url' => '/admin/cache', 'sort_order' => 20, 'area' => 'site_admin_top', 'right_slug' => 'admin.cache']);
+    $registry->menu(['slug' => 'admin.rights', 'title' => 'Rights', 'url' => '/admin/rights', 'sort_order' => 25, 'area' => 'site_admin_top', 'right_slug' => 'admin.rights']);
+    $registry->menu(['slug' => 'admin.users', 'title' => 'Users & Groups', 'url' => '/admin/users', 'sort_order' => 30, 'area' => 'site_admin_top', 'right_slug' => 'admin.users']);
+    $registry->menu(['slug' => 'admin.menu', 'title' => 'Menu Editor', 'url' => '/admin/menu', 'sort_order' => 40, 'area' => 'site_admin_top', 'right_slug' => 'admin.menu']);
 
     $rights = new Rights($app->db);
     $hasRight = function (string $right) use ($rights): bool {
@@ -66,23 +66,15 @@ return function (ModuleRegistry $registry): void {
     JobRegistry::sync($app->db);
 
     $registry->route('GET', '/', function () use ($app, $hasRight, $universeShared, $identityResolver): Response {
-        $leftTree  = $app->menu->tree('left', $hasRight);
-        $adminTree = $app->menu->tree('admin_top', $hasRight);
-        $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
-
         $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
-        if ($loggedIn) {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
-        } else {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] === 'user.login'));
-        }
+        $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
         $cid = (int)($_SESSION['character_id'] ?? 0);
         if ($cid <= 0) {
             $body = "<h1>Dashboard</h1>
                      <p>You are not logged in.</p>
                      <p><a href='/auth/login'>Login with EVE SSO</a></p>";
-            return Response::html(Layout::page('Dashboard', $body, $leftTree, $adminTree, $userTree), 200);
+            return Response::html(Layout::page('Dashboard', $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
         }
 
         $p = $universeShared->characterProfile($cid);
@@ -98,7 +90,7 @@ return function (ModuleRegistry $registry): void {
                  <p>Corporation: <strong>{$corp}</strong></p>
                  <p>Alliance: <strong>{$all}</strong></p>";
 
-        return Response::html(Layout::page('Dashboard', $body, $leftTree, $adminTree, $userTree), 200);
+        return Response::html(Layout::page('Dashboard', $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
     });
 
     AdminRoutes::register($app, $registry, $hasRight);
