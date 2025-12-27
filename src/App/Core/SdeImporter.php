@@ -8,7 +8,7 @@ use PDO;
 final class SdeImporter
 {
     private const BASE_URL = 'https://www.fuzzwork.co.uk/dump/latest/';
-    private const CACHE_DIR = '/var/cache/modularalliance/sde';
+    private const CACHE_DIR = __DIR__ . '/../../../sde';
 
     /** @var array<string, array<string, mixed>> */
     private array $files = [
