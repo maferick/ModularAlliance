@@ -104,7 +104,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect($url);
     }, ['public' => true]);
 
-    $registry->route('GET', '/auth/callback', function (Request $req) use ($app): Response {
+    $registry->route('GET', '/auth/callback', function (Request $req) use ($app, $identityResolver): Response {
         $code  = $req->query['code']  ?? null;
         $state = $req->query['state'] ?? null;
 
