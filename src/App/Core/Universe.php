@@ -90,7 +90,7 @@ final class Universe
         );
 
         if (!is_array($payload) || !isset($payload['name'])) {
-            throw new \RuntimeException("Universe resolver: invalid ESI payload for {$type} {$id}");
+            return $this->fallback($type, $id);
         }
 
         if ($type === 'system' && !empty($payload['constellation_id'])) {
