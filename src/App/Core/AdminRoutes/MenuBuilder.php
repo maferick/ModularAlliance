@@ -599,7 +599,7 @@ final class MenuBuilder
                     const area = dropZone ? dropZone.dataset.area : null;
                     if (area && !isAreaAllowed(slug, area)) {
                       const title = titleForItem(items[slug]);
-                      showStatus(`${title} can only be placed in ${areaLabelFor(area)}.`, true);
+                      showStatus(`\${title} can only be placed in \${areaLabelFor(area)}.`, true);
                       return;
                     }
 
