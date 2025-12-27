@@ -237,10 +237,8 @@ return function (ModuleRegistry $registry): void {
             return $rights->userHasRight($uid, $right);
         };
 
-        $leftTree  = $app->menu->tree('left', $hasRight);
-        $adminTree = $app->menu->tree('admin_top', $hasRight);
-        $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
-        $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
+        $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
+        $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
         $profiles = $getScopeProfiles($uid);
         $memberScopes = $profiles['member_audit']['scopes'] ?? [];
@@ -587,7 +585,7 @@ return function (ModuleRegistry $registry): void {
                   {$memberCard}
                   {$notes}";
 
-        return Response::html(\App\Core\Layout::page('Scopes & Linking', $body, $leftTree, $adminTree, $userTree), 200);
+        return Response::html(\App\Core\Layout::page('Scopes & Linking', $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
     });
 
     $registry->route('GET', '/me', function (Request $req) use ($app, $universeShared, $identityResolver): Response {
@@ -601,10 +599,8 @@ return function (ModuleRegistry $registry): void {
             return $rights->userHasRight($uid, $right);
         };
 
-        $leftTree  = $app->menu->tree('left', $hasRight);
-        $adminTree = $app->menu->tree('admin_top', $hasRight);
-        $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
-        $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
+        $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
+        $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
         $primary = db_one($app->db, 
             "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
@@ -826,6 +822,6 @@ return function (ModuleRegistry $registry): void {
                   {$listHtml}
                   {$pagination}";
 
-        return Response::html(\App\Core\Layout::page('Profile', $body, $leftTree, $adminTree, $userTree), 200);
+        return Response::html(\App\Core\Layout::page('Profile', $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
     });
 };

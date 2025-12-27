@@ -8,15 +8,18 @@ final class Layout
     public static function page(
         string $title,
         string $bodyHtml,
-        array $leftMenuTree,
-        array $adminMenuTree,
+        array $leftMemberTree,
+        array $leftAdminTree,
+        array $siteAdminTree,
         array $userMenuTree,
+        ?array $moduleMenu = null,
         ?string $brandName = null,
         ?string $brandLogoUrl = null
     ): string {
-        $adminHtml = self::renderMenuBootstrap($adminMenuTree);
+        $adminHtml = self::renderMenuBootstrap($siteAdminTree);
         $userHtml  = self::renderMenuBootstrap($userMenuTree);
-        $sideHtml  = self::renderSideMenuBootstrap($leftMenuTree);
+        $sideHtml  = self::renderSideMenuBootstrap($leftMemberTree, $leftAdminTree);
+        $moduleHtml = self::renderModuleMenuBootstrap($moduleMenu);
 
         // Resolve branding centrally (future-proof: callers don't need to remember passing it)
         [$brandName, $brandLogoUrl] = self::resolveBranding($brandName, $brandLogoUrl);
@@ -26,7 +29,7 @@ final class Layout
             $adminBlock = '
             <div class="dropdown">
               <button class="btn btn-sm btn-warning dropdown-toggle" data-bs-toggle="dropdown" data-bs-display="static">
-                <i class="bi bi-shield-lock"></i> Admin
+                <i class="bi bi-gear-fill"></i> Site Admin
               </button>
               <ul class="dropdown-menu dropdown-menu-end">' . $adminHtml . '</ul>
             </div>';
@@ -64,7 +67,10 @@ final class Layout
 <body class="app-bg">
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-primary px-3">
-  ' . $brandHtml . '
+  <div class="d-flex align-items-center gap-3">
+    ' . $brandHtml . '
+    ' . $moduleHtml . '
+  </div>
 
   <div class="ms-auto d-flex gap-2">
     ' . $adminBlock . '
@@ -212,22 +218,77 @@ final class Layout
         return $html;
     }
 
-    private static function renderSideMenuBootstrap(array $tree): string
+    private static function renderSideMenuBootstrap(array $memberTree, array $adminTree): string
+    {
+        $html = '';
+        $sectionIndex = 0;
+
+        $renderSection = function (string $label, string $icon, array $tree, string $badgeClass) use (&$html, &$sectionIndex): void {
+            if (empty($tree)) {
+                return;
+            }
+
+            $sectionIndex++;
+            $collapseId = 'sidebar-section-' . $sectionIndex;
+            $html .= '<li class="nav-item">';
+            $html .= '<button class="nav-link d-flex justify-content-between align-items-center w-100" type="button" data-bs-toggle="collapse" data-bs-target="#' . $collapseId . '" aria-expanded="false">';
+            $html .= '<span><i class="bi ' . htmlspecialchars($icon) . ' me-2"></i>' . htmlspecialchars($label) . '</span>';
+            $html .= '<span class="badge ' . htmlspecialchars($badgeClass) . '">+</span>';
+            $html .= '</button>';
+            $html .= '<div class="collapse" id="' . $collapseId . '">';
+            $html .= '<ul class="nav flex-column ms-3 mt-1">';
+            $html .= self::renderSideMenuItems($tree);
+            $html .= '</ul></div></li>';
+        };
+
+        $renderSection('Member Features', 'bi-grid-1x2', $memberTree, 'text-bg-primary');
+        $renderSection('Admin / HR Tools', 'bi-shield-check', $adminTree, 'text-bg-warning');
+
+        return $html;
+    }
+
+    private static function renderSideMenuItems(array $tree): string
     {
         $html = '';
         foreach ($tree as $n) {
-            $html .= '<li class="nav-item">';
-            $html .= '<a class="nav-link" href="' . htmlspecialchars($n['url']) . '">' .
-                     htmlspecialchars($n['title']) . '</a>';
-
-            if (!empty($n['children'])) {
-                $html .= '<ul class="nav flex-column ms-3">';
-                $html .= self::renderSideMenuBootstrap($n['children']);
-                $html .= '</ul>';
+            $hasChildren = !empty($n['children']);
+            if ($hasChildren) {
+                $nodeId = 'side-node-' . md5((string)$n['slug']);
+                $html .= '<li class="nav-item">';
+                $html .= '<button class="nav-link d-flex justify-content-between align-items-center w-100" type="button" data-bs-toggle="collapse" data-bs-target="#' . $nodeId . '" aria-expanded="false">';
+                $html .= '<span>' . htmlspecialchars($n['title']) . '</span>';
+                $html .= '<span class="badge text-bg-secondary">+</span>';
+                $html .= '</button>';
+                $html .= '<div class="collapse" id="' . $nodeId . '">';
+                $html .= '<ul class="nav flex-column ms-3 mt-1">';
+                $html .= self::renderSideMenuItems($n['children']);
+                $html .= '</ul></div></li>';
+            } else {
+                $html .= '<li class="nav-item">';
+                $html .= '<a class="nav-link" href="' . htmlspecialchars($n['url']) . '">' . htmlspecialchars($n['title']) . '</a>';
+                $html .= '</li>';
             }
-
-            $html .= '</li>';
         }
+        return $html;
+    }
+
+    private static function renderModuleMenuBootstrap(?array $moduleMenu): string
+    {
+        if (!$moduleMenu || empty($moduleMenu['items'])) {
+            return '';
+        }
+
+        $label = htmlspecialchars((string)($moduleMenu['label'] ?? 'Module'));
+        $items = $moduleMenu['items'] ?? [];
+        $html = '<div class="dropdown">';
+        $html .= '<button class="btn btn-sm btn-outline-light dropdown-toggle" data-bs-toggle="dropdown" data-bs-display="static">';
+        $html .= '<i class="bi bi-diagram-3"></i> ' . $label;
+        $html .= '</button>';
+        $html .= '<ul class="dropdown-menu">';
+        foreach ($items as $item) {
+            $html .= '<li><a class="dropdown-item" href="' . htmlspecialchars((string)$item['url']) . '">' . htmlspecialchars((string)$item['title']) . '</a></li>';
+        }
+        $html .= '</ul></div>';
         return $html;
     }
 }

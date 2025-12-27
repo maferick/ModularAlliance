@@ -26,7 +26,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Plugins',
         'url' => '/admin/plugins',
         'sort_order' => 45,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'admin.plugins',
     ]);
 
@@ -89,12 +89,10 @@ return function (ModuleRegistry $registry): void {
             return $rights->userHasRight($uid, $right);
         };
 
-        $leftTree  = $app->menu->tree('left', $hasRight);
-        $adminTree = $app->menu->tree('admin_top', $hasRight);
-        $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
-        $userTree  = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
+        $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
+        $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
-        return Response::html(Layout::page($title, $body, $leftTree, $adminTree, $userTree), 200);
+        return Response::html(Layout::page($title, $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
     };
 
     $registry->route('GET', '/admin/plugins', function (Request $req) use ($listPlugins, $renderAdmin, $getDisabled, $protectedSlugs): Response {

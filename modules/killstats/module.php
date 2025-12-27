@@ -33,7 +33,23 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Kill Stats',
         'url' => '/killstats',
         'sort_order' => 30,
-        'area' => 'left',
+        'area' => 'left_member',
+    ]);
+
+    $registry->menu([
+        'slug' => 'module.killstats',
+        'title' => 'Kill Stats',
+        'url' => '/killstats',
+        'sort_order' => 10,
+        'area' => 'module_top',
+    ]);
+    $registry->menu([
+        'slug' => 'module.killstats.overview',
+        'title' => 'Overview',
+        'url' => '/killstats',
+        'sort_order' => 11,
+        'area' => 'module_top',
+        'parent_slug' => 'module.killstats',
     ]);
 
     $registry->route('GET', '/killstats', function () use ($app, $universeShared, $identityResolver): Response {

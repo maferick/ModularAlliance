@@ -61,7 +61,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Member Tools',
         'url' => '/corptools',
         'sort_order' => 40,
-        'area' => 'left',
+        'area' => 'left_member',
         'right_slug' => 'corptools.view',
     ]);
     $registry->menu([
@@ -69,7 +69,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Dashboard',
         'url' => '/corptools',
         'sort_order' => 41,
-        'area' => 'left',
+        'area' => 'left_member',
         'parent_slug' => 'corptools.member_tools',
         'right_slug' => 'corptools.view',
     ]);
@@ -78,7 +78,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'My Characters',
         'url' => '/corptools/characters',
         'sort_order' => 42,
-        'area' => 'left',
+        'area' => 'left_member',
         'parent_slug' => 'corptools.member_tools',
         'right_slug' => 'corptools.view',
     ]);
@@ -87,7 +87,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Character Audit',
         'url' => '/corptools/audit',
         'sort_order' => 43,
-        'area' => 'left',
+        'area' => 'left_member',
         'parent_slug' => 'corptools.member_tools',
         'right_slug' => 'corptools.audit.read',
     ]);
@@ -96,9 +96,9 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Overview',
         'url' => '/corptools/overview',
         'sort_order' => 44,
-        'area' => 'left',
+        'area' => 'left_member',
         'parent_slug' => 'corptools.member_tools',
-        'right_slug' => 'corptools.view',
+        'right_slug' => 'corptools.director',
     ]);
 
     $registry->menu([
@@ -106,7 +106,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Admin / HR Tools',
         'url' => '/admin/corptools/members',
         'sort_order' => 50,
-        'area' => 'left',
+        'area' => 'left_admin',
         'right_slug' => 'corptools.director',
     ]);
     $registry->menu([
@@ -114,7 +114,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Members',
         'url' => '/admin/corptools/members',
         'sort_order' => 51,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
     ]);
@@ -123,7 +123,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Org Token Linking',
         'url' => '/admin/corptools/linking',
         'sort_order' => 52,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
     ]);
@@ -132,7 +132,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Corp Audit',
         'url' => '/corptools/corp-audit',
         'sort_order' => 53,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
     ]);
@@ -141,7 +141,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Invoices',
         'url' => '/corptools/invoices',
         'sort_order' => 54,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
     ]);
@@ -150,7 +150,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Moons',
         'url' => '/corptools/moons',
         'sort_order' => 54,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
     ]);
@@ -159,7 +159,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Industry',
         'url' => '/corptools/industry',
         'sort_order' => 55,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
     ]);
@@ -168,7 +168,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Notifications',
         'url' => '/corptools/notifications',
         'sort_order' => 56,
-        'area' => 'left',
+        'area' => 'left_admin',
         'parent_slug' => 'corptools.admin_tools',
         'right_slug' => 'corptools.director',
     ]);
@@ -178,7 +178,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Corp Tools',
         'url' => '/admin/corptools',
         'sort_order' => 45,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'corptools.admin',
     ]);
     $registry->menu([
@@ -186,7 +186,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'CorpTools Status',
         'url' => '/admin/corptools/status',
         'sort_order' => 46,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'corptools.admin',
     ]);
     $registry->menu([
@@ -194,7 +194,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Member Audit',
         'url' => '/admin/corptools/member-audit',
         'sort_order' => 47,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'corptools.member_audit',
     ]);
     $registry->menu([
@@ -202,7 +202,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Identity Diagnostics',
         'url' => '/admin/corptools/identity',
         'sort_order' => 48,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'corptools.admin',
     ]);
     $registry->menu([
@@ -210,7 +210,7 @@ return function (ModuleRegistry $registry): void {
         'title' => 'CorpTools Cron',
         'url' => '/admin/corptools/cron',
         'sort_order' => 49,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'corptools.cron.manage',
     ]);
     $registry->menu([
@@ -218,8 +218,98 @@ return function (ModuleRegistry $registry): void {
         'title' => 'Cron Job Manager',
         'url' => '/admin/system/cron',
         'sort_order' => 50,
-        'area' => 'admin_top',
+        'area' => 'site_admin_top',
         'right_slug' => 'corptools.cron.manage',
+    ]);
+
+    $registry->menu([
+        'slug' => 'module.corptools',
+        'title' => 'Corp Tools',
+        'url' => '/corptools',
+        'sort_order' => 10,
+        'area' => 'module_top',
+        'right_slug' => 'corptools.view',
+    ]);
+    $registry->menu([
+        'slug' => 'module.corptools.dashboard',
+        'title' => 'Dashboard',
+        'url' => '/corptools',
+        'sort_order' => 11,
+        'area' => 'module_top',
+        'parent_slug' => 'module.corptools',
+        'right_slug' => 'corptools.view',
+    ]);
+    $registry->menu([
+        'slug' => 'module.corptools.characters',
+        'title' => 'My Characters',
+        'url' => '/corptools/characters',
+        'sort_order' => 12,
+        'area' => 'module_top',
+        'parent_slug' => 'module.corptools',
+        'right_slug' => 'corptools.view',
+    ]);
+    $registry->menu([
+        'slug' => 'module.corptools.audit',
+        'title' => 'Audit',
+        'url' => '/corptools/audit',
+        'sort_order' => 13,
+        'area' => 'module_top',
+        'parent_slug' => 'module.corptools',
+        'right_slug' => 'corptools.audit.read',
+    ]);
+    $registry->menu([
+        'slug' => 'module.corptools.overview',
+        'title' => 'Corp Overview',
+        'url' => '/corptools/overview',
+        'sort_order' => 14,
+        'area' => 'module_top',
+        'parent_slug' => 'module.corptools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'module.corptools.notifications',
+        'title' => 'Notifications',
+        'url' => '/corptools/notifications',
+        'sort_order' => 15,
+        'area' => 'module_top',
+        'parent_slug' => 'module.corptools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'module.corptools.invoices',
+        'title' => 'Invoices',
+        'url' => '/corptools/invoices',
+        'sort_order' => 16,
+        'area' => 'module_top',
+        'parent_slug' => 'module.corptools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'module.corptools.moons',
+        'title' => 'Moons',
+        'url' => '/corptools/moons',
+        'sort_order' => 17,
+        'area' => 'module_top',
+        'parent_slug' => 'module.corptools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'module.corptools.industry',
+        'title' => 'Industry',
+        'url' => '/corptools/industry',
+        'sort_order' => 18,
+        'area' => 'module_top',
+        'parent_slug' => 'module.corptools',
+        'right_slug' => 'corptools.director',
+    ]);
+    $registry->menu([
+        'slug' => 'module.corptools.corp_audit',
+        'title' => 'Corp Audit',
+        'url' => '/corptools/corp-audit',
+        'sort_order' => 19,
+        'area' => 'module_top',
+        'parent_slug' => 'module.corptools',
+        'right_slug' => 'corptools.director',
     ]);
 
     $rights = new Rights($app->db);
@@ -230,18 +320,10 @@ return function (ModuleRegistry $registry): void {
     };
 
     $renderPage = function (string $title, string $bodyHtml) use ($app, $hasRight): string {
-        $leftTree = $app->menu->tree('left', $hasRight);
-        $adminTree = $app->menu->tree('admin_top', $hasRight);
-        $userTree = $app->menu->tree('user_top', fn(string $r) => true);
-
         $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
-        if ($loggedIn) {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
-        } else {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] === 'user.login'));
-        }
+        $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
-        return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
+        return Layout::page($title, $bodyHtml, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']);
     };
 
     $formatIsk = function (float $amount): string {
@@ -1350,11 +1432,12 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect($returnTo);
     }, ['right' => 'corptools.director']);
 
-    $registry->route('GET', '/corptools', function () use ($app, $renderPage, $corpContext, $hasScopes, $formatIsk, $renderCorpContext, $getCorpToolsSettings, $sso, $makeRefreshCallback): Response {
+    $registry->route('GET', '/corptools', function () use ($app, $renderPage, $corpContext, $hasScopes, $formatIsk, $renderCorpContext, $getCorpToolsSettings, $sso, $makeRefreshCallback, $hasRight): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
+        $isDirector = $hasRight('corptools.director');
         $context = $corpContext();
         $corp = $context['selected'];
         $contextPanel = $renderCorpContext($context, '/corptools');
@@ -1423,13 +1506,13 @@ return function (ModuleRegistry $registry): void {
 
         $tiles = [
             ['label' => 'Audit', 'desc' => 'Character audit snapshots', 'url' => '/corptools/audit', 'enabled' => $auditEnabled],
-            ['label' => 'Corp Overview', 'desc' => 'At-a-glance KPIs and trends', 'url' => '/corptools/overview', 'enabled' => true],
-            ['label' => 'Notifications/Pings', 'desc' => 'Recent pings and alerts', 'url' => '/corptools/notifications', 'enabled' => $pingerEnabled],
-            ['label' => 'Invoices', 'desc' => 'Wallet journal invoice tracking', 'url' => '/corptools/invoices', 'enabled' => $invoiceEnabled],
-            ['label' => 'Moons', 'desc' => 'Moon extraction tracking', 'url' => '/corptools/moons', 'enabled' => $moonsEnabled],
-            ['label' => 'Indy Dash', 'desc' => 'Industry structures & services', 'url' => '/corptools/industry', 'enabled' => $indyEnabled],
-            ['label' => 'Corp Audit', 'desc' => 'Corp wallet/structure snapshots', 'url' => '/corptools/corp-audit', 'enabled' => $corpAuditEnabled],
-            ['label' => 'Members', 'desc' => 'Audit-driven filters', 'url' => '/admin/corptools/members', 'enabled' => $corpAuditEnabled || $auditEnabled],
+            ['label' => 'Corp Overview', 'desc' => 'At-a-glance KPIs and trends', 'url' => '/corptools/overview', 'enabled' => $isDirector],
+            ['label' => 'Notifications/Pings', 'desc' => 'Recent pings and alerts', 'url' => '/corptools/notifications', 'enabled' => $isDirector && $pingerEnabled],
+            ['label' => 'Invoices', 'desc' => 'Wallet journal invoice tracking', 'url' => '/corptools/invoices', 'enabled' => $isDirector && $invoiceEnabled],
+            ['label' => 'Moons', 'desc' => 'Moon extraction tracking', 'url' => '/corptools/moons', 'enabled' => $isDirector && $moonsEnabled],
+            ['label' => 'Indy Dash', 'desc' => 'Industry structures & services', 'url' => '/corptools/industry', 'enabled' => $isDirector && $indyEnabled],
+            ['label' => 'Corp Audit', 'desc' => 'Corp wallet/structure snapshots', 'url' => '/corptools/corp-audit', 'enabled' => $isDirector && $corpAuditEnabled],
+            ['label' => 'Members', 'desc' => 'Audit-driven filters', 'url' => '/admin/corptools/members', 'enabled' => $isDirector && ($corpAuditEnabled || $auditEnabled)],
         ];
 
         $tilesHtml = '';
@@ -1448,17 +1531,9 @@ return function (ModuleRegistry $registry): void {
             $tilesHtml = "<div class='col-12 text-muted'>No CorpTools modules are enabled yet. Configure settings in Admin → Corp Tools.</div>";
         }
 
-        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-3'>
-                    <div class='d-flex align-items-center gap-3'>
-                      {$iconHtml}
-                      <div>
-                        <h1 class='mb-1'>Corp Tools</h1>
-                        <div class='text-muted'>{$corpLabel}</div>
-                      </div>
-                    </div>
-                  </div>
-                  {$contextPanel}
-                  <div class='row g-3 mt-3'>
+        $kpiHtml = '';
+        if ($isDirector) {
+            $kpiHtml = "<div class='row g-3 mt-3'>
                     <div class='col-md-3'>
                       <div class='card card-body'>
                         <div class='text-muted small'>Wallet delta (24h)</div>
@@ -1484,7 +1559,22 @@ return function (ModuleRegistry $registry): void {
                         <div class='text-muted small'>" . htmlspecialchars($notificationsStatus) . "</div>
                       </div>
                     </div>
+                  </div>";
+        } else {
+            $kpiHtml = "<div class='alert alert-info mt-3'>Corp KPI widgets are visible to directors only.</div>";
+        }
+
+        $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-3'>
+                    <div class='d-flex align-items-center gap-3'>
+                      {$iconHtml}
+                      <div>
+                        <h1 class='mb-1'>Corp Tools</h1>
+                        <div class='text-muted'>{$corpLabel}</div>
+                      </div>
+                    </div>
                   </div>
+                  {$contextPanel}
+                  {$kpiHtml}
                   <div class='row g-3 mt-3'>{$tilesHtml}</div>
                   <div class='card card-body mt-3'>
                     <div class='fw-semibold mb-2'>At a glance</div>
@@ -1492,7 +1582,7 @@ return function (ModuleRegistry $registry): void {
                   </div>";
 
         return Response::html($renderPage('Corp Tools', $body), 200);
-    }, ['right' => 'corptools.audit.read']);
+    }, ['right' => 'corptools.view']);
 
     $registry->route('GET', '/corptools/characters', function () use ($app, $renderPage, $renderPagination): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
@@ -2079,7 +2169,7 @@ return function (ModuleRegistry $registry): void {
                   </div>";
 
         return Response::html($renderPage('At a Glance', $body), 200);
-    }, ['right' => 'corptools.view']);
+    }, ['right' => 'corptools.director']);
 
     $registry->route('GET', '/corptools/invoices', function (Request $req) use ($app, $renderPage, $corpContext, $formatIsk, $getCorpToken, $renderCorpContext, $getCorpToolsSettings): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
@@ -2597,7 +2687,7 @@ return function (ModuleRegistry $registry): void {
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>Member: {$mainName}</h1>
-                      <div class='text-muted'>Member ID " . htmlspecialchars((string)($user['public_id'] ?? '')) . " · Main character {$mainName}</div>
+                      <div class='text-muted'>Main character {$mainName}</div>
                     </div>
                     <div class='text-end'>
                       <a class='btn btn-outline-light' href='/admin/corptools/members/" . htmlspecialchars($userPublicId) . "/characters'>View Characters</a>
