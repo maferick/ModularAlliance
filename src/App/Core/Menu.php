@@ -13,7 +13,7 @@ final class Menu
         $slug = (string)($item['slug'] ?? '');
         if ($slug === '') throw new \RuntimeException("Menu item missing slug");
 
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO menu_registry (slug, title, url, parent_slug, sort_order, area, right_slug, enabled)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
@@ -39,7 +39,7 @@ final class Menu
 
     public function tree(string $area, callable $hasRight): array
     {
-        $rows = $this->db->all(
+        $rows = db_all($this->db, 
             "SELECT r.slug,
                     COALESCE(o.title, r.title) AS title,
                     COALESCE(o.url, r.url) AS url,

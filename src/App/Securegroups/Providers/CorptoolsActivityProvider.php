@@ -55,7 +55,7 @@ final class CorptoolsActivityProvider implements ProviderInterface
             if ($mainId <= 0) {
                 return $this->unknown('Missing main character id.');
             }
-            $row = $this->db->one(
+            $row = db_one($this->db, 
                 "SELECT last_audit_at FROM module_corptools_character_summary WHERE character_id=? LIMIT 1",
                 [$mainId]
             );
@@ -71,7 +71,7 @@ final class CorptoolsActivityProvider implements ProviderInterface
                 return $this->unknown('No linked characters found.');
             }
             $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
-            $rows = $this->db->all(
+            $rows = db_all($this->db, 
                 "SELECT last_audit_at FROM module_corptools_character_summary WHERE character_id IN ({$placeholders})",
                 $characterIds
             );

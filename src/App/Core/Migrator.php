@@ -3,15 +3,13 @@ declare(strict_types=1);
 
 namespace App\Core;
 
-use PDO;
-
 final class Migrator
 {
     public function __construct(private readonly Db $db) {}
 
     public function ensureLogTable(): void
     {
-        $this->db->exec(<<<SQL
+        db_exec($this->db, <<<SQL
 CREATE TABLE IF NOT EXISTS migration_log (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   module_slug VARCHAR(64) NOT NULL,
@@ -42,7 +40,8 @@ SQL);
         $checksum = hash('sha256', $sql);
         $path = $this->relPath($filePath);
 
-        $existing = $this->db->one(
+        $existing = db_one(
+            $this->db,
             "SELECT id, checksum FROM migration_log
              WHERE module_slug=? AND file_path=? AND status='applied'
              ORDER BY id DESC
@@ -58,20 +57,20 @@ SQL);
             return;
         }
 
-        $pdo = $this->db->pdo();
-        $driver = (string)$pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $driver = db_driver($this->db);
 
         // MySQL/MariaDB DDL is not transaction-safe due to implicit commits.
         $useTx = ($driver !== 'mysql');
 
         try {
-            if ($useTx) $pdo->beginTransaction();
+            if ($useTx) $this->db->begin();
 
-            $pdo->exec($sql);
+            db_exec($this->db, $sql);
 
-            if ($useTx && $pdo->inTransaction()) $pdo->commit();
+            if ($useTx && $this->db->inTx()) $this->db->commit();
 
-            $this->db->run(
+            db_exec(
+                $this->db,
                 "INSERT INTO migration_log (module_slug, file_path, checksum, status, message, ran_at)
                  VALUES (?, ?, ?, 'applied', '', NOW())",
                 [$moduleSlug, $path, $checksum]
@@ -79,10 +78,11 @@ SQL);
 
             echo "[OK] {$moduleSlug}: {$path}\n";
         } catch (\Throwable $e) {
-            if ($useTx && $pdo->inTransaction()) $pdo->rollBack();
+            if ($useTx && $this->db->inTx()) $this->db->rollback();
 
             try {
-                $this->db->run(
+                db_exec(
+                    $this->db,
                     "INSERT INTO migration_log (module_slug, file_path, checksum, status, message, ran_at)
                      VALUES (?, ?, ?, 'failed', ?, NOW())",
                     [$moduleSlug, $path, $checksum, substr($e->getMessage(), 0, 255)]

@@ -9,7 +9,7 @@ use App\Core\Db;
 $config = app_config();
 $db = Db::fromConfig($config['db'] ?? []);
 
-$db->exec("SET time_zone = '+00:00'");
+db_exec($db, "SET time_zone = '+00:00'");
 
 $statements = [
     "CREATE TABLE IF NOT EXISTS settings (
@@ -784,24 +784,24 @@ $statements = [
 ];
 
 foreach ($statements as $sql) {
-    $db->exec($sql);
+    db_exec($db, $sql);
 }
 
-$db->run(
+db_exec($db, 
     "INSERT IGNORE INTO settings (`key`, `value`) VALUES
      ('site.brand.name', 'killsineve.online'),
      ('site.identity.type', 'corporation'),
      ('site.identity.id', '0')"
 );
 
-$db->run("INSERT IGNORE INTO authz_state (id, version) VALUES (1, 1)");
+db_exec($db, "INSERT IGNORE INTO authz_state (id, version) VALUES (1, 1)");
 
-$db->run(
+db_exec($db, 
     "INSERT IGNORE INTO groups (slug, name, is_admin)
      VALUES ('admin', 'Administrator', 1)"
 );
 
-$db->run(
+db_exec($db, 
     "INSERT IGNORE INTO rights (slug, description) VALUES
      ('admin.access', 'Admin Access'),
      ('admin.cache', 'Manage ESI Cache'),
@@ -810,7 +810,7 @@ $db->run(
      ('admin.menu', 'Manage Menu')"
 );
 
-$db->run(
+db_exec($db, 
     "INSERT IGNORE INTO group_rights (group_id, right_id)
      SELECT g.id, r.id
      FROM groups g
@@ -818,7 +818,7 @@ $db->run(
      WHERE g.slug='admin'"
 );
 
-$db->run(
+db_exec($db, 
     "INSERT IGNORE INTO menu_registry (slug,title,url,parent_slug,sort_order,area,right_slug,enabled) VALUES
      ('user.login','Login','/auth/login',NULL,10,'user_top',NULL,1),
      ('user.profile','Profile','/me',NULL,20,'user_top',NULL,1),

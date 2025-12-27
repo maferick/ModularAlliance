@@ -20,6 +20,8 @@ use App\Corptools\Cron\JobRunner;
 use App\Http\Request;
 use App\Http\Response;
 
+require_once __DIR__ . '/functions.php';
+
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
     $universeShared = new Universe($app->db);
@@ -178,52 +180,52 @@ return function (ModuleRegistry $registry): void {
 
     $resolveUserId = function (string $publicId) use ($app): int {
         if ($publicId === '') return 0;
-        $row = $app->db->one("SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$publicId]);
+        $row = db_one($app->db, "SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$publicId]);
         return (int)($row['id'] ?? 0);
     };
 
     $resolveGroupId = function (string $slug) use ($app): int {
         if ($slug === '') return 0;
-        $row = $app->db->one("SELECT id FROM module_secgroups_groups WHERE key_slug=? LIMIT 1", [$slug]);
+        $row = db_one($app->db, "SELECT id FROM module_secgroups_groups WHERE key_slug=? LIMIT 1", [$slug]);
         return (int)($row['id'] ?? 0);
     };
 
     $resolveFilterId = function (string $publicId) use ($app): int {
         if ($publicId === '') return 0;
-        $row = $app->db->one("SELECT id FROM module_secgroups_filters WHERE public_id=? LIMIT 1", [$publicId]);
+        $row = db_one($app->db, "SELECT id FROM module_secgroups_filters WHERE public_id=? LIMIT 1", [$publicId]);
         return (int)($row['id'] ?? 0);
     };
 
     $resolveRequestId = function (string $publicId) use ($app): int {
         if ($publicId === '') return 0;
-        $row = $app->db->one("SELECT id FROM module_secgroups_requests WHERE public_id=? LIMIT 1", [$publicId]);
+        $row = db_one($app->db, "SELECT id FROM module_secgroups_requests WHERE public_id=? LIMIT 1", [$publicId]);
         return (int)($row['id'] ?? 0);
     };
 
     $ensureRightsGroup = function (string $slug, string $name) use ($app, $nowUtc): int {
-        $existing = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$slug]);
+        $existing = db_one($app->db, "SELECT id FROM groups WHERE slug=? LIMIT 1", [$slug]);
         if ($existing) {
             return (int)($existing['id'] ?? 0);
         }
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO groups (slug, name, is_admin, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
             [$slug, $name, $nowUtc(), $nowUtc()]
         );
-        $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
+        $row = db_one($app->db, "SELECT LAST_INSERT_ID() AS id");
         return (int)($row['id'] ?? 0);
     };
 
     $syncUserRightsGroup = function (int $userId, int $groupId, bool $shouldHave) use ($app): void {
         if ($userId <= 0 || $groupId <= 0) return;
         if ($shouldHave) {
-            $app->db->run("INSERT IGNORE INTO eve_user_groups (user_id, group_id) VALUES (?, ?)", [$userId, $groupId]);
+            db_exec($app->db, "INSERT IGNORE INTO eve_user_groups (user_id, group_id) VALUES (?, ?)", [$userId, $groupId]);
         } else {
-            $app->db->run("DELETE FROM eve_user_groups WHERE user_id=? AND group_id=?", [$userId, $groupId]);
+            db_exec($app->db, "DELETE FROM eve_user_groups WHERE user_id=? AND group_id=?", [$userId, $groupId]);
         }
     };
 
     $getLinkedCharacterIds = function (int $userId) use ($app): array {
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT character_id FROM core_character_identities WHERE user_id=?",
             [$userId]
         );
@@ -328,7 +330,7 @@ return function (ModuleRegistry $registry): void {
             } else {
                 $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
                 $params = array_merge([$userId], $groupIds);
-                $row = $app->db->one(
+                $row = db_one($app->db, 
                     "SELECT 1 FROM eve_user_groups WHERE user_id=? AND group_id IN ({$placeholders}) LIMIT 1",
                     $params
                 );
@@ -343,8 +345,8 @@ return function (ModuleRegistry $registry): void {
             $leftId = (int)($config['left_filter_id'] ?? 0);
             $rightId = (int)($config['right_filter_id'] ?? 0);
             $operator = strtolower((string)($config['operator'] ?? 'and'));
-            $left = $leftId > 0 ? $app->db->one("SELECT * FROM module_secgroups_filters WHERE id=?", [$leftId]) : null;
-            $right = $rightId > 0 ? $app->db->one("SELECT * FROM module_secgroups_filters WHERE id=?", [$rightId]) : null;
+            $left = $leftId > 0 ? db_one($app->db, "SELECT * FROM module_secgroups_filters WHERE id=?", [$leftId]) : null;
+            $right = $rightId > 0 ? db_one($app->db, "SELECT * FROM module_secgroups_filters WHERE id=?", [$rightId]) : null;
             if (!$left || !$right) {
                 $result = ['pass' => false, 'message' => 'Missing filter expression operands.', 'evidence' => $config];
             } else {
@@ -377,7 +379,7 @@ return function (ModuleRegistry $registry): void {
     };
 
     $evaluateGroupForUser = function (int $userId, array $group) use ($app, $evaluateFilter, $nowUtc): array {
-        $filters = $app->db->all(
+        $filters = db_all($app->db, 
             "SELECT f.* FROM module_secgroups_filters f\n"
             . " JOIN module_secgroups_group_filters gf ON gf.filter_id=f.id\n"
             . " WHERE gf.group_id=? AND gf.enabled=1 ORDER BY gf.sort_order ASC, f.id ASC",
@@ -394,7 +396,7 @@ return function (ModuleRegistry $registry): void {
         $failedFilterId = null;
         foreach ($filters as $filter) {
             $result = $evaluateFilter($userId, $filter, $context);
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE module_secgroups_group_filters\n"
                 . " SET last_evaluated_at=?, last_pass=?, last_message=?, last_user_id=?\n"
                 . " WHERE group_id=? AND filter_id=?",
@@ -430,7 +432,7 @@ return function (ModuleRegistry $registry): void {
         if ($canGrace) {
             $graceDays = (int)($group['grace_default_days'] ?? 0);
             if ($failedFilterId) {
-                $filterRow = $app->db->one("SELECT grace_period_days FROM module_secgroups_filters WHERE id=?", [$failedFilterId]);
+                $filterRow = db_one($app->db, "SELECT grace_period_days FROM module_secgroups_filters WHERE id=?", [$failedFilterId]);
                 if ($filterRow && (int)($filterRow['grace_period_days'] ?? 0) > 0) {
                     $graceDays = (int)($filterRow['grace_period_days'] ?? 0);
                 }
@@ -465,21 +467,21 @@ return function (ModuleRegistry $registry): void {
         }
 
         $stamp = $nowUtc();
-        $existing = $app->db->one(
+        $existing = db_one($app->db, 
             "SELECT id, status FROM module_secgroups_memberships WHERE group_id=? AND user_id=?",
             [$groupId, $userId]
         );
         $prevStatus = $existing['status'] ?? 'OUT';
 
         if ($existing) {
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE module_secgroups_memberships\n"
                 . " SET status=?, source=?, reason=?, evidence_json=?, last_evaluated_at=?, grace_expires_at=?, grace_filter_id=?, updated_at=?\n"
                 . " WHERE id=?",
                 [$status, $source, $reason, $evidence, $stamp, $graceExpires, $failedFilterId, $stamp, (int)$existing['id']]
             );
         } else {
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_secgroups_memberships\n"
                 . " (group_id, user_id, status, source, reason, evidence_json, last_evaluated_at, grace_expires_at, grace_filter_id, created_at, updated_at)\n"
                 . " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -493,7 +495,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         if ($prevStatus !== $status) {
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_secgroups_logs\n"
                 . " (group_id, user_id, action, source, message, created_at, meta_json)\n"
                 . " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -511,7 +513,7 @@ return function (ModuleRegistry $registry): void {
                     json_encode(['override_id' => $overrideId], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                 ]
             );
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_secgroups_notifications (group_id, user_id, message, created_at)\n"
                 . " VALUES (?, ?, ?, ?)",
                 [$groupId, $userId, $reason, $stamp]
@@ -520,8 +522,8 @@ return function (ModuleRegistry $registry): void {
     };
 
     $evaluateAllGroups = function (App $app) use ($evaluateGroupForUser, $applyMembership, $nowUtc): array {
-        $groups = $app->db->all("SELECT * FROM module_secgroups_groups WHERE enabled=1 ORDER BY id ASC");
-        $users = $app->db->all("SELECT id FROM eve_users ORDER BY id ASC");
+        $groups = db_all($app->db, "SELECT * FROM module_secgroups_groups WHERE enabled=1 ORDER BY id ASC");
+        $users = db_all($app->db, "SELECT id FROM eve_users ORDER BY id ASC");
         $processed = 0;
 
         foreach ($groups as $group) {
@@ -532,7 +534,7 @@ return function (ModuleRegistry $registry): void {
                 $userId = (int)($user['id'] ?? 0);
                 if ($userId <= 0) continue;
 
-                $override = $app->db->one(
+                $override = db_one($app->db, 
                     "SELECT * FROM module_secgroups_overrides WHERE group_id=? AND user_id=? AND (expires_at IS NULL OR expires_at > ?) LIMIT 1",
                     [$groupId, $userId, $nowUtc()]
                 );
@@ -557,18 +559,18 @@ return function (ModuleRegistry $registry): void {
     };
 
     $evaluateSingleGroup = function (App $app, int $groupId) use ($evaluateGroupForUser, $applyMembership, $nowUtc): array {
-        $group = $app->db->one("SELECT * FROM module_secgroups_groups WHERE id=?", [$groupId]);
+        $group = db_one($app->db, "SELECT * FROM module_secgroups_groups WHERE id=?", [$groupId]);
         if (!$group) {
             return ['status' => 'failed', 'message' => 'Group not found'];
         }
-        $users = $app->db->all("SELECT id FROM eve_users ORDER BY id ASC");
+        $users = db_all($app->db, "SELECT id FROM eve_users ORDER BY id ASC");
         $processed = 0;
 
         foreach ($users as $user) {
             $userId = (int)($user['id'] ?? 0);
             if ($userId <= 0) continue;
 
-            $override = $app->db->one(
+            $override = db_one($app->db, 
                 "SELECT * FROM module_secgroups_overrides WHERE group_id=? AND user_id=? AND (expires_at IS NULL OR expires_at > ?) LIMIT 1",
                 [$groupId, $userId, $nowUtc()]
             );
@@ -592,14 +594,14 @@ return function (ModuleRegistry $registry): void {
     };
 
     $evaluateSingleUser = function (App $app, int $userId) use ($evaluateGroupForUser, $applyMembership, $nowUtc): array {
-        $groups = $app->db->all("SELECT * FROM module_secgroups_groups WHERE enabled=1 ORDER BY id ASC");
+        $groups = db_all($app->db, "SELECT * FROM module_secgroups_groups WHERE enabled=1 ORDER BY id ASC");
         $processed = 0;
 
         foreach ($groups as $group) {
             $groupId = (int)($group['id'] ?? 0);
             if ($groupId <= 0) continue;
 
-            $override = $app->db->one(
+            $override = db_one($app->db, 
                 "SELECT * FROM module_secgroups_overrides WHERE group_id=? AND user_id=? AND (expires_at IS NULL OR expires_at > ?) LIMIT 1",
                 [$groupId, $userId, $nowUtc()]
             );
@@ -666,7 +668,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         $uid = (int)($_SESSION['user_id'] ?? 0);
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT g.id, g.key_slug, g.display_name, g.description, g.allow_applications, m.status, m.source, m.reason, m.last_evaluated_at\n"
             . " FROM module_secgroups_groups g\n"
             . " LEFT JOIN module_secgroups_memberships m ON m.group_id=g.id AND m.user_id=?\n"
@@ -713,24 +715,24 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         $slug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($slug);
-        $group = $gid > 0 ? $app->db->one("SELECT * FROM module_secgroups_groups WHERE id=?", [$gid]) : null;
+        $group = $gid > 0 ? db_one($app->db, "SELECT * FROM module_secgroups_groups WHERE id=?", [$gid]) : null;
         if (!$group) {
             return Response::text('Group not found', 404);
         }
-        $membership = $app->db->one(
+        $membership = db_one($app->db, 
             "SELECT * FROM module_secgroups_memberships WHERE group_id=? AND user_id=?",
             [$gid, $uid]
         );
-        $requests = $app->db->all(
+        $requests = db_all($app->db, 
             "SELECT status, created_at, decided_at, note, admin_note\n"
             . " FROM module_secgroups_requests WHERE group_id=? AND user_id=? ORDER BY created_at DESC",
             [$gid, $uid]
         );
-        $notifications = $app->db->all(
+        $notifications = db_all($app->db, 
             "SELECT message, created_at FROM module_secgroups_notifications WHERE group_id=? AND user_id=? ORDER BY created_at DESC LIMIT 10",
             [$gid, $uid]
         );
-        $history = $app->db->all(
+        $history = db_all($app->db, 
             "SELECT action, source, message, created_at FROM module_secgroups_logs WHERE group_id=? AND user_id=? ORDER BY created_at DESC LIMIT 10",
             [$gid, $uid]
         );
@@ -789,7 +791,7 @@ return function (ModuleRegistry $registry): void {
         $reason = (string)($membership['reason'] ?? '—');
         $lastEvaluated = (string)($membership['last_evaluated_at'] ?? '—');
         $groupSlug = (string)($group['key_slug'] ?? $slug ?? '');
-        $hasPending = $app->db->one(
+        $hasPending = db_one($app->db, 
             "SELECT id FROM module_secgroups_requests WHERE group_id=? AND user_id=? AND status='PENDING' LIMIT 1",
             [$gid, $uid]
         ) !== null;
@@ -863,15 +865,15 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         $slug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($slug);
-        $group = $app->db->one("SELECT allow_applications FROM module_secgroups_groups WHERE id=?", [$gid]);
+        $group = db_one($app->db, "SELECT allow_applications FROM module_secgroups_groups WHERE id=?", [$gid]);
         if (!$group || (int)($group['allow_applications'] ?? 0) !== 1) {
             return Response::text('Applications disabled.', 403);
         }
-        $existingMembership = $app->db->one("SELECT status FROM module_secgroups_memberships WHERE group_id=? AND user_id=?", [$gid, $uid]);
+        $existingMembership = db_one($app->db, "SELECT status FROM module_secgroups_memberships WHERE group_id=? AND user_id=?", [$gid, $uid]);
         if ($existingMembership && (string)($existingMembership['status'] ?? '') === 'IN') {
             return Response::text('Already a member.', 422);
         }
-        $pending = $app->db->one(
+        $pending = db_one($app->db, 
             "SELECT id FROM module_secgroups_requests WHERE group_id=? AND user_id=? AND status='PENDING' LIMIT 1",
             [$gid, $uid]
         );
@@ -879,7 +881,7 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Request already pending.', 422);
         }
         $publicId = $generatePublicId('module_secgroups_requests');
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_secgroups_requests\n"
             . " (public_id, group_id, user_id, status, created_at, note) VALUES (?, ?, ?, 'PENDING', ?, ?)",
             [$publicId, $gid, $uid, $nowUtc(), 'User request']
@@ -892,14 +894,14 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         $slug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($slug);
-        $pending = $app->db->one(
+        $pending = db_one($app->db, 
             "SELECT id FROM module_secgroups_requests WHERE group_id=? AND user_id=? AND status='PENDING' LIMIT 1",
             [$gid, $uid]
         );
         if (!$pending) {
             return Response::text('No pending request to withdraw.', 422);
         }
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_secgroups_requests SET status='WITHDRAWN', decided_at=?, admin_note='User withdrew'\n"
             . " WHERE group_id=? AND user_id=? AND status='PENDING'",
             [$nowUtc(), $gid, $uid]
@@ -912,16 +914,16 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         $slug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($slug);
-        $group = $app->db->one("SELECT allow_applications, auto_group, rights_group_id FROM module_secgroups_groups WHERE id=?", [$gid]);
+        $group = db_one($app->db, "SELECT allow_applications, auto_group, rights_group_id FROM module_secgroups_groups WHERE id=?", [$gid]);
         if (!$group || (int)($group['allow_applications'] ?? 0) !== 1 || (int)($group['auto_group'] ?? 0) === 1) {
             return Response::text('Leaving not permitted.', 403);
         }
-        $membership = $app->db->one("SELECT status FROM module_secgroups_memberships WHERE group_id=? AND user_id=?", [$gid, $uid]);
+        $membership = db_one($app->db, "SELECT status FROM module_secgroups_memberships WHERE group_id=? AND user_id=?", [$gid, $uid]);
         if (!$membership || (string)($membership['status'] ?? '') !== 'IN') {
             return Response::text('Not currently a member.', 422);
         }
         $stamp = $nowUtc();
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_secgroups_memberships SET status='OUT', source='REQUEST', reason='User left', last_evaluated_at=?, updated_at=?\n"
             . " WHERE group_id=? AND user_id=?",
             [$stamp, $stamp, $gid, $uid]
@@ -930,7 +932,7 @@ return function (ModuleRegistry $registry): void {
         if ($rightsGroupId > 0) {
             $syncUserRightsGroup($uid, $rightsGroupId, false);
         }
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_secgroups_logs (group_id, user_id, action, source, message, created_at) VALUES (?, ?, 'USER_LEFT', 'REQUEST', ?, ?)",
             [$gid, $uid, 'User left group', $stamp]
         );
@@ -942,13 +944,13 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
         $kpis = [
-            'groups' => (int)($app->db->one("SELECT COUNT(*) AS total FROM module_secgroups_groups")['total'] ?? 0),
-            'members' => (int)($app->db->one("SELECT COUNT(*) AS total FROM module_secgroups_memberships WHERE status='IN'")['total'] ?? 0),
-            'pending_requests' => (int)($app->db->one("SELECT COUNT(*) AS total FROM module_secgroups_requests WHERE status='PENDING'")['total'] ?? 0),
-            'grace' => (int)($app->db->one("SELECT COUNT(*) AS total FROM module_secgroups_memberships WHERE status='GRACE'")['total'] ?? 0),
+            'groups' => (int)(db_one($app->db, "SELECT COUNT(*) AS total FROM module_secgroups_groups")['total'] ?? 0),
+            'members' => (int)(db_one($app->db, "SELECT COUNT(*) AS total FROM module_secgroups_memberships WHERE status='IN'")['total'] ?? 0),
+            'pending_requests' => (int)(db_one($app->db, "SELECT COUNT(*) AS total FROM module_secgroups_requests WHERE status='PENDING'")['total'] ?? 0),
+            'grace' => (int)(db_one($app->db, "SELECT COUNT(*) AS total FROM module_secgroups_memberships WHERE status='GRACE'")['total'] ?? 0),
         ];
 
-        $lastRun = $app->db->one(
+        $lastRun = db_one($app->db, 
             "SELECT started_at, status, message FROM module_corptools_job_runs\n"
             . " WHERE job_key='securegroups.evaluate_all' ORDER BY started_at DESC LIMIT 1"
         );
@@ -1034,7 +1036,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
-        $groups = $app->db->all("SELECT * FROM module_secgroups_groups ORDER BY display_name ASC");
+        $groups = db_all($app->db, "SELECT * FROM module_secgroups_groups ORDER BY display_name ASC");
         $rows = '';
         foreach ($groups as $group) {
             $groupSlug = (string)($group['key_slug'] ?? '');
@@ -1174,7 +1176,7 @@ return function (ModuleRegistry $registry): void {
         $rightsGroupId = $ensureRightsGroup($rightsSlug, 'SecureGroup - ' . $name);
 
         $stamp = $nowUtc();
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_secgroups_groups\n"
             . " (key_slug, display_name, description, enabled, auto_group, include_in_updates, can_grace, grace_default_days,\n"
             . " allow_applications, notify_on_add, notify_on_remove, notify_on_grace, rights_group_id, last_update_at, created_at, updated_at)\n"
@@ -1207,7 +1209,7 @@ return function (ModuleRegistry $registry): void {
 
         $groupSlug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($groupSlug);
-        $group = $gid > 0 ? $app->db->one("SELECT * FROM module_secgroups_groups WHERE id=?", [$gid]) : null;
+        $group = $gid > 0 ? db_one($app->db, "SELECT * FROM module_secgroups_groups WHERE id=?", [$gid]) : null;
         if (!$group) {
             return Response::text('Group not found', 404);
         }
@@ -1299,7 +1301,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireRight('securegroups.admin')) return $resp;
         $groupSlug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($groupSlug);
-        $group = $gid > 0 ? $app->db->one("SELECT * FROM module_secgroups_groups WHERE id=?", [$gid]) : null;
+        $group = $gid > 0 ? db_one($app->db, "SELECT * FROM module_secgroups_groups WHERE id=?", [$gid]) : null;
         if (!$group) {
             return Response::text('Group not found', 404);
         }
@@ -1311,7 +1313,7 @@ return function (ModuleRegistry $registry): void {
         $key = (string)($group['key_slug'] ?? $slugify($name));
 
         $stamp = $nowUtc();
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_secgroups_groups\n"
             . " SET display_name=?, description=?, enabled=?, auto_group=?, include_in_updates=?, can_grace=?, grace_default_days=?,\n"
             . " allow_applications=?, notify_on_add=?, notify_on_remove=?, notify_on_grace=?, last_update_at=?, updated_at=?\n"
@@ -1347,7 +1349,7 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Group not found', 404);
         }
         $enabled = (int)($req->post['enabled'] ?? 1) === 1 ? 1 : 0;
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_secgroups_groups SET enabled=?, updated_at=? WHERE id=?",
             [$enabled, $nowUtc(), $gid]
         );
@@ -1364,8 +1366,8 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Group not found', 404);
         }
 
-        $app->db->run("DELETE FROM module_secgroups_groups WHERE id=?", [$gid]);
-        $orphans = $app->db->all(
+        db_exec($app->db, "DELETE FROM module_secgroups_groups WHERE id=?", [$gid]);
+        $orphans = db_all($app->db, 
             "SELECT f.id FROM module_secgroups_filters f\n"
             . " LEFT JOIN module_secgroups_group_filters gf ON gf.filter_id=f.id\n"
             . " WHERE gf.filter_id IS NULL"
@@ -1373,7 +1375,7 @@ return function (ModuleRegistry $registry): void {
         foreach ($orphans as $orphan) {
             $fid = (int)($orphan['id'] ?? 0);
             if ($fid > 0) {
-                $app->db->run("DELETE FROM module_secgroups_filters WHERE id=?", [$fid]);
+                db_exec($app->db, "DELETE FROM module_secgroups_filters WHERE id=?", [$fid]);
             }
         }
 
@@ -1386,11 +1388,11 @@ return function (ModuleRegistry $registry): void {
 
         $groupSlug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($groupSlug);
-        $group = $gid > 0 ? $app->db->one("SELECT * FROM module_secgroups_groups WHERE id=?", [$gid]) : null;
+        $group = $gid > 0 ? db_one($app->db, "SELECT * FROM module_secgroups_groups WHERE id=?", [$gid]) : null;
         if (!$group) {
             return Response::text('Group not found', 404);
         }
-        $filters = $app->db->all(
+        $filters = db_all($app->db, 
             "SELECT f.*, f.public_id AS filter_public_id, gf.sort_order, gf.enabled, gf.last_evaluated_at, gf.last_pass, gf.last_message,\n"
             . " lu.public_id AS last_user_public_id\n"
             . " FROM module_secgroups_filters f\n"
@@ -1406,7 +1408,7 @@ return function (ModuleRegistry $registry): void {
         $searchResults = [];
         if ($search !== '') {
             $entityType = $searchType === 'alliance' ? 'alliance' : 'corporation';
-            $searchResults = $app->db->all(
+            $searchResults = db_all($app->db, 
                 "SELECT entity_id, name FROM universe_entities\n"
                 . " WHERE entity_type=? AND name LIKE ? ORDER BY name ASC LIMIT 25",
                 [$entityType, '%' . $search . '%']
@@ -1414,7 +1416,7 @@ return function (ModuleRegistry $registry): void {
         }
         $groupResults = [];
         if ($groupSearch !== '') {
-            $groupResults = $app->db->all(
+            $groupResults = db_all($app->db, 
                 "SELECT id, slug, name FROM groups WHERE name LIKE ? OR slug LIKE ? ORDER BY name ASC LIMIT 25",
                 ['%' . $groupSearch . '%', '%' . $groupSearch . '%']
             );
@@ -1716,7 +1718,7 @@ return function (ModuleRegistry $registry): void {
         $groupIds = [];
         $missingGroups = [];
         foreach ($groupSlugs as $groupSlugValue) {
-            $row = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupSlugValue]);
+            $row = db_one($app->db, "SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupSlugValue]);
             $gidValue = (int)($row['id'] ?? 0);
             if ($gidValue > 0) {
                 $groupIds[] = $gidValue;
@@ -1768,7 +1770,7 @@ return function (ModuleRegistry $registry): void {
 
         $stamp = $nowUtc();
         $publicId = $generatePublicId('module_secgroups_filters');
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_secgroups_filters\n"
             . " (public_id, type, name, description, config_json, grace_period_days, created_at, updated_at)\n"
             . " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1783,15 +1785,15 @@ return function (ModuleRegistry $registry): void {
                 $stamp,
             ]
         );
-        $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
+        $row = db_one($app->db, "SELECT LAST_INSERT_ID() AS id");
         $filterId = (int)($row['id'] ?? 0);
 
-        $nextOrderRow = $app->db->one(
+        $nextOrderRow = db_one($app->db, 
             "SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM module_secgroups_group_filters WHERE group_id=?",
             [$gid]
         );
         $nextOrder = (int)($nextOrderRow['next_order'] ?? 1);
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_secgroups_group_filters (group_id, filter_id, sort_order, enabled) VALUES (?, ?, ?, 1)",
             [$gid, $filterId, $nextOrder]
         );
@@ -1806,7 +1808,7 @@ return function (ModuleRegistry $registry): void {
         $groupSlug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($groupSlug);
         $filterId = $resolveFilterId((string)($req->params['filterPublicId'] ?? ''));
-        $filter = $app->db->one(
+        $filter = db_one($app->db, 
             "SELECT f.* FROM module_secgroups_filters f\n"
             . " JOIN module_secgroups_group_filters gf ON gf.filter_id=f.id\n"
             . " WHERE gf.group_id=? AND f.id=? LIMIT 1",
@@ -1821,16 +1823,7 @@ return function (ModuleRegistry $registry): void {
 
         $corpId = (int)($config['corp_id'] ?? 0);
         $allianceId = (int)($config['alliance_id'] ?? 0);
-        $corpName = (string)($config['corp_name'] ?? '');
-        $allianceName = (string)($config['alliance_name'] ?? '');
-        if ($corpId > 0 && $corpName === '') {
-            $row = $app->db->one("SELECT name FROM universe_entities WHERE entity_id=? LIMIT 1", [$corpId]);
-            $corpName = (string)($row['name'] ?? '');
-        }
-        if ($allianceId > 0 && $allianceName === '') {
-            $row = $app->db->one("SELECT name FROM universe_entities WHERE entity_id=? LIMIT 1", [$allianceId]);
-            $allianceName = (string)($row['name'] ?? '');
-        }
+        [$corpName, $allianceName] = securegroups_resolve_org_names($universeShared, $corpId, $allianceId, $config);
 
         $groupSlugs = $config['group_slugs'] ?? [];
         if (!is_array($groupSlugs)) $groupSlugs = [];
@@ -1838,7 +1831,7 @@ return function (ModuleRegistry $registry): void {
         if (!is_array($groupIds)) $groupIds = [];
         if (empty($groupSlugs) && !empty($groupIds)) {
             $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
-            $rows = $app->db->all("SELECT slug FROM groups WHERE id IN ({$placeholders})", $groupIds);
+            $rows = db_all($app->db, "SELECT slug FROM groups WHERE id IN ({$placeholders})", $groupIds);
             $groupSlugs = array_map(fn(array $row): string => (string)($row['slug'] ?? ''), $rows);
         }
 
@@ -1847,7 +1840,7 @@ return function (ModuleRegistry $registry): void {
         $exemptPublicIds = [];
         if (!empty($exemptUserIds)) {
             $placeholders = implode(',', array_fill(0, count($exemptUserIds), '?'));
-            $rows = $app->db->all("SELECT id, public_id FROM eve_users WHERE id IN ({$placeholders})", $exemptUserIds);
+            $rows = db_all($app->db, "SELECT id, public_id FROM eve_users WHERE id IN ({$placeholders})", $exemptUserIds);
             foreach ($rows as $row) {
                 $exemptPublicIds[(int)($row['id'] ?? 0)] = (string)($row['public_id'] ?? '');
             }
@@ -1859,11 +1852,11 @@ return function (ModuleRegistry $registry): void {
         $leftPublicId = '';
         $rightPublicId = '';
         if ($leftFilterId > 0) {
-            $row = $app->db->one("SELECT public_id FROM module_secgroups_filters WHERE id=?", [$leftFilterId]);
+            $row = db_one($app->db, "SELECT public_id FROM module_secgroups_filters WHERE id=?", [$leftFilterId]);
             $leftPublicId = (string)($row['public_id'] ?? '');
         }
         if ($rightFilterId > 0) {
-            $row = $app->db->one("SELECT public_id FROM module_secgroups_filters WHERE id=?", [$rightFilterId]);
+            $row = db_one($app->db, "SELECT public_id FROM module_secgroups_filters WHERE id=?", [$rightFilterId]);
             $rightPublicId = (string)($row['public_id'] ?? '');
         }
 
@@ -1873,7 +1866,7 @@ return function (ModuleRegistry $registry): void {
         $searchResults = [];
         if ($search !== '') {
             $entityType = $searchType === 'alliance' ? 'alliance' : 'corporation';
-            $searchResults = $app->db->all(
+            $searchResults = db_all($app->db, 
                 "SELECT entity_id, name FROM universe_entities\n"
                 . " WHERE entity_type=? AND name LIKE ? ORDER BY name ASC LIMIT 25",
                 [$entityType, '%' . $search . '%']
@@ -1881,7 +1874,7 @@ return function (ModuleRegistry $registry): void {
         }
         $groupResults = [];
         if ($groupSearch !== '') {
-            $groupResults = $app->db->all(
+            $groupResults = db_all($app->db, 
                 "SELECT id, slug, name FROM groups WHERE name LIKE ? OR slug LIKE ? ORDER BY name ASC LIMIT 25",
                 ['%' . $groupSearch . '%', '%' . $groupSearch . '%']
             );
@@ -2100,7 +2093,7 @@ return function (ModuleRegistry $registry): void {
         $groupSlug = (string)($req->params['slug'] ?? '');
         $gid = $resolveGroupId($groupSlug);
         $filterId = $resolveFilterId((string)($req->params['filterPublicId'] ?? ''));
-        $existing = $app->db->one(
+        $existing = db_one($app->db, 
             "SELECT f.* FROM module_secgroups_filters f\n"
             . " JOIN module_secgroups_group_filters gf ON gf.filter_id=f.id\n"
             . " WHERE gf.group_id=? AND f.id=? LIMIT 1",
@@ -2132,7 +2125,7 @@ return function (ModuleRegistry $registry): void {
         $groupIds = [];
         $missingGroups = [];
         foreach ($groupSlugs as $groupSlugValue) {
-            $row = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupSlugValue]);
+            $row = db_one($app->db, "SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupSlugValue]);
             $gidValue = (int)($row['id'] ?? 0);
             if ($gidValue > 0) {
                 $groupIds[] = $gidValue;
@@ -2185,7 +2178,7 @@ return function (ModuleRegistry $registry): void {
         ];
 
         $stamp = $nowUtc();
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_secgroups_filters\n"
             . " SET type=?, name=?, description=?, config_json=?, grace_period_days=?, updated_at=?\n"
             . " WHERE id=?",
@@ -2214,13 +2207,13 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/admin/securegroups/groups/' . rawurlencode($groupSlug) . '/rules');
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "DELETE FROM module_secgroups_group_filters WHERE group_id=? AND filter_id=?",
             [$gid, $filterId]
         );
-        $remaining = $app->db->one("SELECT 1 FROM module_secgroups_group_filters WHERE filter_id=? LIMIT 1", [$filterId]);
+        $remaining = db_one($app->db, "SELECT 1 FROM module_secgroups_group_filters WHERE filter_id=? LIMIT 1", [$filterId]);
         if (!$remaining) {
-            $app->db->run("DELETE FROM module_secgroups_filters WHERE id=?", [$filterId]);
+            db_exec($app->db, "DELETE FROM module_secgroups_filters WHERE id=?", [$filterId]);
         }
 
         return Response::redirect('/admin/securegroups/groups/' . rawurlencode($groupSlug) . '/rules');
@@ -2238,7 +2231,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/admin/securegroups/groups/' . rawurlencode($groupSlug) . '/rules');
         }
 
-        $ordered = $app->db->all(
+        $ordered = db_all($app->db, 
             "SELECT filter_id FROM module_secgroups_group_filters WHERE group_id=? ORDER BY sort_order ASC, filter_id ASC",
             [$gid]
         );
@@ -2264,7 +2257,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         foreach ($ids as $index => $id) {
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE module_secgroups_group_filters SET sort_order=? WHERE group_id=? AND filter_id=?",
                 [$index + 1, $gid, $id]
             );
@@ -2285,7 +2278,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/admin/securegroups/groups/' . rawurlencode($groupSlug) . '/rules');
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_secgroups_group_filters SET enabled=? WHERE group_id=? AND filter_id=?",
             [$enabled, $gid, $filterId]
         );
@@ -2301,8 +2294,8 @@ return function (ModuleRegistry $registry): void {
         $gid = $resolveGroupId($groupSlug);
         $filterId = $resolveFilterId(trim((string)($req->post['filter_public_id'] ?? '')));
         $userId = $resolveUserId(trim((string)($req->post['user_public_id'] ?? '')));
-        $group = $app->db->one("SELECT display_name FROM module_secgroups_groups WHERE id=?", [$gid]);
-        $filter = $app->db->one("SELECT * FROM module_secgroups_filters WHERE id=?", [$filterId]);
+        $group = db_one($app->db, "SELECT display_name FROM module_secgroups_groups WHERE id=?", [$gid]);
+        $filter = db_one($app->db, "SELECT * FROM module_secgroups_filters WHERE id=?", [$filterId]);
 
         if (!$group || !$filter || $userId <= 0) {
             return Response::text('Invalid test request', 422);
@@ -2323,7 +2316,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT r.*, r.public_id AS request_public_id, g.display_name, u.character_name, u.public_id AS user_public_id\n"
             . " FROM module_secgroups_requests r\n"
             . " JOIN module_secgroups_groups g ON g.id=r.group_id\n"
@@ -2376,21 +2369,21 @@ return function (ModuleRegistry $registry): void {
 
         $rid = $resolveRequestId((string)($req->params['publicId'] ?? ''));
         $adminNote = trim((string)($req->post['admin_note'] ?? 'Approved'));
-        $request = $app->db->one("SELECT * FROM module_secgroups_requests WHERE id=?", [$rid]);
+        $request = db_one($app->db, "SELECT * FROM module_secgroups_requests WHERE id=?", [$rid]);
         if (!$request) {
             return Response::text('Request not found', 404);
         }
-        $group = $app->db->one("SELECT * FROM module_secgroups_groups WHERE id=?", [(int)($request['group_id'] ?? 0)]);
+        $group = db_one($app->db, "SELECT * FROM module_secgroups_groups WHERE id=?", [(int)($request['group_id'] ?? 0)]);
         if (!$group) {
             return Response::text('Group not found', 404);
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_secgroups_requests SET status='APPROVED', decided_at=?, admin_note=? WHERE id=?",
             [$nowUtc(), $adminNote, $rid]
         );
         $stamp = $nowUtc();
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_secgroups_memberships\n"
             . " (group_id, user_id, status, source, reason, last_evaluated_at, created_at, updated_at)\n"
             . " VALUES (?, ?, 'IN', 'REQUEST', ?, ?, ?, ?)\n"
@@ -2403,7 +2396,7 @@ return function (ModuleRegistry $registry): void {
             $syncUserRightsGroup((int)($request['user_id'] ?? 0), $rightsGroupId, true);
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_secgroups_logs (group_id, user_id, action, source, message, created_at) VALUES (?, ?, 'REQUEST_APPROVE', 'REQUEST', ?, ?)",
             [(int)($group['id'] ?? 0), (int)($request['user_id'] ?? 0), $adminNote, $nowUtc()]
         );
@@ -2417,16 +2410,16 @@ return function (ModuleRegistry $registry): void {
 
         $rid = $resolveRequestId((string)($req->params['publicId'] ?? ''));
         $adminNote = trim((string)($req->post['admin_note'] ?? 'Denied'));
-        $request = $app->db->one("SELECT * FROM module_secgroups_requests WHERE id=?", [$rid]);
+        $request = db_one($app->db, "SELECT * FROM module_secgroups_requests WHERE id=?", [$rid]);
         if (!$request) {
             return Response::text('Request not found', 404);
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_secgroups_requests SET status='DENIED', decided_at=?, admin_note=? WHERE id=?",
             [$nowUtc(), $adminNote, $rid]
         );
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_secgroups_logs (group_id, user_id, action, source, message, created_at) VALUES (?, ?, 'REQUEST_DENY', 'REQUEST', ?, ?)",
             [(int)($request['group_id'] ?? 0), (int)($request['user_id'] ?? 0), $adminNote, $nowUtc()]
         );
@@ -2438,7 +2431,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT l.*, g.display_name, u.character_name, u.public_id AS user_public_id\n"
             . " FROM module_secgroups_logs l\n"
             . " JOIN module_secgroups_groups g ON g.id=l.group_id\n"
@@ -2478,7 +2471,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
-        $overrides = $app->db->all(
+        $overrides = db_all($app->db, 
             "SELECT o.*, g.display_name, g.key_slug AS group_slug, u.character_name, u.public_id AS user_public_id\n"
             . " FROM module_secgroups_overrides o\n"
             . " JOIN module_secgroups_groups g ON g.id=o.group_id\n"
@@ -2512,7 +2505,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $groupOptions = '';
-        foreach ($app->db->all("SELECT key_slug, display_name FROM module_secgroups_groups ORDER BY display_name ASC") as $group) {
+        foreach (db_all($app->db, "SELECT key_slug, display_name FROM module_secgroups_groups ORDER BY display_name ASC") as $group) {
             $groupOptions .= "<option value='" . htmlspecialchars((string)($group['key_slug'] ?? '')) . "'>" . htmlspecialchars((string)($group['display_name'] ?? '')) . "</option>";
         }
 
@@ -2576,7 +2569,7 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Invalid override data', 422);
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_secgroups_overrides\n"
             . " (group_id, user_id, forced_state, expires_at, reason, created_by, created_at)\n"
             . " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -2598,7 +2591,7 @@ return function (ModuleRegistry $registry): void {
         if ($groupId <= 0 || $userId <= 0 || $createdAt === '') {
             return Response::text('Override not found', 404);
         }
-        $override = $app->db->one(
+        $override = db_one($app->db, 
             "SELECT o.*, g.display_name, u.character_name, u.public_id AS user_public_id\n"
             . " FROM module_secgroups_overrides o\n"
             . " JOIN module_secgroups_groups g ON g.id=o.group_id\n"
@@ -2661,7 +2654,7 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Reason is required', 422);
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_secgroups_overrides SET forced_state=?, expires_at=?, reason=?\n"
             . " WHERE group_id=? AND user_id=? AND created_at=?",
             [$forcedState, $expires !== '' ? $expires : null, $reason, $groupId, $userId, $createdAt]
@@ -2683,7 +2676,7 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Override not found', 404);
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "DELETE FROM module_secgroups_overrides WHERE group_id=? AND user_id=? AND created_at=?",
             [$groupId, $userId, $createdAt]
         );
@@ -2696,11 +2689,11 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireRight('securegroups.admin')) return $resp;
 
         JobRegistry::sync($app->db);
-        $jobs = $app->db->all(
+        $jobs = db_all($app->db, 
             "SELECT job_key, name, schedule_seconds, is_enabled, last_run_at, last_status, last_message\n"
             . " FROM module_corptools_jobs ORDER BY job_key ASC"
         );
-        $runs = $app->db->all(
+        $runs = db_all($app->db, 
             "SELECT job_key, status, started_at, finished_at, duration_ms, message\n"
             . " FROM module_corptools_job_runs ORDER BY started_at DESC LIMIT 50"
         );

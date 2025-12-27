@@ -45,7 +45,7 @@ final class AccessLog
             $ip = $ip !== '' ? $ip : null;
 
             try {
-                $db->run(
+                db_exec($db, 
                     "INSERT INTO access_log (user_id, character_id, ip, method, path, status, decision, reason, context_json, created_at)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())",
                     [

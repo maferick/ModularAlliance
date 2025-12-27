@@ -17,7 +17,7 @@ final class CoreRights
         ];
 
         foreach ($rights as [$slug, $desc]) {
-            $db->run(
+            db_exec($db, 
                 "INSERT INTO rights (slug, description, module_slug) VALUES (?, ?, 'core')
                  ON DUPLICATE KEY UPDATE description=VALUES(description), module_slug=VALUES(module_slug)",
                 [$slug, $desc]

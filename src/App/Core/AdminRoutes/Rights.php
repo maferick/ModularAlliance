@@ -18,7 +18,7 @@ final class Rights
     {
         // Rights (Groups + Permissions) — scalable UI
         $registry->route('GET', '/admin/rights', function () use ($app, $render): Response {
-            $groups = $app->db->all("SELECT id, slug, name, is_admin FROM groups ORDER BY is_admin DESC, name ASC");
+            $groups = db_all($app->db, "SELECT id, slug, name, is_admin FROM groups ORDER BY is_admin DESC, name ASC");
 
             // Selected group (default: first)
             $selSlug = (string)($_GET['group'] ?? '');
@@ -34,12 +34,12 @@ final class Rights
             $view = trim((string)($_GET['view'] ?? 'all')); // all|granted|unassigned
 
             // Load rights
-            $rights = $app->db->all("SELECT id, slug, description, module_slug FROM rights ORDER BY module_slug ASC, slug ASC");
+            $rights = db_all($app->db, "SELECT id, slug, description, module_slug FROM rights ORDER BY module_slug ASC, slug ASC");
 
             // Grants map (for selected group only)
             $grants = [];
             if ($selGroup) {
-                foreach ($app->db->all("SELECT right_id FROM group_rights WHERE group_id=?", [(int)$selGroup['id']]) as $r) {
+                foreach (db_all($app->db, "SELECT right_id FROM group_rights WHERE group_id=?", [(int)$selGroup['id']]) as $r) {
                     $grants[(int)$r['right_id']] = true;
                 }
             }
@@ -215,11 +215,11 @@ final class Rights
                         </form>";
 
                 if ($exChar !== '' && $exRight !== '') {
-                    $user = $app->db->one("SELECT id, character_name, is_superadmin FROM eve_users WHERE character_name = ? LIMIT 1", [$exChar]);
+                    $user = db_one($app->db, "SELECT id, character_name, is_superadmin FROM eve_users WHERE character_name = ? LIMIT 1", [$exChar]);
                     if (!$user) {
-                        $user = $app->db->one("SELECT id, character_name, is_superadmin FROM eve_users WHERE character_name LIKE ? ORDER BY character_name ASC LIMIT 1", ['%' . $exChar . '%']);
+                        $user = db_one($app->db, "SELECT id, character_name, is_superadmin FROM eve_users WHERE character_name LIKE ? ORDER BY character_name ASC LIMIT 1", ['%' . $exChar . '%']);
                     }
-                    $right = $app->db->one("SELECT id, slug FROM rights WHERE slug = ? LIMIT 1", [$exRight]);
+                    $right = db_one($app->db, "SELECT id, slug FROM rights WHERE slug = ? LIMIT 1", [$exRight]);
 
                     if (!$user) {
                         $h .= "<div class='alert alert-warning mt-3'>No user found for character name <strong>" . htmlspecialchars($exChar) . "</strong>.</div>";
@@ -229,7 +229,7 @@ final class Rights
                         $uid = (int)$user['id'];
                         $rid = (int)$right['id'];
 
-                        $ug = $app->db->all(
+                        $ug = db_all($app->db, 
                             "SELECT g.slug, g.name, g.is_admin
                              FROM eve_user_groups eug
                              JOIN groups g ON g.id = eug.group_id
@@ -245,7 +245,7 @@ final class Rights
                             }
                         }
 
-                        $rows = $app->db->all(
+                        $rows = db_all($app->db, 
                             "SELECT g.slug, g.name
                              FROM group_rights gr
                              JOIN groups g ON g.id = gr.group_id
@@ -262,7 +262,7 @@ final class Rights
                         if ((int)($user['is_superadmin'] ?? 0) === 1) { $decision = 'ALLOW'; $reason = 'Superadmin override.'; }
                         elseif ($hasAdminGroup) { $decision = 'ALLOW'; $reason = 'Administrator group override.'; }
                         else {
-                            $ok = $app->db->one(
+                            $ok = db_one($app->db, 
                                 "SELECT 1
                                  FROM eve_user_groups eug
                                  JOIN group_rights gr ON gr.group_id = eug.group_id
@@ -311,7 +311,7 @@ final class Rights
             if ($slug === '' || $name === '') return Response::redirect('/admin/rights');
             if (in_array($slug, ['administrator'], true)) $slug = 'admin-' . $slug;
 
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO groups (slug, name, is_admin) VALUES (?,?,?)
                  ON DUPLICATE KEY UPDATE name=VALUES(name), is_admin=VALUES(is_admin)",
                 [$slug, $name, $isAdmin]
@@ -326,7 +326,7 @@ final class Rights
             $groupSlug = trim((string)($_POST['group_slug'] ?? ''));
             if ($groupSlug === '') return Response::redirect('/admin/rights');
 
-            $group = $app->db->one("SELECT id, slug FROM groups WHERE slug=? LIMIT 1", [$groupSlug]);
+            $group = db_one($app->db, "SELECT id, slug FROM groups WHERE slug=? LIMIT 1", [$groupSlug]);
             if (!$group) return Response::redirect('/admin/rights');
 
             $rightSlugs = $_POST['right_slugs'] ?? [];
@@ -334,13 +334,13 @@ final class Rights
 
             $app->db->begin();
             try {
-                $app->db->run("DELETE FROM group_rights WHERE group_id=?", [(int)$group['id']]);
+                db_exec($app->db, "DELETE FROM group_rights WHERE group_id=?", [(int)$group['id']]);
 
                 if (!empty($rightSlugs)) {
                     $placeholders = implode(',', array_fill(0, count($rightSlugs), '?'));
-                    $ids = $app->db->all("SELECT id FROM rights WHERE slug IN ($placeholders)", array_values($rightSlugs));
+                    $ids = db_all($app->db, "SELECT id FROM rights WHERE slug IN ($placeholders)", array_values($rightSlugs));
                     foreach ($ids as $row) {
-                        $app->db->run(
+                        db_exec($app->db, 
                             "INSERT IGNORE INTO group_rights (group_id, right_id) VALUES (?,?)",
                             [(int)$group['id'], (int)$row['id']]
                         );
@@ -362,7 +362,7 @@ final class Rights
             $slug = strtolower(trim((string)($_POST['group_slug'] ?? '')));
             if ($slug === '') return Response::redirect('/admin/rights');
 
-            $group = $app->db->one("SELECT id, slug, name, is_admin FROM groups WHERE slug=? LIMIT 1", [$slug]);
+            $group = db_one($app->db, "SELECT id, slug, name, is_admin FROM groups WHERE slug=? LIMIT 1", [$slug]);
             if (!$group) return Response::redirect('/admin/rights');
 
             if ((int)$group['is_admin'] === 1 || $slug === 'admin' || $slug === 'administrator') {
@@ -371,9 +371,9 @@ final class Rights
 
             $app->db->begin();
             try {
-                $app->db->run("DELETE FROM group_rights WHERE group_id=?", [(int)$group['id']]);
-                $app->db->run("DELETE FROM eve_user_groups WHERE group_id=?", [(int)$group['id']]);
-                $app->db->run("DELETE FROM groups WHERE id=?", [(int)$group['id']]);
+                db_exec($app->db, "DELETE FROM group_rights WHERE group_id=?", [(int)$group['id']]);
+                db_exec($app->db, "DELETE FROM eve_user_groups WHERE group_id=?", [(int)$group['id']]);
+                db_exec($app->db, "DELETE FROM groups WHERE id=?", [(int)$group['id']]);
                 $app->db->commit();
             } catch (\Throwable $e) {
                 $app->db->rollback();

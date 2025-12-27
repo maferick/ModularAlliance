@@ -39,7 +39,7 @@ final class ScopeAuditService
             $reason = 'Missing required scopes.';
         }
 
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_character_scope_status
              (character_id, user_id, policy_id, status, reason, required_scopes_json, optional_scopes_json, granted_scopes_json, missing_scopes_json, token_expires_at, checked_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -86,7 +86,7 @@ final class ScopeAuditService
 
     public function logEvent(string $event, ?int $userId, ?int $characterId, array $payload): void
     {
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_audit_events (event, user_id, character_id, payload_json)
              VALUES (?, ?, ?, ?)",
             [

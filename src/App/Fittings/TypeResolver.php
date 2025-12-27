@@ -22,7 +22,7 @@ final class TypeResolver
         $name = trim($name);
         if ($name === '') return null;
 
-        $row = $this->db->one(
+        $row = db_one($this->db, 
             "SELECT type_id FROM module_fittings_type_names WHERE original_name=? LIMIT 1",
             [$name]
         );
@@ -32,7 +32,7 @@ final class TypeResolver
 
         $typeId = $this->searchTypeId($name);
         if ($typeId) {
-            $this->db->run(
+            db_exec($this->db, 
                 "INSERT INTO module_fittings_type_names\n"
                 . " (type_id, original_name, current_name, last_seen_at, created_at, updated_at)\n"
                 . " VALUES (?, ?, ?, NOW(), NOW(), NOW())\n"
@@ -41,7 +41,7 @@ final class TypeResolver
                 [$typeId, $name, $name]
             );
         } else {
-            $this->db->run(
+            db_exec($this->db, 
                 "INSERT IGNORE INTO module_fittings_type_names\n"
                 . " (type_id, original_name, current_name, last_seen_at, created_at, updated_at)\n"
                 . " VALUES (NULL, ?, ?, NOW(), NOW(), NOW())",
@@ -60,7 +60,7 @@ final class TypeResolver
         $name = (string)($entity['name'] ?? '');
         if ($name === '') return null;
 
-        $row = $this->db->one(
+        $row = db_one($this->db, 
             "SELECT original_name, current_name FROM module_fittings_type_names WHERE type_id=? LIMIT 1",
             [$typeId]
         );
@@ -71,7 +71,7 @@ final class TypeResolver
             $renamedAt = date('Y-m-d H:i:s');
         }
 
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_fittings_type_names\n"
             . " (type_id, original_name, current_name, last_seen_at, renamed_at, created_at, updated_at)\n"
             . " VALUES (?, ?, ?, NOW(), ?, NOW(), NOW())\n"

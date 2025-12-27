@@ -19,6 +19,8 @@ use App\Fittings\TypeResolver;
 use App\Http\Request;
 use App\Http\Response;
 
+require_once __DIR__ . '/functions.php';
+
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
 
@@ -43,86 +45,25 @@ return function (ModuleRegistry $registry): void {
         'right_slug' => 'fittings.manage',
     ]);
 
-    $csrfToken = function (string $key): string {
-        $token = bin2hex(random_bytes(16));
-        $_SESSION['csrf_tokens'][$key] = $token;
-        return $token;
-    };
-    $csrfCheck = function (string $key, ?string $token): bool {
-        $stored = $_SESSION['csrf_tokens'][$key] ?? null;
-        unset($_SESSION['csrf_tokens'][$key]);
-        return is_string($token) && is_string($stored) && hash_equals($stored, $token);
-    };
+    $csrfToken = fn(string $key): string => fittings_csrf_token($key);
+    $csrfCheck = fn(string $key, ?string $token): bool => fittings_csrf_check($key, $token);
 
-    $renderPage = function (string $title, string $bodyHtml) use ($app): string {
-        $rights = new Rights($app->db);
-        $hasRight = function (string $right) use ($rights): bool {
-            $uid = (int)($_SESSION['user_id'] ?? 0);
-            return $uid > 0 && $rights->userHasRight($uid, $right);
-        };
+    $renderPage = fn(string $title, string $bodyHtml): string => fittings_render_page($app, $title, $bodyHtml);
 
-        $leftTree = $app->menu->tree('left', $hasRight);
-        $adminTree = $app->menu->tree('admin_top', $hasRight);
-        $userTree = $app->menu->tree('user_top', fn(string $r) => true);
+    $generateSlug = fn(string $table, string $name): string => fittings_generate_slug($app->db, $table, $name);
 
-        $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
-        if ($loggedIn) {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
-        } else {
-            $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] === 'user.login'));
-        }
+    $requireLogin = fn(): ?Response => fittings_require_login();
 
-        return Layout::page($title, $bodyHtml, $leftTree, $adminTree, $userTree);
-    };
-
-    $generateSlug = function (string $table, string $name) use ($app): string {
-        return Identifiers::generateSlug($app->db, $table, 'slug', $name);
-    };
-
-    $requireLogin = function (): ?Response {
-        $cid = (int)($_SESSION['character_id'] ?? 0);
-        if ($cid <= 0) {
-            return Response::redirect('/auth/login');
-        }
-        return null;
-    };
-
-    $requireRight = function (string $right) use ($app): ?Response {
-        $uid = (int)($_SESSION['user_id'] ?? 0);
-        $rights = new Rights($app->db);
-        if ($uid <= 0 || !$rights->userHasRight($uid, $right)) {
-            return Response::text('403 Forbidden', 403);
-        }
-        return null;
-    };
+    $requireRight = fn(string $right): ?Response => fittings_require_right($app, $right);
 
     $logAudit = function (int $userId, string $action, string $entityType, int $entityId, string $message, array $meta = []) use ($app): void {
-        $app->db->run(
-            "INSERT INTO module_fittings_audit_log\n"
-            . " (user_id, action, entity_type, entity_id, message, meta_json, created_at)\n"
-            . " VALUES (?, ?, ?, ?, ?, ?, NOW())",
-            [
-                $userId,
-                $action,
-                $entityType,
-                $entityId,
-                $message,
-                json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-            ]
-        );
+        fittings_log_audit($app->db, $userId, $action, $entityType, $entityId, $message, $meta);
     };
 
-    $getUserGroups = function (int $userId) use ($app): array {
-        if ($userId <= 0) return [];
-        $rows = $app->db->all(
-            "SELECT group_id FROM eve_user_groups WHERE user_id=?",
-            [$userId]
-        );
-        return array_values(array_filter(array_map(fn($r) => (int)($r['group_id'] ?? 0), $rows)));
-    };
+    $getUserGroups = fn(int $userId): array => fittings_get_user_groups($app->db, $userId);
 
     $getVisibleCategories = function (int $userId, int $characterId) use ($app, $getUserGroups): array {
-        $cats = $app->db->all(
+        $cats = db_all($app->db, 
             "SELECT id, slug, name, description, visibility_scope, visibility_org_id\n"
             . " FROM module_fittings_categories WHERE is_active=1 ORDER BY name ASC"
         );
@@ -132,7 +73,7 @@ return function (ModuleRegistry $registry): void {
         $groupMap = [];
         if (!empty($groupIds)) {
             $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
-            $rows = $app->db->all(
+            $rows = db_all($app->db, 
                 "SELECT category_id, group_id FROM module_fittings_category_groups\n"
                 . " WHERE group_id IN ({$placeholders})",
                 $groupIds
@@ -277,7 +218,7 @@ return function (ModuleRegistry $registry): void {
         $page = max(1, (int)($req->query['page'] ?? 1));
         $perPage = 12;
         $offset = ($page - 1) * $perPage;
-        $doctrines = $app->db->all("SELECT id, slug, name FROM module_fittings_doctrines WHERE is_active=1 ORDER BY name ASC");
+        $doctrines = db_all($app->db, "SELECT id, slug, name FROM module_fittings_doctrines WHERE is_active=1 ORDER BY name ASC");
         $doctrineBySlug = [];
         foreach ($doctrines as $doc) {
             $slug = (string)($doc['slug'] ?? '');
@@ -331,7 +272,7 @@ return function (ModuleRegistry $registry): void {
 
         $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-        $totalRow = $app->db->one(
+        $totalRow = db_one($app->db, 
             "SELECT COUNT(*) AS total\n"
             . " FROM module_fittings_fits f\n"
             . " LEFT JOIN module_fittings_favorites fav ON fav.fit_id = f.id\n"
@@ -340,7 +281,7 @@ return function (ModuleRegistry $registry): void {
         );
         $total = (int)($totalRow['total'] ?? 0);
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT f.id, f.slug, f.name, f.ship_name, f.category_id, f.doctrine_id, f.has_renamed_items,\n"
             . " c.name AS category_name, d.name AS doctrine_name\n"
             . " FROM module_fittings_fits f\n"
@@ -481,7 +422,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $placeholders = implode(',', array_fill(0, count($catIds), '?'));
-        $fit = $app->db->one(
+        $fit = db_one($app->db, 
             "SELECT f.*, c.name AS category_name, d.name AS doctrine_name\n"
             . " FROM module_fittings_fits f\n"
             . " LEFT JOIN module_fittings_categories c ON c.id = f.category_id\n"
@@ -504,7 +445,7 @@ return function (ModuleRegistry $registry): void {
         $eftText = (string)($fit['eft_text'] ?? '');
         $eftHtml = htmlspecialchars($eftText);
 
-        $favRow = $app->db->one(
+        $favRow = db_one($app->db, 
             "SELECT 1 FROM module_fittings_favorites WHERE user_id=? AND fit_id=? LIMIT 1",
             [$uid, $fitId]
         );
@@ -578,7 +519,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $placeholders = implode(',', array_fill(0, count($catIds), '?'));
-        $fit = $app->db->one(
+        $fit = db_one($app->db, 
             "SELECT eft_text, name FROM module_fittings_fits WHERE slug=? AND category_id IN ({$placeholders}) LIMIT 1",
             array_merge([$fitSlug], $catIds)
         );
@@ -608,7 +549,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $placeholders = implode(',', array_fill(0, count($catIds), '?'));
-        $fit = $app->db->one(
+        $fit = db_one($app->db, 
             "SELECT * FROM module_fittings_fits WHERE slug=? AND category_id IN ({$placeholders}) LIMIT 1",
             array_merge([$fitSlug], $catIds)
         );
@@ -666,7 +607,7 @@ return function (ModuleRegistry $registry): void {
         $resultStatus = $status >= 200 && $status < 300 ? 'success' : 'failed';
         $message = $resultStatus === 'success' ? 'Fit saved to EVE.' : "Failed to save fit (HTTP {$status}).";
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_fittings_saved_events\n"
             . " (fit_id, user_id, character_id, status, message, created_at)\n"
             . " VALUES (?, ?, ?, ?, ?, NOW())",
@@ -703,7 +644,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $placeholders = implode(',', array_fill(0, count($catIds), '?'));
-        $fit = $app->db->one(
+        $fit = db_one($app->db, 
             "SELECT id FROM module_fittings_fits WHERE slug=? AND category_id IN ({$placeholders}) LIMIT 1",
             array_merge([$fitSlug], $catIds)
         );
@@ -712,14 +653,14 @@ return function (ModuleRegistry $registry): void {
         }
         $fitId = (int)($fit['id'] ?? 0);
 
-        $exists = $app->db->one(
+        $exists = db_one($app->db, 
             "SELECT 1 FROM module_fittings_favorites WHERE user_id=? AND fit_id=? LIMIT 1",
             [$uid, $fitId]
         );
         if ($exists) {
-            $app->db->run("DELETE FROM module_fittings_favorites WHERE user_id=? AND fit_id=?", [$uid, $fitId]);
+            db_exec($app->db, "DELETE FROM module_fittings_favorites WHERE user_id=? AND fit_id=?", [$uid, $fitId]);
         } else {
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT IGNORE INTO module_fittings_favorites (user_id, fit_id, created_at) VALUES (?, ?, NOW())",
                 [$uid, $fitId]
             );
@@ -741,7 +682,7 @@ return function (ModuleRegistry $registry): void {
             return Response::html($renderPage('Doctrine', "<div class='alert alert-warning'>Doctrine not found.</div>"), 404);
         }
 
-        $doctrine = $app->db->one(
+        $doctrine = db_one($app->db, 
             "SELECT * FROM module_fittings_doctrines WHERE slug=? LIMIT 1",
             [$doctrineSlug]
         );
@@ -751,7 +692,7 @@ return function (ModuleRegistry $registry): void {
         $doctrineId = (int)($doctrine['id'] ?? 0);
 
         $placeholders = implode(',', array_fill(0, count($catIds), '?'));
-        $fits = $app->db->all(
+        $fits = db_all($app->db, 
             "SELECT id, slug, name, ship_name FROM module_fittings_fits\n"
             . " WHERE doctrine_id=? AND category_id IN ({$placeholders})\n"
             . " ORDER BY name ASC",
@@ -882,7 +823,8 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('fittings.manage')) return $resp;
 
-        $categories = $app->db->all(
+        $universe = new Universe($app->db);
+        $categories = db_all($app->db, 
             "SELECT c.*, GROUP_CONCAT(g.name ORDER BY g.name SEPARATOR ', ') AS group_names\n"
             . " FROM module_fittings_categories c\n"
             . " LEFT JOIN module_fittings_category_groups cg ON cg.category_id = c.id\n"
@@ -890,14 +832,22 @@ return function (ModuleRegistry $registry): void {
             . " GROUP BY c.id\n"
             . " ORDER BY c.name ASC"
         );
-        $groupRows = $app->db->all("SELECT id, slug, name FROM groups ORDER BY name ASC");
+        $groupRows = db_all($app->db, "SELECT id, slug, name FROM groups ORDER BY name ASC");
 
         $categoryRows = '';
         foreach ($categories as $cat) {
             $catSlug = (string)($cat['slug'] ?? '');
             $name = htmlspecialchars((string)($cat['name'] ?? ''));
-            $scope = htmlspecialchars((string)($cat['visibility_scope'] ?? 'all'));
-            $scopeId = htmlspecialchars((string)($cat['visibility_org_id'] ?? ''));
+            $scopeKey = (string)($cat['visibility_scope'] ?? 'all');
+            $scope = htmlspecialchars(match ($scopeKey) {
+                'corp' => 'Corporation',
+                'alliance' => 'Alliance',
+                default => 'All members',
+            });
+            $scopeOrg = $scopeKey === 'all'
+                ? '—'
+                : fittings_scope_org_label($universe, $scopeKey === 'alliance' ? 'alliance' : 'corporation', (int)($cat['visibility_org_id'] ?? 0));
+            $scopeLabel = htmlspecialchars($scopeOrg);
             $csrfKey = 'fittings_cat_delete_' . $catSlug;
             $groupNames = htmlspecialchars((string)($cat['group_names'] ?? 'All members in scope'));
             if ($groupNames === '') {
@@ -906,7 +856,7 @@ return function (ModuleRegistry $registry): void {
             $categoryRows .= "<tr>
                 <td>{$name}</td>
                 <td>{$scope}</td>
-                <td>{$scopeId}</td>
+                <td>{$scopeLabel}</td>
                 <td>{$groupNames}</td>
                 <td>
                   <form method='post' action='/admin/fittings/categories/delete' class='d-inline' onsubmit=\"return confirm('Delete category {$name}?');\">
@@ -950,8 +900,8 @@ return function (ModuleRegistry $registry): void {
                 </select>
               </div>
               <div class='col-md-4'>
-                <label class='form-label'>Scope org ID (optional)</label>
-                <input class='form-control' name='visibility_org_id' placeholder='Corp or alliance ID'>
+                <label class='form-label'>Scope org (name or ID, optional)</label>
+                <input class='form-control' name='visibility_org_id' placeholder='Corp or alliance'>
               </div>
               <div class='col-md-6'>
                 <label class='form-label'>Allowed Groups</label>
@@ -971,7 +921,7 @@ return function (ModuleRegistry $registry): void {
             <div class='card-header'>Existing Categories</div>
             <div class='table-responsive'>
               <table class='table table-sm table-striped mb-0'>
-                <thead><tr><th>Name</th><th>Scope</th><th>Scope ID</th><th>Groups</th><th></th></tr></thead>
+                <thead><tr><th>Name</th><th>Scope</th><th>Scope org</th><th>Groups</th><th></th></tr></thead>
                 <tbody>{$categoryRows}</tbody>
               </table>
             </div>
@@ -990,7 +940,10 @@ return function (ModuleRegistry $registry): void {
         $name = trim((string)($req->post['name'] ?? ''));
         $description = trim((string)($req->post['description'] ?? ''));
         $visibilityScope = (string)($req->post['visibility_scope'] ?? 'all');
-        $visibilityOrgId = (int)($req->post['visibility_org_id'] ?? 0);
+        $visibilityOrgRaw = (string)($req->post['visibility_org_id'] ?? '');
+        $visibilityOrgId = $visibilityScope === 'all'
+            ? 0
+            : fittings_resolve_org_id($app->db, $visibilityScope === 'alliance' ? 'alliance' : 'corp', $visibilityOrgRaw);
         $groupSlugs = $req->post['group_slugs'] ?? [];
         $groupSlugs = is_array($groupSlugs) ? array_values(array_filter(array_map('strval', $groupSlugs))) : [];
 
@@ -999,22 +952,22 @@ return function (ModuleRegistry $registry): void {
         }
 
         $slug = $generateSlug('module_fittings_categories', $name);
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_fittings_categories\n"
             . " (slug, name, description, visibility_scope, visibility_org_id, is_active, created_at, updated_at)\n"
             . " VALUES (?, ?, ?, ?, ?, 1, NOW(), NOW())",
             [$slug, $name, $description, $visibilityScope, $visibilityOrgId > 0 ? $visibilityOrgId : null]
         );
-        $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
+        $row = db_one($app->db, "SELECT LAST_INSERT_ID() AS id");
         $catId = (int)($row['id'] ?? 0);
 
         foreach ($groupSlugs as $gslug) {
-            $groupRow = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$gslug]);
+            $groupRow = db_one($app->db, "SELECT id FROM groups WHERE slug=? LIMIT 1", [$gslug]);
             $gid = (int)($groupRow['id'] ?? 0);
             if ($gid <= 0) {
                 continue;
             }
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT IGNORE INTO module_fittings_category_groups (category_id, group_id) VALUES (?, ?)",
                 [$catId, $gid]
             );
@@ -1034,11 +987,11 @@ return function (ModuleRegistry $registry): void {
         }
 
         $catSlug = trim((string)($req->post['category_slug'] ?? ''));
-        $row = $catSlug !== '' ? $app->db->one("SELECT id FROM module_fittings_categories WHERE slug=? LIMIT 1", [$catSlug]) : null;
+        $row = $catSlug !== '' ? db_one($app->db, "SELECT id FROM module_fittings_categories WHERE slug=? LIMIT 1", [$catSlug]) : null;
         $catId = (int)($row['id'] ?? 0);
         if ($catId > 0) {
-            $app->db->run("DELETE FROM module_fittings_category_groups WHERE category_id=?", [$catId]);
-            $app->db->run("DELETE FROM module_fittings_categories WHERE id=?", [$catId]);
+            db_exec($app->db, "DELETE FROM module_fittings_category_groups WHERE category_id=?", [$catId]);
+            db_exec($app->db, "DELETE FROM module_fittings_categories WHERE id=?", [$catId]);
             $logAudit((int)($_SESSION['user_id'] ?? 0), 'category.delete', 'category', $catId, 'Deleted category');
         }
 
@@ -1049,7 +1002,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('fittings.manage')) return $resp;
 
-        $doctrines = $app->db->all("SELECT * FROM module_fittings_doctrines ORDER BY name ASC");
+        $doctrines = db_all($app->db, "SELECT * FROM module_fittings_doctrines ORDER BY name ASC");
         $rows = '';
         foreach ($doctrines as $doc) {
             $docSlug = (string)($doc['slug'] ?? '');
@@ -1121,12 +1074,12 @@ return function (ModuleRegistry $registry): void {
         }
 
         $slug = $generateSlug('module_fittings_doctrines', $name);
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_fittings_doctrines (slug, name, description, is_active, created_at, updated_at)\n"
             . " VALUES (?, ?, ?, 1, NOW(), NOW())",
             [$slug, $name, $description]
         );
-        $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
+        $row = db_one($app->db, "SELECT LAST_INSERT_ID() AS id");
         $docId = (int)($row['id'] ?? 0);
         $logAudit((int)($_SESSION['user_id'] ?? 0), 'doctrine.create', 'doctrine', $docId, "Created doctrine {$name}");
 
@@ -1142,11 +1095,11 @@ return function (ModuleRegistry $registry): void {
         }
 
         $docSlug = trim((string)($req->post['doctrine_slug'] ?? ''));
-        $row = $docSlug !== '' ? $app->db->one("SELECT id FROM module_fittings_doctrines WHERE slug=? LIMIT 1", [$docSlug]) : null;
+        $row = $docSlug !== '' ? db_one($app->db, "SELECT id FROM module_fittings_doctrines WHERE slug=? LIMIT 1", [$docSlug]) : null;
         $docId = (int)($row['id'] ?? 0);
         if ($docId > 0) {
-            $app->db->run("UPDATE module_fittings_fits SET doctrine_id=NULL WHERE doctrine_id=?", [$docId]);
-            $app->db->run("DELETE FROM module_fittings_doctrines WHERE id=?", [$docId]);
+            db_exec($app->db, "UPDATE module_fittings_fits SET doctrine_id=NULL WHERE doctrine_id=?", [$docId]);
+            db_exec($app->db, "DELETE FROM module_fittings_doctrines WHERE id=?", [$docId]);
             $logAudit((int)($_SESSION['user_id'] ?? 0), 'doctrine.delete', 'doctrine', $docId, 'Deleted doctrine');
         }
 
@@ -1157,7 +1110,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('fittings.manage')) return $resp;
 
-        $fits = $app->db->all(
+        $fits = db_all($app->db, 
             "SELECT f.id, f.slug, f.name, f.ship_name, c.name AS category_name, d.name AS doctrine_name\n"
             . " FROM module_fittings_fits f\n"
             . " LEFT JOIN module_fittings_categories c ON c.id = f.category_id\n"
@@ -1213,8 +1166,8 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('fittings.manage')) return $resp;
 
-        $categories = $app->db->all("SELECT id, slug, name FROM module_fittings_categories ORDER BY name ASC");
-        $doctrines = $app->db->all("SELECT id, slug, name FROM module_fittings_doctrines ORDER BY name ASC");
+        $categories = db_all($app->db, "SELECT id, slug, name FROM module_fittings_categories ORDER BY name ASC");
+        $doctrines = db_all($app->db, "SELECT id, slug, name FROM module_fittings_doctrines ORDER BY name ASC");
 
         $categoryOptions = '';
         foreach ($categories as $cat) {
@@ -1268,8 +1221,8 @@ return function (ModuleRegistry $registry): void {
         $eftText = trim((string)($req->post['eft_text'] ?? ''));
         $categorySlug = trim((string)($req->post['category_slug'] ?? ''));
         $doctrineSlug = trim((string)($req->post['doctrine_slug'] ?? ''));
-        $categoryRow = $categorySlug !== '' ? $app->db->one("SELECT id FROM module_fittings_categories WHERE slug=? LIMIT 1", [$categorySlug]) : null;
-        $doctrineRow = $doctrineSlug !== '' ? $app->db->one("SELECT id FROM module_fittings_doctrines WHERE slug=? LIMIT 1", [$doctrineSlug]) : null;
+        $categoryRow = $categorySlug !== '' ? db_one($app->db, "SELECT id FROM module_fittings_categories WHERE slug=? LIMIT 1", [$categorySlug]) : null;
+        $doctrineRow = $doctrineSlug !== '' ? db_one($app->db, "SELECT id FROM module_fittings_doctrines WHERE slug=? LIMIT 1", [$doctrineSlug]) : null;
         $categoryId = (int)($categoryRow['id'] ?? 0);
         $doctrineId = (int)($doctrineRow['id'] ?? 0);
         $tagsRaw = trim((string)($req->post['tags'] ?? ''));
@@ -1337,8 +1290,8 @@ return function (ModuleRegistry $registry): void {
         $eftText = trim((string)($req->post['eft_text'] ?? ''));
         $categorySlug = trim((string)($req->post['category_slug'] ?? ''));
         $doctrineSlug = trim((string)($req->post['doctrine_slug'] ?? ''));
-        $categoryRow = $categorySlug !== '' ? $app->db->one("SELECT id FROM module_fittings_categories WHERE slug=? LIMIT 1", [$categorySlug]) : null;
-        $doctrineRow = $doctrineSlug !== '' ? $app->db->one("SELECT id FROM module_fittings_doctrines WHERE slug=? LIMIT 1", [$doctrineSlug]) : null;
+        $categoryRow = $categorySlug !== '' ? db_one($app->db, "SELECT id FROM module_fittings_categories WHERE slug=? LIMIT 1", [$categorySlug]) : null;
+        $doctrineRow = $doctrineSlug !== '' ? db_one($app->db, "SELECT id FROM module_fittings_doctrines WHERE slug=? LIMIT 1", [$doctrineSlug]) : null;
         $categoryId = (int)($categoryRow['id'] ?? 0);
         $doctrineId = (int)($doctrineRow['id'] ?? 0);
         $tagsRaw = trim((string)($req->post['tags'] ?? ''));
@@ -1352,7 +1305,7 @@ return function (ModuleRegistry $registry): void {
 
         $fitName = (string)($parsed['name'] ?? 'Fit');
         $fitSlug = $generateSlug('module_fittings_fits', $fitName);
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_fittings_fits\n"
             . " (slug, category_id, doctrine_id, name, ship_name, eft_text, parsed_json, tags_json, created_by, updated_by, created_at, updated_at)\n"
             . " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
@@ -1369,10 +1322,10 @@ return function (ModuleRegistry $registry): void {
                 $uid,
             ]
         );
-        $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
+        $row = db_one($app->db, "SELECT LAST_INSERT_ID() AS id");
         $fitId = (int)($row['id'] ?? 0);
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_fittings_fit_revisions\n"
             . " (fit_id, revision, eft_text, parsed_json, created_by, created_at, change_summary)\n"
             . " VALUES (?, 1, ?, ?, ?, NOW(), 'Initial import')",
@@ -1396,15 +1349,15 @@ return function (ModuleRegistry $registry): void {
 
         $fitSlug = trim((string)($req->query['fit'] ?? ''));
         $fit = $fitSlug !== ''
-            ? $app->db->one("SELECT * FROM module_fittings_fits WHERE slug=? LIMIT 1", [$fitSlug])
+            ? db_one($app->db, "SELECT * FROM module_fittings_fits WHERE slug=? LIMIT 1", [$fitSlug])
             : null;
         if (!$fit) {
             return Response::redirect('/admin/fittings/fits');
         }
         $fitId = (int)($fit['id'] ?? 0);
 
-        $categories = $app->db->all("SELECT id, slug, name FROM module_fittings_categories ORDER BY name ASC");
-        $doctrines = $app->db->all("SELECT id, slug, name FROM module_fittings_doctrines ORDER BY name ASC");
+        $categories = db_all($app->db, "SELECT id, slug, name FROM module_fittings_categories ORDER BY name ASC");
+        $doctrines = db_all($app->db, "SELECT id, slug, name FROM module_fittings_doctrines ORDER BY name ASC");
         $tags = json_decode((string)($fit['tags_json'] ?? '[]'), true);
         $tags = is_array($tags) ? implode(', ', $tags) : '';
 
@@ -1461,7 +1414,7 @@ return function (ModuleRegistry $registry): void {
 
         $fitSlug = trim((string)($req->post['fit_slug'] ?? ''));
         $fit = $fitSlug !== ''
-            ? $app->db->one("SELECT * FROM module_fittings_fits WHERE slug=? LIMIT 1", [$fitSlug])
+            ? db_one($app->db, "SELECT * FROM module_fittings_fits WHERE slug=? LIMIT 1", [$fitSlug])
             : null;
         if (!$fit) {
             return Response::redirect('/admin/fittings/fits');
@@ -1471,8 +1424,8 @@ return function (ModuleRegistry $registry): void {
         $eftText = trim((string)($req->post['eft_text'] ?? ''));
         $categorySlug = trim((string)($req->post['category_slug'] ?? ''));
         $doctrineSlug = trim((string)($req->post['doctrine_slug'] ?? ''));
-        $categoryRow = $categorySlug !== '' ? $app->db->one("SELECT id FROM module_fittings_categories WHERE slug=? LIMIT 1", [$categorySlug]) : null;
-        $doctrineRow = $doctrineSlug !== '' ? $app->db->one("SELECT id FROM module_fittings_doctrines WHERE slug=? LIMIT 1", [$doctrineSlug]) : null;
+        $categoryRow = $categorySlug !== '' ? db_one($app->db, "SELECT id FROM module_fittings_categories WHERE slug=? LIMIT 1", [$categorySlug]) : null;
+        $doctrineRow = $doctrineSlug !== '' ? db_one($app->db, "SELECT id FROM module_fittings_doctrines WHERE slug=? LIMIT 1", [$doctrineSlug]) : null;
         $categoryId = (int)($categoryRow['id'] ?? 0);
         $doctrineId = (int)($doctrineRow['id'] ?? 0);
         $tagsRaw = trim((string)($req->post['tags'] ?? ''));
@@ -1484,10 +1437,10 @@ return function (ModuleRegistry $registry): void {
         $tags = array_values(array_filter(array_map('trim', explode(',', $tagsRaw))));
         $uid = (int)($_SESSION['user_id'] ?? 0);
 
-        $revRow = $app->db->one("SELECT MAX(revision) AS rev FROM module_fittings_fit_revisions WHERE fit_id=?", [$fitId]);
+        $revRow = db_one($app->db, "SELECT MAX(revision) AS rev FROM module_fittings_fit_revisions WHERE fit_id=?", [$fitId]);
         $revision = (int)($revRow['rev'] ?? 0) + 1;
 
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_fittings_fits\n"
             . " SET category_id=?, doctrine_id=?, name=?, ship_name=?, eft_text=?, parsed_json=?, tags_json=?,\n"
             . " updated_by=?, updated_at=NOW(), has_renamed_items=0\n"
@@ -1505,7 +1458,7 @@ return function (ModuleRegistry $registry): void {
             ]
         );
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_fittings_fit_revisions\n"
             . " (fit_id, revision, eft_text, parsed_json, created_by, created_at, change_summary)\n"
             . " VALUES (?, ?, ?, ?, ?, NOW(), 'Updated fit')",
@@ -1533,13 +1486,13 @@ return function (ModuleRegistry $registry): void {
         }
 
         $fitSlug = trim((string)($req->post['fit_slug'] ?? ''));
-        $fitRow = $fitSlug !== '' ? $app->db->one("SELECT id FROM module_fittings_fits WHERE slug=? LIMIT 1", [$fitSlug]) : null;
+        $fitRow = $fitSlug !== '' ? db_one($app->db, "SELECT id FROM module_fittings_fits WHERE slug=? LIMIT 1", [$fitSlug]) : null;
         $fitId = (int)($fitRow['id'] ?? 0);
         if ($fitId > 0) {
-            $app->db->run("DELETE FROM module_fittings_fit_revisions WHERE fit_id=?", [$fitId]);
-            $app->db->run("DELETE FROM module_fittings_favorites WHERE fit_id=?", [$fitId]);
-            $app->db->run("DELETE FROM module_fittings_saved_events WHERE fit_id=?", [$fitId]);
-            $app->db->run("DELETE FROM module_fittings_fits WHERE id=?", [$fitId]);
+            db_exec($app->db, "DELETE FROM module_fittings_fit_revisions WHERE fit_id=?", [$fitId]);
+            db_exec($app->db, "DELETE FROM module_fittings_favorites WHERE fit_id=?", [$fitId]);
+            db_exec($app->db, "DELETE FROM module_fittings_saved_events WHERE fit_id=?", [$fitId]);
+            db_exec($app->db, "DELETE FROM module_fittings_fits WHERE id=?", [$fitId]);
             $logAudit((int)($_SESSION['user_id'] ?? 0), 'fit.delete', 'fit', $fitId, 'Deleted fit');
         }
 
@@ -1550,7 +1503,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireLogin()) return $resp;
         if ($resp = $requireRight('fittings.manage')) return $resp;
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT a.created_at, a.action, a.entity_type, a.message, u.character_name,\n"
             . " f.slug AS fit_slug, d.slug AS doctrine_slug, c.slug AS category_slug\n"
             . " FROM module_fittings_audit_log a\n"
@@ -1627,7 +1580,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $resolver = new TypeResolver($app->db);
-        $rows = $app->db->all("SELECT DISTINCT type_id FROM module_fittings_type_names WHERE type_id IS NOT NULL");
+        $rows = db_all($app->db, "SELECT DISTINCT type_id FROM module_fittings_type_names WHERE type_id IS NOT NULL");
         $count = 0;
         foreach ($rows as $row) {
             $typeId = (int)($row['type_id'] ?? 0);
@@ -1647,7 +1600,7 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Invalid CSRF token', 400);
         }
 
-        $fits = $app->db->all("SELECT id, parsed_json FROM module_fittings_fits");
+        $fits = db_all($app->db, "SELECT id, parsed_json FROM module_fittings_fits");
         $impacted = 0;
         foreach ($fits as $fit) {
             $fitId = (int)($fit['id'] ?? 0);
@@ -1657,14 +1610,14 @@ return function (ModuleRegistry $registry): void {
             $hasRename = false;
             foreach ($items as $item) {
                 $name = (string)($item['name'] ?? '');
-                $row = $app->db->one("SELECT type_id, current_name, original_name FROM module_fittings_type_names WHERE original_name=? LIMIT 1", [$name]);
+                $row = db_one($app->db, "SELECT type_id, current_name, original_name FROM module_fittings_type_names WHERE original_name=? LIMIT 1", [$name]);
                 if ($row && (string)($row['current_name'] ?? '') !== (string)($row['original_name'] ?? '')) {
                     $hasRename = true;
                     break;
                 }
             }
             if ($hasRename) {
-                $app->db->run("UPDATE module_fittings_fits SET has_renamed_items=1 WHERE id=?", [$fitId]);
+                db_exec($app->db, "UPDATE module_fittings_fits SET has_renamed_items=1 WHERE id=?", [$fitId]);
                 $impacted++;
             }
         }
@@ -1682,7 +1635,7 @@ return function (ModuleRegistry $registry): void {
             'enabled' => 1,
             'handler' => function (App $app, array $context = []): array {
                 $resolver = new TypeResolver($app->db);
-                $rows = $app->db->all("SELECT DISTINCT type_id FROM module_fittings_type_names WHERE type_id IS NOT NULL");
+                $rows = db_all($app->db, "SELECT DISTINCT type_id FROM module_fittings_type_names WHERE type_id IS NOT NULL");
                 $count = 0;
                 foreach ($rows as $row) {
                     $typeId = (int)($row['type_id'] ?? 0);
@@ -1700,7 +1653,7 @@ return function (ModuleRegistry $registry): void {
             'schedule' => 43200,
             'enabled' => 1,
             'handler' => function (App $app, array $context = []): array {
-                $fits = $app->db->all("SELECT id, parsed_json FROM module_fittings_fits");
+                $fits = db_all($app->db, "SELECT id, parsed_json FROM module_fittings_fits");
                 $impacted = 0;
                 foreach ($fits as $fit) {
                     $fitId = (int)($fit['id'] ?? 0);
@@ -1710,13 +1663,13 @@ return function (ModuleRegistry $registry): void {
                     $hasRename = false;
                     foreach ($items as $item) {
                         $name = (string)($item['name'] ?? '');
-                        $row = $app->db->one("SELECT current_name, original_name FROM module_fittings_type_names WHERE original_name=? LIMIT 1", [$name]);
+                        $row = db_one($app->db, "SELECT current_name, original_name FROM module_fittings_type_names WHERE original_name=? LIMIT 1", [$name]);
                         if ($row && (string)($row['current_name'] ?? '') !== (string)($row['original_name'] ?? '')) {
                             $hasRename = true;
                             break;
                         }
                     }
-                    $app->db->run("UPDATE module_fittings_fits SET has_renamed_items=? WHERE id=?", [$hasRename ? 1 : 0, $fitId]);
+                    db_exec($app->db, "UPDATE module_fittings_fits SET has_renamed_items=? WHERE id=?", [$hasRename ? 1 : 0, $fitId]);
                     if ($hasRename) $impacted++;
                 }
                 return ['status' => 'success', 'message' => "Scanned fits, impacted {$impacted}", 'metrics' => ['impacted' => $impacted]];
@@ -1731,8 +1684,8 @@ return function (ModuleRegistry $registry): void {
             'handler' => function (App $app, array $context = []): array {
                 $retentionDays = 90;
                 $cutoff = date('Y-m-d H:i:s', strtotime("-{$retentionDays} days"));
-                $app->db->run("DELETE FROM module_fittings_audit_log WHERE created_at < ?", [$cutoff]);
-                $app->db->run("DELETE FROM module_fittings_saved_events WHERE created_at < ?", [$cutoff]);
+                db_exec($app->db, "DELETE FROM module_fittings_audit_log WHERE created_at < ?", [$cutoff]);
+                db_exec($app->db, "DELETE FROM module_fittings_saved_events WHERE created_at < ?", [$cutoff]);
                 return ['status' => 'success', 'message' => "Cleaned logs older than {$retentionDays} days"];
             },
         ],
@@ -1748,7 +1701,7 @@ return function (ModuleRegistry $registry): void {
         if ($resp = $requireRight('fittings.manage')) return $resp;
 
         JobRegistry::sync($app->db);
-        $jobs = $app->db->all(
+        $jobs = db_all($app->db, 
             "SELECT job_key, name, schedule_seconds, is_enabled, last_run_at, last_status, last_message\n"
             . " FROM module_corptools_jobs WHERE job_key LIKE 'fittings.%' ORDER BY job_key ASC"
         );

@@ -18,6 +18,8 @@ use App\Corptools\Audit\ScopeAuditService;
 use App\Http\Request;
 use App\Http\Response;
 
+require_once __DIR__ . '/functions.php';
+
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
     $universeShared = new Universe($app->db);
@@ -121,7 +123,7 @@ return function (ModuleRegistry $registry): void {
             if ($userId > 0 && $characterId > 0 && $bucket === 'member_audit') {
                 $scopePolicy = new ScopePolicy($app->db, $identityResolver);
                 $scopeSet = $scopePolicy->getEffectiveScopesForUser($userId);
-                $tokenRow = $app->db->one(
+                $tokenRow = db_one($app->db, 
                     "SELECT access_token, scopes_json, expires_at
                      FROM eve_token_buckets
                      WHERE character_id=? AND bucket='member_audit' AND org_type='character' AND org_id=0
@@ -244,7 +246,7 @@ return function (ModuleRegistry $registry): void {
         $memberScopes = $profiles['member_audit']['scopes'] ?? [];
         $basicScopes = $profiles['basic']['scopes'] ?? [];
 
-        $main = $app->db->one(
+        $main = db_one($app->db, 
             "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
             [$uid]
         );
@@ -256,7 +258,7 @@ return function (ModuleRegistry $registry): void {
                 'character_name' => (string)($main['character_name'] ?? 'Unknown'),
             ];
         }
-        $links = $app->db->all(
+        $links = db_all($app->db, 
             "SELECT character_id, character_name
              FROM character_links
              WHERE user_id=? AND status='linked'
@@ -282,7 +284,7 @@ return function (ModuleRegistry $registry): void {
         $memberTokens = [];
         if (!empty($characterIds)) {
             $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
-            $basicTokens = $app->db->all(
+            $basicTokens = db_all($app->db, 
                 "SELECT character_id, scopes_json, expires_at, status, last_refresh_at, error_last
                  FROM eve_token_buckets
                  WHERE character_id IN ({$placeholders})
@@ -291,7 +293,7 @@ return function (ModuleRegistry $registry): void {
                    AND org_id=0",
                 $characterIds
             );
-            $memberTokens = $app->db->all(
+            $memberTokens = db_all($app->db, 
                 "SELECT character_id, scopes_json, expires_at, status, last_refresh_at, error_last
                  FROM eve_token_buckets
                  WHERE character_id IN ({$placeholders})
@@ -604,7 +606,7 @@ return function (ModuleRegistry $registry): void {
         $userTree  = $app->menu->tree('user_top', fn(string $r) => true);
         $userTree = array_values(array_filter($userTree, fn($n) => $n['slug'] !== 'user.login'));
 
-        $primary = $app->db->one(
+        $primary = db_one($app->db, 
             "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
             [$uid]
         );
@@ -618,7 +620,7 @@ return function (ModuleRegistry $registry): void {
                 'is_main' => true,
             ];
         }
-        $links = $app->db->all(
+        $links = db_all($app->db, 
             "SELECT character_id, character_name, linked_at
              FROM character_links
              WHERE user_id=? AND status='linked'
@@ -655,7 +657,7 @@ return function (ModuleRegistry $registry): void {
         $summaryMap = [];
         if (!empty($characterIds)) {
             $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
-            $rows = $app->db->all(
+            $rows = db_all($app->db, 
                 "SELECT character_id, total_sp, last_login_at, location_system_id
                  FROM module_corptools_character_summary
                  WHERE character_id IN ({$placeholders})",
@@ -668,12 +670,7 @@ return function (ModuleRegistry $registry): void {
         $orgMap = $identityResolver->resolveCharacters(array_values(array_unique(array_map(fn($row) => (int)($row['character_id'] ?? 0), $pagedCharacters))));
 
         $displayOrgName = function (?array $org, string $type): string {
-            if (!$org) return 'Unknown';
-            if (($org['org_status'] ?? '') !== 'fresh') return 'Unknown';
-            if ($type === 'corporation') {
-                return ((int)($org['corp_id'] ?? 0) > 0) ? (string)($org['corporation']['name'] ?? 'Unknown') : 'Unknown';
-            }
-            return ((int)($org['alliance_id'] ?? 0) > 0) ? (string)($org['alliance']['name'] ?? 'Unknown') : 'Unknown';
+            return auth_display_org_name($org, $type);
         };
 
         $renderPagination = function (int $total, int $page, int $perPage, array $query): string {

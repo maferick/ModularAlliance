@@ -33,6 +33,28 @@ final class Universe
         return $e['name'] ?? 'Unknown';
     }
 
+    public function nameOrUnknown(string $type, int $id, string $fallback = 'Unknown'): string
+    {
+        if ($id <= 0) {
+            return $fallback;
+        }
+        $name = $this->name($type, $id);
+        return $name !== '' ? $name : $fallback;
+    }
+
+    /** @return array<int, string> */
+    public function names(string $type, array $ids): array
+    {
+        $results = [];
+        foreach (array_values(array_unique(array_map('intval', $ids))) as $id) {
+            if ($id <= 0) {
+                continue;
+            }
+            $results[$id] = $this->nameOrUnknown($type, $id);
+        }
+        return $results;
+    }
+
     public function icon(string $type, int $id, int $size = 64): ?string
     {
         $e = $this->entity($type, $id);
@@ -48,7 +70,7 @@ final class Universe
             return $sde;
         }
 
-        $row = $this->db->one(
+        $row = db_one($this->db, 
             "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
             [$type, $id]
         );
@@ -106,7 +128,7 @@ final class Universe
 
             $this->upsertEntity($type, $id, (string)$payload['name'], $payload, $ttl);
 
-            return $this->db->one(
+            return db_one($this->db, 
                 "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
                 [$type, $id]
             ) ?? [];
@@ -142,7 +164,7 @@ final class Universe
 
         $this->upsertEntity($type, $id, (string)$payload['name'], $payload, $ttl);
 
-        return $this->db->one(
+        return db_one($this->db, 
             "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
             [$type, $id]
         ) ?? [];
@@ -177,7 +199,7 @@ final class Universe
                     break;
                 }
                 $this->upsertEntity($type, $id, $name, $row, (int)$config['ttl']);
-                return $this->db->one(
+                return db_one($this->db, 
                     "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
                     [$type, $id]
                 ) ?? [];
@@ -189,7 +211,7 @@ final class Universe
 
     private function upsertEntity(string $type, int $id, string $name, array $payload, int $ttl): void
     {
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO universe_entities (entity_type, entity_id, name, extra_json, fetched_at, ttl_seconds)
              VALUES (?, ?, ?, ?, NOW(), ?)
              ON DUPLICATE KEY UPDATE
@@ -237,7 +259,7 @@ final class Universe
 
         error_log("Universe: missing {$type} {$id} after SDE+ESI lookup.");
 
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO universe_entities (entity_type, entity_id, name, ttl_seconds, fetched_at)
              VALUES (?, ?, ?, 3600, NOW())
              ON DUPLICATE KEY UPDATE
@@ -247,7 +269,7 @@ final class Universe
             [$type, $id, $name]
         );
 
-        return $this->db->one(
+        return db_one($this->db, 
             "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
             [$type, $id]
         ) ?? [];
@@ -306,7 +328,7 @@ final class Universe
         }
 
         $fields = array_merge([$column, 'name'], $extra);
-        $row = $this->db->one(
+        $row = db_one($this->db, 
             "SELECT " . implode(', ', $fields) . " FROM {$table} WHERE {$column}=?",
             [$id]
         );
@@ -330,7 +352,7 @@ final class Universe
         if (self::$sdeReady !== null) {
             return self::$sdeReady;
         }
-        $row = $db->one("SHOW TABLES LIKE 'sde_inv_categories'");
+        $row = db_one($db, "SHOW TABLES LIKE 'sde_inv_categories'");
         self::$sdeReady = $row !== null;
         return self::$sdeReady;
     }

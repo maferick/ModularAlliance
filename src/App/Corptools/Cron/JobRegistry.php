@@ -49,7 +49,7 @@ final class JobRegistry
                 continue;
             }
 
-            $db->run(
+            db_exec($db, 
                 "INSERT INTO module_corptools_jobs\n"
                 . " (job_key, name, description, schedule_seconds, is_enabled, last_status, next_run_at)\n"
                 . " VALUES (?, ?, ?, ?, ?, 'never', NOW())\n"
@@ -62,7 +62,7 @@ final class JobRegistry
 
     private static function tablesReady(Db $db): bool
     {
-        $row = $db->one("SHOW TABLES LIKE 'module_corptools_jobs'");
+        $row = db_one($db, "SHOW TABLES LIKE 'module_corptools_jobs'");
         return $row !== null;
     }
 }

@@ -73,7 +73,7 @@ final class ModuleManager
             $rightSlug = (string)($r['slug'] ?? '');
             $desc = (string)($r['description'] ?? $rightSlug);
             if ($rightSlug === '') continue;
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO rights (slug, description, module_slug) VALUES (?, ?, ?)\n"
                 . "ON DUPLICATE KEY UPDATE description=VALUES(description), module_slug=VALUES(module_slug)",
                 [$rightSlug, $desc, $manifest->slug]

@@ -13,15 +13,17 @@ final class Cache
     public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
         $registry->route('GET', '/admin/cache', function () use ($app, $render): Response {
-            $pdo = $app->db->pdo();
-
             // ESI cache uses fetched_at + ttl_seconds (canonical schema)
-            $esiTotal = (int)($pdo->query("SELECT COUNT(*) FROM esi_cache")->fetchColumn() ?: 0);
-            $esiExpired = (int)($pdo->query("SELECT COUNT(*) FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()")->fetchColumn() ?: 0);
+            $esiTotal = (int)(db_value($app->db, "SELECT COUNT(*) FROM esi_cache", []) ?: 0);
+            $esiExpired = (int)(db_value(
+                $app->db,
+                "SELECT COUNT(*) FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()",
+                []
+            ) ?: 0);
 
             $uniTotal = 0;
             try {
-                $uniTotal = (int)($pdo->query("SELECT COUNT(*) FROM universe_entities")->fetchColumn() ?: 0);
+                $uniTotal = (int)(db_value($app->db, "SELECT COUNT(*) FROM universe_entities", []) ?: 0);
             } catch (\Throwable $e) {
                 $uniTotal = 0;
             }
@@ -115,7 +117,6 @@ HTML;
         }, ['right' => 'admin.cache']);
 
         $registry->route('POST', '/admin/cache', function () use ($app): Response {
-            $pdo = $app->db->pdo();
             $action = (string)($_POST['action'] ?? '');
 
             $redis = RedisCache::fromConfig($app->config['redis'] ?? []);
@@ -125,23 +126,23 @@ HTML;
             try {
                 switch ($action) {
                     case 'remove_expired':
-                        $pdo->exec("DELETE FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()");
+                        db_exec($app->db, "DELETE FROM esi_cache WHERE DATE_ADD(fetched_at, INTERVAL ttl_seconds SECOND) < NOW()");
                         $msg = "Removed expired ESI rows";
                         break;
 
                     case 'purge_esi':
-                        $pdo->exec("DELETE FROM esi_cache");
+                        db_exec($app->db, "DELETE FROM esi_cache");
                         $msg = "Purged ESI cache";
                         break;
 
                     case 'purge_universe':
-                        $pdo->exec("DELETE FROM universe_entities");
+                        db_exec($app->db, "DELETE FROM universe_entities");
                         $msg = "Purged Universe cache";
                         break;
 
                     case 'purge_all':
-                        $pdo->exec("DELETE FROM esi_cache");
-                        $pdo->exec("DELETE FROM universe_entities");
+                        db_exec($app->db, "DELETE FROM esi_cache");
+                        db_exec($app->db, "DELETE FROM universe_entities");
                         $msg = "Purged ALL caches";
                         break;
 

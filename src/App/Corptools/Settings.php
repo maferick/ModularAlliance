@@ -75,7 +75,7 @@ final class Settings
 
     public function get(): array
     {
-        $row = $this->db->one(
+        $row = db_one($this->db, 
             "SELECT settings_json FROM module_corptools_settings WHERE scope_type='global' LIMIT 1"
         );
         $settings = [];
@@ -92,7 +92,7 @@ final class Settings
     public function save(array $settings): void
     {
         $payload = json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_settings (scope_type, scope_id, settings_json, created_at, updated_at)
              VALUES ('global', 0, ?, NOW(), NOW())
              ON DUPLICATE KEY UPDATE settings_json=VALUES(settings_json), updated_at=NOW()",

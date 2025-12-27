@@ -325,8 +325,8 @@ final class SdeImporter
     /** @param array<int, string> $logLines */
     private function prepareStagingTable(string $table, string $staging, array &$logLines): void
     {
-        $this->db->exec("DROP TABLE IF EXISTS `{$staging}`");
-        $this->db->exec("CREATE TABLE `{$staging}` LIKE `{$table}`");
+        db_exec($this->db, "DROP TABLE IF EXISTS `{$staging}`");
+        db_exec($this->db, "CREATE TABLE `{$staging}` LIKE `{$table}`");
         $logLines[] = "[staging] {$table}: prepared {$staging}";
     }
 
@@ -337,8 +337,7 @@ final class SdeImporter
         $start = microtime(true);
 
         $rows = 0;
-        $pdo = $this->db->pdo();
-        $pdo->setAttribute(PDO::MYSQL_ATTR_LOCAL_INFILE, true);
+        db_set_attribute($this->db, PDO::MYSQL_ATTR_LOCAL_INFILE, true);
 
         if ($this->localInfileEnabled()) {
             try {
@@ -377,7 +376,7 @@ final class SdeImporter
         $userVars = implode(', ', array_values($headerMap));
         $sql = sprintf(
             "LOAD DATA LOCAL INFILE %s INTO TABLE %s FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"' ESCAPED BY '\\\\' LINES TERMINATED BY '\\n' IGNORE 1 LINES (%s) SET %s",
-            $this->db->pdo()->quote($csvPath),
+            db_quote($this->db, $csvPath),
             "`{$staging}`",
             $userVars,
             implode(', ', $setSql)
@@ -385,14 +384,14 @@ final class SdeImporter
 
         $this->db->begin();
         try {
-            $this->db->exec($sql);
+            db_exec($this->db, $sql);
             $this->db->commit();
         } catch (\Throwable $e) {
             $this->db->rollback();
             throw $e;
         }
 
-        $row = $this->db->one("SELECT COUNT(*) AS cnt FROM `{$staging}`");
+        $row = db_one($this->db, "SELECT COUNT(*) AS cnt FROM `{$staging}`");
         return (int)($row['cnt'] ?? 0);
     }
 
@@ -480,7 +479,7 @@ final class SdeImporter
             implode(', ', array_fill(0, count($values), $placeholders))
         );
 
-        $this->db->run($sql, $flat);
+        db_exec($this->db, $sql, $flat);
     }
 
     /** @param array<string, string> $tables */
@@ -490,19 +489,19 @@ final class SdeImporter
         $renames = [];
         foreach ($tables as $final => $staging) {
             $backup = $final . '_backup';
-            $this->db->exec("DROP TABLE IF EXISTS `{$backup}`");
+            db_exec($this->db, "DROP TABLE IF EXISTS `{$backup}`");
             $renames[] = "`{$final}` TO `{$backup}`";
             $renames[] = "`{$staging}` TO `{$final}`";
             $logLines[] = "[swap] {$final}: staged";
         }
 
-        $this->db->exec('RENAME TABLE ' . implode(', ', $renames));
+        db_exec($this->db, 'RENAME TABLE ' . implode(', ', $renames));
         $logLines[] = "[swap] completed at {$timestamp}";
     }
 
     private function localInfileEnabled(): bool
     {
-        $row = $this->db->one("SHOW VARIABLES LIKE 'local_infile'");
+        $row = db_one($this->db, "SHOW VARIABLES LIKE 'local_infile'");
         if (!$row) {
             return false;
         }
@@ -607,13 +606,13 @@ final class SdeImporter
 
     private function metaGet(string $key): ?string
     {
-        $row = $this->db->one("SELECT meta_value FROM sde_meta WHERE meta_key=?", [$key]);
+        $row = db_one($this->db, "SELECT meta_value FROM sde_meta WHERE meta_key=?", [$key]);
         return $row ? (string)$row['meta_value'] : null;
     }
 
     private function metaSet(string $key, string $value): void
     {
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO sde_meta (meta_key, meta_value) VALUES (?, ?)\n"
             . "ON DUPLICATE KEY UPDATE meta_value=VALUES(meta_value)",
             [$key, $value]
