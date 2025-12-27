@@ -18,6 +18,20 @@ final class Menu
         // slug, title, url, parent_slug?, sort_order?, area?, right_slug?, enabled?
         $slug = (string)($item['slug'] ?? '');
         if ($slug === '') throw new \RuntimeException("Menu item missing slug");
+        $area = (string)($item['area'] ?? self::AREA_LEFT_MEMBER);
+        $validAreas = [
+            'left',
+            'admin_top',
+            'user_top',
+            self::AREA_LEFT_MEMBER,
+            self::AREA_LEFT_ADMIN,
+            self::AREA_MODULE_TOP,
+            self::AREA_SITE_ADMIN,
+            self::AREA_USER_TOP,
+        ];
+        if (!in_array($area, $validAreas, true)) {
+            $area = self::AREA_LEFT_MEMBER;
+        }
 
         db_exec($this->db, 
             "INSERT INTO menu_registry (slug, title, url, parent_slug, sort_order, area, right_slug, enabled)
@@ -36,7 +50,7 @@ final class Menu
                 (string)($item['url'] ?? '/'),
                 $item['parent_slug'] ?? null,
                 (int)($item['sort_order'] ?? 10),
-                (string)($item['area'] ?? self::AREA_LEFT_MEMBER),
+                $area,
                 $item['right_slug'] ?? null,
                 (int)($item['enabled'] ?? 1),
             ]
