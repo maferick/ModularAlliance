@@ -33,6 +33,7 @@ final class MenuBuilder
                         r.area AS r_area,
                         r.right_slug AS r_right_slug,
                         r.enabled AS r_enabled,
+                        0 AS r_is_custom,
                         o.title AS o_title,
                         o.url AS o_url,
                         o.parent_slug AS o_parent_slug,
@@ -42,7 +43,29 @@ final class MenuBuilder
                         o.enabled AS o_enabled
                  FROM menu_registry r
                  LEFT JOIN menu_overrides o ON o.slug = r.slug
-                 ORDER BY r.slug ASC"
+                 UNION ALL
+                 SELECT c.slug,
+                        'custom' AS r_module_slug,
+                        'action' AS r_kind,
+                        c.allowed_areas AS r_allowed_areas,
+                        c.title AS r_title,
+                        c.url AS r_url,
+                        c.parent_slug AS r_parent_slug,
+                        c.sort_order AS r_sort_order,
+                        c.area AS r_area,
+                        c.right_slug AS r_right_slug,
+                        c.enabled AS r_enabled,
+                        1 AS r_is_custom,
+                        o.title AS o_title,
+                        o.url AS o_url,
+                        o.parent_slug AS o_parent_slug,
+                        o.sort_order AS o_sort_order,
+                        o.area AS o_area,
+                        o.right_slug AS o_right_slug,
+                        o.enabled AS o_enabled
+                 FROM menu_custom_items c
+                 LEFT JOIN menu_overrides o ON o.slug = c.slug
+                 ORDER BY slug ASC"
             );
 
             $overrideRows = db_all(
@@ -57,7 +80,8 @@ final class MenuBuilder
                         o.enabled AS o_enabled
                  FROM menu_overrides o
                  LEFT JOIN menu_registry r ON r.slug = o.slug
-                 WHERE r.slug IS NULL
+                 LEFT JOIN menu_custom_items c ON c.slug = o.slug
+                 WHERE r.slug IS NULL AND c.slug IS NULL
                  ORDER BY o.slug ASC"
             );
 
@@ -68,7 +92,7 @@ final class MenuBuilder
 
             $manifests = $app->modules->getManifests();
             $moduleBySlug = [];
-            $moduleLabels = [];
+            $moduleLabels = ['custom' => 'Custom'];
             foreach ($manifests as $manifest) {
                 if (!is_array($manifest)) {
                     continue;
@@ -92,13 +116,13 @@ final class MenuBuilder
             $items = [];
             foreach ($menuRows as $row) {
                 $slug = (string)$row['slug'];
-                $items[$slug] = self::buildItem($row, true);
+                $items[$slug] = self::buildItem($row, true, (bool)($row['r_is_custom'] ?? false));
             }
 
             foreach ($overrideRows as $row) {
                 $slug = (string)$row['slug'];
                 if (!isset($items[$slug])) {
-                    $items[$slug] = self::buildItem($row, false);
+                    $items[$slug] = self::buildItem($row, false, false);
                 }
             }
 
@@ -110,15 +134,31 @@ final class MenuBuilder
             unset($item);
 
             $moduleGroups = [];
+            $customItems = [];
+            $seenCanonical = [];
             foreach ($items as $item) {
-                $label = $item['module'];
-                $moduleGroups[$label][] = $item;
+                $canonicalKey = Menu::canonicalKey([
+                    'slug' => $item['slug'],
+                    'url' => $item['effective']['url'] ?? '',
+                    'area' => $item['effective']['area'] ?? Menu::AREA_LEFT,
+                ]);
+                if (isset($seenCanonical[$canonicalKey])) {
+                    continue;
+                }
+                $seenCanonical[$canonicalKey] = true;
+                if (($item['module_slug'] ?? '') === 'custom') {
+                    $customItems[] = $item;
+                } else {
+                    $label = $item['module'];
+                    $moduleGroups[$label][] = $item;
+                }
             }
             ksort($moduleGroups, SORT_NATURAL | SORT_FLAG_CASE);
             foreach ($moduleGroups as $label => &$groupItems) {
                 usort($groupItems, fn($a, $b) => strcasecmp($a['effective']['title'], $b['effective']['title']));
             }
             unset($groupItems);
+            usort($customItems, fn($a, $b) => strcasecmp($a['effective']['title'], $b['effective']['title']));
 
             $areas = [
                 Menu::AREA_LEFT => 'Left',
@@ -156,6 +196,46 @@ final class MenuBuilder
             <div class='menu-builder'>
               <aside class='menu-builder-sidebar'>
                 <div class='small text-muted mb-2'>Menu items by module</div>
+                <div class='menu-custom-builder mb-3'>
+                  <div class='small text-muted mb-2'>Create custom menu item</div>
+                  <form id='menu-custom-form' class='mb-2'>
+                    <div class='mb-2'>
+                      <label class='form-label small text-muted' for='menu-custom-title'>Title</label>
+                      <input class='form-control form-control-sm' type='text' id='menu-custom-title' required>
+                    </div>
+                    <div class='mb-2'>
+                      <label class='form-label small text-muted' for='menu-custom-url'>URL</label>
+                      <input class='form-control form-control-sm' type='text' id='menu-custom-url' placeholder='/custom/path'>
+                    </div>
+                    <div class='mb-2'>
+                      <label class='form-label small text-muted' for='menu-custom-area'>Area</label>
+                      <select class='form-select form-select-sm' id='menu-custom-area'></select>
+                    </div>
+                    <div class='mb-2'>
+                      <label class='form-label small text-muted'>Allowed areas</label>
+                      <div id='menu-custom-allowed' class='d-flex flex-wrap gap-2'></div>
+                    </div>
+                    <div class='mb-2'>
+                      <label class='form-label small text-muted' for='menu-custom-right'>Right (optional)</label>
+                      <select class='form-select form-select-sm' id='menu-custom-right'></select>
+                    </div>
+                    <button class='btn btn-sm btn-outline-primary w-100' type='submit'>Add custom item</button>
+                  </form>
+                  <ul class='list-unstyled menu-item-list' id='menu-custom-list'>";
+            foreach ($customItems as $item) {
+                $slug = $item['slug'];
+                $title = htmlspecialchars($item['effective']['title']);
+                $disabledBadge = ((int)$item['effective']['enabled'] === 1) ? '' : "<span class='badge text-bg-secondary ms-2'>Disabled</span>";
+                $allowedAttr = htmlspecialchars(json_encode($item['allowed_areas'] ?? []));
+                $h .= "<li class='menu-item menu-draggable' draggable='true' data-slug='" . htmlspecialchars($slug) . "' data-source='library' data-allowed-areas='{$allowedAttr}'>
+                      <div class='menu-item-card'>
+                        <span class='menu-item-title'>{$title}</span>{$disabledBadge}
+                      </div>
+                      <div class='technical-only small text-muted'>Slug: " . htmlspecialchars($slug) . "</div>
+                      <div class='technical-only small text-muted'>Allowed areas: {$allowedAttr}</div>
+                    </li>";
+            }
+            $h .= "</ul></div>
                 <div class='mb-3'>
                   <label class='form-label small text-muted' for='menu-available-area'>Available items for</label>
                   <select class='form-select form-select-sm' id='menu-available-area'></select>
@@ -247,6 +327,7 @@ final class MenuBuilder
                   <div class='technical-only small text-muted mb-3' id='menu-edit-slug-display'></div>
                   <div class='d-flex gap-2'>
                     <button class='btn btn-primary' type='submit'>Save overrides</button>
+                    <button class='btn btn-outline-danger d-none' type='button' id='menu-edit-delete'>Delete custom item</button>
                     <button class='btn btn-outline-secondary' type='button' data-bs-dismiss='offcanvas'>Close</button>
                   </div>
                 </form>
@@ -286,6 +367,13 @@ final class MenuBuilder
                 const saveLayoutBtn = document.getElementById('menu-save-layout');
                 const dedupeBtn = document.getElementById('menu-dedupe');
                 const availableAreaSelect = document.getElementById('menu-available-area');
+                const customForm = document.getElementById('menu-custom-form');
+                const customTitle = document.getElementById('menu-custom-title');
+                const customUrl = document.getElementById('menu-custom-url');
+                const customArea = document.getElementById('menu-custom-area');
+                const customAllowed = document.getElementById('menu-custom-allowed');
+                const customRight = document.getElementById('menu-custom-right');
+                const customList = document.getElementById('menu-custom-list');
                 const editor = document.getElementById('menu-editor');
                 const editForm = document.getElementById('menu-edit-form');
                 const editSlug = document.getElementById('menu-edit-slug');
@@ -296,6 +384,7 @@ final class MenuBuilder
                 const editSort = document.getElementById('menu-edit-sort');
                 const editRight = document.getElementById('menu-edit-right');
                 const editSlugDisplay = document.getElementById('menu-edit-slug-display');
+                const editDeleteBtn = document.getElementById('menu-edit-delete');
 
                 const defaultFields = {
                   title: document.getElementById('menu-edit-title-default'),
@@ -457,6 +546,14 @@ final class MenuBuilder
                   return li;
                 }
 
+                function addCustomListItem(item) {
+                  if (!item || !customList) return;
+                  const li = createMenuItemElement(item.slug);
+                  if (!li) return;
+                  li.dataset.source = 'library';
+                  customList.appendChild(li);
+                }
+
                 function closestMenuItem(el) {
                   return el ? el.closest('.menu-item') : null;
                 }
@@ -487,6 +584,10 @@ final class MenuBuilder
                   if (!itemData || !items[itemData.slug]) return;
                   items[itemData.slug].overrides = itemData.overrides;
                   items[itemData.slug].effective = itemData.effective;
+                  if (itemData.defaults) {
+                    items[itemData.slug].defaults = itemData.defaults;
+                    items[itemData.slug].allowed_areas = itemData.allowed_areas || items[itemData.slug].allowed_areas;
+                  }
                   const slug = itemData.slug;
                   const titleNodes = document.querySelectorAll('.menu-item[data-slug=\"' + slug + '\"] .menu-item-title');
                   titleNodes.forEach(node => { node.textContent = itemData.effective.title || 'Untitled menu item'; });
@@ -531,6 +632,11 @@ final class MenuBuilder
                     items[slug].effective.area = data.area || items[slug].defaults.area || items[slug].effective.area;
                     items[slug].effective.parent_slug = data.parent_slug ?? items[slug].defaults.parent_slug;
                     items[slug].effective.sort_order = data.sort_order ?? items[slug].defaults.sort_order;
+                    if (items[slug].is_custom) {
+                      items[slug].defaults.area = data.area || items[slug].defaults.area;
+                      items[slug].defaults.parent_slug = data.parent_slug ?? items[slug].defaults.parent_slug;
+                      items[slug].defaults.sort_order = data.sort_order ?? items[slug].defaults.sort_order;
+                    }
                   });
                 }
 
@@ -638,22 +744,27 @@ final class MenuBuilder
                     const item = items[slug];
                     if (!item) return;
 
+                    const source = item.is_custom ? item.defaults : item.overrides;
                     editSlug.value = slug;
-                    editTitle.value = item.overrides.title ?? '';
-                    editUrl.value = item.overrides.url ?? '';
-                    editEnabled.value = item.overrides.enabled === null || item.overrides.enabled === undefined ? '' : String(item.overrides.enabled);
-                    editParent.value = item.overrides.parent_slug ?? '';
-                    editSort.value = item.overrides.sort_order ?? '';
-                    editRight.value = item.overrides.right_slug ?? '';
+                    editTitle.value = source.title ?? '';
+                    editUrl.value = source.url ?? '';
+                    editEnabled.value = source.enabled === null || source.enabled === undefined ? '' : String(source.enabled);
+                    editParent.value = source.parent_slug ?? '';
+                    editSort.value = source.sort_order ?? '';
+                    editRight.value = source.right_slug ?? '';
 
-                    defaultFields.title.textContent = 'Default: ' + (item.defaults.title || '—');
-                    defaultFields.url.textContent = 'Default: ' + (item.defaults.url || '—');
-                    defaultFields.enabled.textContent = 'Default: ' + (item.defaults.enabled === null ? '—' : (item.defaults.enabled === 1 ? 'Enabled' : 'Disabled'));
-                    defaultFields.parent_slug.textContent = 'Default: ' + parentLabelFor(item.defaults.parent_slug, showTechToggle.checked);
-                    defaultFields.sort_order.textContent = 'Default: ' + (item.defaults.sort_order ?? '—');
+                    const defaultLabel = item.is_custom ? 'Stored' : 'Default';
+                    defaultFields.title.textContent = defaultLabel + ': ' + (item.defaults.title || '—');
+                    defaultFields.url.textContent = defaultLabel + ': ' + (item.defaults.url || '—');
+                    defaultFields.enabled.textContent = defaultLabel + ': ' + (item.defaults.enabled === null ? '—' : (item.defaults.enabled === 1 ? 'Enabled' : 'Disabled'));
+                    defaultFields.parent_slug.textContent = defaultLabel + ': ' + parentLabelFor(item.defaults.parent_slug, showTechToggle.checked);
+                    defaultFields.sort_order.textContent = defaultLabel + ': ' + (item.defaults.sort_order ?? '—');
 
-                    defaultFields.right_slug.textContent = 'Default: ' + rightLabelFor(item.defaults.right_slug, showTechToggle.checked);
+                    defaultFields.right_slug.textContent = defaultLabel + ': ' + rightLabelFor(item.defaults.right_slug, showTechToggle.checked);
                     editSlugDisplay.textContent = 'Slug: ' + slug;
+                    if (editDeleteBtn) {
+                      editDeleteBtn.classList.toggle('d-none', !item.is_custom);
+                    }
 
                     const offcanvas = bootstrap.Offcanvas.getOrCreateInstance(editor);
                     offcanvas.show();
@@ -752,6 +863,7 @@ final class MenuBuilder
                   document.body.classList.toggle('show-technical', showTechToggle.checked);
                   buildParentOptions(showTechToggle.checked);
                   buildRightOptions(showTechToggle.checked);
+                  buildCustomRightOptions(showTechToggle.checked);
                 });
 
                 function populateAvailableAreaOptions() {
@@ -766,6 +878,50 @@ final class MenuBuilder
                   if (areas.length) {
                     availableAreaSelect.value = areas[0];
                   }
+                }
+
+                function buildCustomAreaOptions() {
+                  const areas = Object.keys(areaLabels);
+                  customArea.innerHTML = '';
+                  customAllowed.innerHTML = '';
+                  areas.forEach(area => {
+                    const option = document.createElement('option');
+                    option.value = area;
+                    option.textContent = areaLabelFor(area);
+                    customArea.appendChild(option);
+
+                    const label = document.createElement('label');
+                    label.className = 'form-check form-check-inline small';
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.className = 'form-check-input';
+                    checkbox.value = area;
+                    checkbox.checked = false;
+                    label.appendChild(checkbox);
+                    const span = document.createElement('span');
+                    span.className = 'form-check-label';
+                    span.textContent = areaLabelFor(area);
+                    label.appendChild(span);
+                    customAllowed.appendChild(label);
+                  });
+                  if (areas.length) {
+                    customArea.value = areas[0];
+                    const firstCheckbox = customAllowed.querySelector('input[type=\"checkbox\"]');
+                    if (firstCheckbox) {
+                      firstCheckbox.checked = true;
+                    }
+                  }
+                }
+
+                function buildCustomRightOptions(showTechnical) {
+                  customRight.innerHTML = `<option value=''>None</option>`;
+                  rights.forEach(right => {
+                    const option = document.createElement('option');
+                    const label = right.description || right.slug;
+                    option.value = right.slug;
+                    option.textContent = showTechnical ? (label + ' (' + right.slug + ')') : label;
+                    customRight.appendChild(option);
+                  });
                 }
 
                 function filterAvailableItems() {
@@ -800,9 +956,86 @@ final class MenuBuilder
                   }
                 });
 
+                if (customForm) {
+                  customForm.addEventListener('submit', async event => {
+                    event.preventDefault();
+                    const title = customTitle.value.trim();
+                    if (!title) {
+                      showStatus('Custom items need a title.', true);
+                      return;
+                    }
+                    const allowed = Array.from(customAllowed.querySelectorAll('input[type=\"checkbox\"]'))
+                      .filter(input => input.checked)
+                      .map(input => input.value);
+                    try {
+                      const data = await postJson({
+                        action: 'custom_create',
+                        title,
+                        url: customUrl.value.trim(),
+                        area: customArea.value,
+                        right_slug: customRight.value,
+                        allowed_areas: allowed,
+                      });
+                      if (data.item) {
+                        items[data.item.slug] = data.item;
+                        addCustomListItem(data.item);
+                        const zone = document.querySelector('.menu-dropzone[data-area=\"' + data.item.effective.area + '\"]');
+                        if (zone) {
+                          const layoutItem = createMenuItemElement(data.item.slug);
+                          if (layoutItem) {
+                            zone.appendChild(layoutItem);
+                            updateLayoutFromDom();
+                          }
+                        }
+                        customTitle.value = '';
+                        customUrl.value = '';
+                        showStatus(data.message || 'Custom item added.');
+                        filterAvailableItems();
+                      }
+                    } catch (err) {
+                      showStatus(err.message, true);
+                    }
+                  });
+                }
+
+                if (customArea) {
+                  customArea.addEventListener('change', () => {
+                    const checked = customAllowed.querySelectorAll('input[type=\"checkbox\"]:checked');
+                    if (checked.length === 0) {
+                      const match = customAllowed.querySelector('input[type=\"checkbox\"][value=\"' + customArea.value + '\"]');
+                      if (match) {
+                        match.checked = true;
+                      }
+                    }
+                  });
+                }
+
+                if (editDeleteBtn) {
+                  editDeleteBtn.addEventListener('click', async () => {
+                    if (!confirm('Delete this custom menu item?')) {
+                      return;
+                    }
+                    const slug = editSlug.value;
+                    try {
+                      const data = await postJson({ action: 'custom_delete', slug });
+                      if (data.slug && items[data.slug]) {
+                        document.querySelectorAll('.menu-item[data-slug=\"' + data.slug + '\"]').forEach(node => node.remove());
+                        delete items[data.slug];
+                      }
+                      showStatus(data.message || 'Custom item deleted.');
+                      const offcanvas = bootstrap.Offcanvas.getOrCreateInstance(editor);
+                      offcanvas.hide();
+                    } catch (err) {
+                      showStatus(err.message, true);
+                    }
+                  });
+                }
+
                 populateAvailableAreaOptions();
+                buildCustomAreaOptions();
                 buildParentOptions(false);
                 buildRightOptions(false);
+                buildCustomRightOptions(false);
                 attachDragHandlers(document);
                 setupEditDrawer();
                 updateLayoutFromDom();
@@ -841,13 +1074,22 @@ final class MenuBuilder
             foreach ($registryRows as $row) {
                 $registryMap[(string)$row['slug']] = $row;
             }
+            $customRows = db_all(
+                $app->db,
+                "SELECT slug, title, url, parent_slug, sort_order, area, right_slug, enabled, allowed_areas
+                 FROM menu_custom_items"
+            );
+            $customMap = [];
+            foreach ($customRows as $row) {
+                $customMap[(string)$row['slug']] = $row;
+            }
 
             $allowedAreas = [Menu::AREA_LEFT, Menu::AREA_ADMIN_TOP, Menu::AREA_USER_TOP, Menu::AREA_TOP_LEFT];
 
             if ($action === 'dedupe') {
                 $rows = db_all(
                     $app->db,
-                    "SELECT id, slug, url
+                    "SELECT id, slug, url, area
                      FROM menu_registry
                      WHERE url <> ''
                      ORDER BY id ASC"
@@ -866,22 +1108,23 @@ final class MenuBuilder
                     $overrideMap[(string)$row['slug']] = $row;
                 }
 
-                $byUrl = [];
+                $byKey = [];
                 foreach ($rows as $row) {
-                    $url = strtolower(trim((string)$row['url']));
-                    if ($url === '') {
-                        continue;
-                    }
-                    $byUrl[$url][] = $row;
+                    $key = Menu::canonicalKey([
+                        'slug' => (string)$row['slug'],
+                        'url' => (string)$row['url'],
+                        'area' => (string)($row['area'] ?? Menu::AREA_LEFT),
+                    ]);
+                    $byKey[$key][] = $row;
                 }
 
                 $removed = 0;
                 $merged = 0;
 
-                db_tx($app->db, function () use (&$byUrl, &$overrideMap, &$removed, &$merged, $app): void {
+                db_tx($app->db, function () use (&$byKey, &$overrideMap, &$removed, &$merged, $app): void {
                     $fields = ['title', 'url', 'parent_slug', 'sort_order', 'area', 'right_slug', 'enabled'];
 
-                    foreach ($byUrl as $group) {
+                    foreach ($byKey as $group) {
                         if (count($group) <= 1) {
                             continue;
                         }
@@ -893,6 +1136,7 @@ final class MenuBuilder
 
                             db_exec($app->db, "UPDATE menu_registry SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $dupSlug]);
                             db_exec($app->db, "UPDATE menu_overrides SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $dupSlug]);
+                            db_exec($app->db, "UPDATE menu_custom_items SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $dupSlug]);
 
                             $dupOverride = $overrideMap[$dupSlug] ?? null;
                             if ($dupOverride) {
@@ -957,7 +1201,8 @@ final class MenuBuilder
                     if (!is_string($slug) || $slug === '' || !is_array($layout)) {
                         continue;
                     }
-                    if (!isset($registryMap[$slug])) {
+                    $isCustom = isset($customMap[$slug]);
+                    if (!isset($registryMap[$slug]) && !$isCustom) {
                         return self::jsonResponse(['ok' => false, 'message' => "Unknown menu item {$slug}."], 400);
                     }
                     $areaRaw = (string)($layout['area'] ?? '');
@@ -966,7 +1211,7 @@ final class MenuBuilder
                         return self::jsonResponse(['ok' => false, 'message' => "Invalid area for {$slug}."] , 400);
                     }
 
-                    $allowedAreasRaw = $registryMap[$slug]['allowed_areas'] ?? null;
+                    $allowedAreasRaw = $isCustom ? ($customMap[$slug]['allowed_areas'] ?? null) : ($registryMap[$slug]['allowed_areas'] ?? null);
                     $allowedAreasList = [];
                     if (is_string($allowedAreasRaw) && $allowedAreasRaw !== '') {
                         $decoded = json_decode($allowedAreasRaw, true);
@@ -993,7 +1238,7 @@ final class MenuBuilder
                         $sortVal = (int)$sort;
                     }
 
-                    $defaults = $registryMap[$slug] ?? [];
+                    $defaults = $isCustom ? ($customMap[$slug] ?? []) : ($registryMap[$slug] ?? []);
                     $defaultArea = isset($defaults['area']) ? Menu::normalizeArea((string)$defaults['area']) : null;
                     $defaultParent = isset($defaults['parent_slug']) ? (string)$defaults['parent_slug'] : null;
                     $defaultSort = isset($defaults['sort_order']) ? (int)$defaults['sort_order'] : null;
@@ -1002,16 +1247,27 @@ final class MenuBuilder
                     $parentOverride = ($defaultParent !== null && $parent === $defaultParent) ? null : $parent;
                     $sortOverride = ($defaultSort !== null && $sortVal === $defaultSort) ? null : $sortVal;
 
-                    db_exec(
-                        $app->db,
-                        "INSERT INTO menu_overrides (slug, area, parent_slug, sort_order)
-                         VALUES (?, ?, ?, ?)
-                         ON DUPLICATE KEY UPDATE
-                           area=VALUES(area),
-                           parent_slug=VALUES(parent_slug),
-                           sort_order=VALUES(sort_order)",
-                        [$slug, $areaOverride, $parentOverride, $sortOverride]
-                    );
+                    if ($isCustom) {
+                        db_exec(
+                            $app->db,
+                            "UPDATE menu_custom_items
+                             SET area=?, parent_slug=?, sort_order=?
+                             WHERE slug=?",
+                            [$area, $parent, $sortVal ?? 10, $slug]
+                        );
+                        db_exec($app->db, "DELETE FROM menu_overrides WHERE slug=?", [$slug]);
+                    } else {
+                        db_exec(
+                            $app->db,
+                            "INSERT INTO menu_overrides (slug, area, parent_slug, sort_order)
+                             VALUES (?, ?, ?, ?)
+                             ON DUPLICATE KEY UPDATE
+                               area=VALUES(area),
+                               parent_slug=VALUES(parent_slug),
+                               sort_order=VALUES(sort_order)",
+                            [$slug, $areaOverride, $parentOverride, $sortOverride]
+                        );
+                    }
 
                     $overrides[$slug] = [
                         'area' => $areaOverride,
@@ -1032,6 +1288,7 @@ final class MenuBuilder
                 if ($slug === '') {
                     return self::jsonResponse(['ok' => false, 'message' => 'Missing menu slug.'], 400);
                 }
+                $isCustom = isset($customMap[$slug]);
 
                 $title = trim((string)($data['title'] ?? ''));
                 $url = trim((string)($data['url'] ?? ''));
@@ -1059,21 +1316,47 @@ final class MenuBuilder
                     return self::jsonResponse(['ok' => false, 'message' => 'Menu Builder and Login must stay enabled.'], 400);
                 }
 
-                db_exec(
-                    $app->db,
-                    "INSERT INTO menu_overrides (slug, title, url, parent_slug, sort_order, right_slug, enabled)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                       title=VALUES(title),
-                       url=VALUES(url),
-                       parent_slug=VALUES(parent_slug),
-                       sort_order=VALUES(sort_order),
-                       right_slug=VALUES(right_slug),
-                       enabled=VALUES(enabled)",
-                    [$slug, $title, $url, $parent, $sort, $right, $enabled]
-                );
+                if ($isCustom) {
+                    db_exec(
+                        $app->db,
+                        "UPDATE menu_custom_items
+                         SET title=?,
+                             url=?,
+                             parent_slug=?,
+                             sort_order=?,
+                             right_slug=?,
+                             enabled=?
+                         WHERE slug=?",
+                        [$title ?? '', $url ?? '', $parent, $sort ?? 10, $right, $enabled ?? 1, $slug]
+                    );
+                    db_exec($app->db, "DELETE FROM menu_overrides WHERE slug=?", [$slug]);
+                } else {
+                    db_exec(
+                        $app->db,
+                        "INSERT INTO menu_overrides (slug, title, url, parent_slug, sort_order, right_slug, enabled)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE
+                           title=VALUES(title),
+                           url=VALUES(url),
+                           parent_slug=VALUES(parent_slug),
+                           sort_order=VALUES(sort_order),
+                           right_slug=VALUES(right_slug),
+                           enabled=VALUES(enabled)",
+                        [$slug, $title, $url, $parent, $sort, $right, $enabled]
+                    );
+                }
 
-                $defaults = $registryMap[$slug] ?? [];
+                $defaults = $isCustom ? ($customMap[$slug] ?? []) : ($registryMap[$slug] ?? []);
+                if ($isCustom) {
+                    $defaults = array_merge($defaults, [
+                        'title' => $title ?? ($defaults['title'] ?? ''),
+                        'url' => $url ?? ($defaults['url'] ?? ''),
+                        'parent_slug' => $parent ?? ($defaults['parent_slug'] ?? null),
+                        'sort_order' => $sort ?? ($defaults['sort_order'] ?? 10),
+                        'right_slug' => $right ?? ($defaults['right_slug'] ?? null),
+                        'enabled' => $enabled ?? ($defaults['enabled'] ?? 1),
+                    ]);
+                }
                 $effective = [
                     'title' => $title ?? ($defaults['title'] ?? 'Untitled menu item'),
                     'url' => $url ?? ($defaults['url'] ?? ''),
@@ -1083,6 +1366,17 @@ final class MenuBuilder
                     'enabled' => $enabled ?? ($defaults['enabled'] ?? 1),
                     'area' => Menu::normalizeArea((string)($defaults['area'] ?? Menu::AREA_LEFT)),
                 ];
+
+                $allowedAreasList = [];
+                $allowedAreasRaw = $defaults['allowed_areas'] ?? null;
+                if (is_string($allowedAreasRaw) && $allowedAreasRaw !== '') {
+                    $decoded = json_decode($allowedAreasRaw, true);
+                    if (is_array($decoded)) {
+                        $allowedAreasList = array_values(array_filter($decoded, 'is_string'));
+                    }
+                } elseif (is_array($allowedAreasRaw)) {
+                    $allowedAreasList = array_values(array_filter($allowedAreasRaw, 'is_string'));
+                }
 
                 return self::jsonResponse([
                     'ok' => true,
@@ -1099,15 +1393,113 @@ final class MenuBuilder
                             'area' => Menu::normalizeArea((string)($defaults['area'] ?? Menu::AREA_LEFT)),
                         ],
                         'effective' => $effective,
+                        'defaults' => [
+                            'title' => $defaults['title'] ?? null,
+                            'url' => $defaults['url'] ?? null,
+                            'parent_slug' => $defaults['parent_slug'] ?? null,
+                            'sort_order' => $defaults['sort_order'] ?? null,
+                            'right_slug' => $defaults['right_slug'] ?? null,
+                            'enabled' => $defaults['enabled'] ?? null,
+                            'area' => Menu::normalizeArea((string)($defaults['area'] ?? Menu::AREA_LEFT)),
+                        ],
+                        'allowed_areas' => $allowedAreasList,
                     ],
                 ]);
+            }
+
+            if ($action === 'custom_create') {
+                $title = trim((string)($data['title'] ?? ''));
+                if ($title === '') {
+                    return self::jsonResponse(['ok' => false, 'message' => 'Custom items need a title.'], 400);
+                }
+                $url = trim((string)($data['url'] ?? ''));
+                $area = Menu::normalizeArea((string)($data['area'] ?? Menu::AREA_LEFT));
+                $right = trim((string)($data['right_slug'] ?? ''));
+                $right = $right === '' ? null : $right;
+                $allowed = $data['allowed_areas'] ?? [];
+                $allowedAreas = [];
+                if (is_array($allowed)) {
+                    foreach ($allowed as $entry) {
+                        if (!is_string($entry) || $entry === '') {
+                            continue;
+                        }
+                        $allowedAreas[] = Menu::normalizeArea($entry);
+                    }
+                }
+                if ($allowedAreas === []) {
+                    $allowedAreas = [$area];
+                } else {
+                    $allowedAreas = array_values(array_unique($allowedAreas));
+                }
+                if (!in_array($area, $allowedAreas, true)) {
+                    $allowedAreas[] = $area;
+                }
+
+                $baseSlug = strtolower(preg_replace('/[^a-z0-9]+/i', '-', $title) ?? '');
+                $baseSlug = trim($baseSlug, '-');
+                if ($baseSlug === '') {
+                    $baseSlug = 'custom';
+                }
+
+                $slug = $baseSlug;
+                $suffix = 1;
+                while (isset($registryMap[$slug]) || isset($customMap[$slug])) {
+                    $suffix++;
+                    $slug = $baseSlug . '-' . $suffix;
+                }
+
+                db_exec(
+                    $app->db,
+                    "INSERT INTO menu_custom_items (slug, title, url, parent_slug, sort_order, area, right_slug, enabled, allowed_areas)
+                     VALUES (?, ?, ?, NULL, ?, ?, ?, 1, ?)",
+                    [$slug, $title, $url, 10, $area, $right, json_encode($allowedAreas, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
+                );
+
+                $itemRow = [
+                    'slug' => $slug,
+                    'r_module_slug' => 'custom',
+                    'r_kind' => 'action',
+                    'r_allowed_areas' => json_encode($allowedAreas),
+                    'r_title' => $title,
+                    'r_url' => $url,
+                    'r_parent_slug' => null,
+                    'r_sort_order' => 10,
+                    'r_area' => $area,
+                    'r_right_slug' => $right,
+                    'r_enabled' => 1,
+                    'r_is_custom' => 1,
+                ];
+                $item = self::buildItem($itemRow, true, true);
+
+                return self::jsonResponse([
+                    'ok' => true,
+                    'message' => 'Custom item created.',
+                    'item' => $item,
+                ]);
+            }
+
+            if ($action === 'custom_delete') {
+                $slug = trim((string)($data['slug'] ?? ''));
+                if ($slug === '' || !isset($customMap[$slug])) {
+                    return self::jsonResponse(['ok' => false, 'message' => 'Custom item not found.'], 404);
+                }
+
+                db_tx($app->db, function () use ($app, $slug): void {
+                    db_exec($app->db, "UPDATE menu_registry SET parent_slug=NULL WHERE parent_slug=?", [$slug]);
+                    db_exec($app->db, "UPDATE menu_overrides SET parent_slug=NULL WHERE parent_slug=?", [$slug]);
+                    db_exec($app->db, "UPDATE menu_custom_items SET parent_slug=NULL WHERE parent_slug=?", [$slug]);
+                    db_exec($app->db, "DELETE FROM menu_overrides WHERE slug=?", [$slug]);
+                    db_exec($app->db, "DELETE FROM menu_custom_items WHERE slug=?", [$slug]);
+                });
+
+                return self::jsonResponse(['ok' => true, 'message' => 'Custom item deleted.', 'slug' => $slug]);
             }
 
             return self::jsonResponse(['ok' => false, 'message' => 'Unsupported action.'], 400);
         }, ['right' => 'admin.menu']);
     }
 
-    private static function buildItem(array $row, bool $hasRegistry): array
+    private static function buildItem(array $row, bool $hasRegistry, bool $isCustom): array
     {
         $slug = (string)$row['slug'];
         $allowedAreas = [];
@@ -1159,6 +1551,7 @@ final class MenuBuilder
             'overrides' => $overrides,
             'effective' => $effective,
             'module' => 'System',
+            'is_custom' => $isCustom,
         ];
     }
 
