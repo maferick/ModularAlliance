@@ -86,7 +86,7 @@ return function (ModuleRegistry $registry): void {
         ];
     };
 
-    $registry->route('GET', '/auth/login', function () use ($app): Response {
+    $registry->route('GET', '/auth/login', function () use ($app, $identityResolver): Response {
         $cfg = $app->config['eve_sso'] ?? [];
         $override = $_SESSION['sso_scopes_override'] ?? null;
         if (is_array($override) && !empty($override)) {
