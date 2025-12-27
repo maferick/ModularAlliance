@@ -18,20 +18,7 @@ final class Menu
         // slug, title, url, parent_slug?, sort_order?, area?, right_slug?, enabled?
         $slug = (string)($item['slug'] ?? '');
         if ($slug === '') throw new \RuntimeException("Menu item missing slug");
-        $area = (string)($item['area'] ?? self::AREA_LEFT_MEMBER);
-        $validAreas = [
-            'left',
-            'admin_top',
-            'user_top',
-            self::AREA_LEFT_MEMBER,
-            self::AREA_LEFT_ADMIN,
-            self::AREA_MODULE_TOP,
-            self::AREA_SITE_ADMIN,
-            self::AREA_USER_TOP,
-        ];
-        if (!in_array($area, $validAreas, true)) {
-            $area = self::AREA_LEFT_MEMBER;
-        }
+        $area = self::normalizeArea((string)($item['area'] ?? self::AREA_LEFT_MEMBER), true);
 
         db_exec($this->db, 
             "INSERT INTO menu_registry (slug, title, url, parent_slug, sort_order, area, right_slug, enabled)
@@ -59,6 +46,7 @@ final class Menu
 
     public function tree(string $area, callable $hasRight): array
     {
+        $area = self::normalizeArea($area);
         $rows = db_all($this->db, 
             "SELECT r.slug,
                     COALESCE(o.title, r.title) AS title,
@@ -184,5 +172,42 @@ final class Menu
             'items' => $items,
             'url' => (string)$best['url'],
         ];
+    }
+
+    private static function normalizeArea(string $area, bool $log = false): string
+    {
+        $original = trim($area);
+        if ($original === '') {
+            return 'left';
+        }
+
+        $normalized = strtolower($original);
+        $valid = ['left', 'admin_top', 'user_top'];
+        if (in_array($normalized, $valid, true)) {
+            return $normalized;
+        }
+
+        $map = [
+            self::AREA_LEFT_MEMBER => 'left',
+            self::AREA_LEFT_ADMIN => 'left',
+            self::AREA_MODULE_TOP => 'admin_top',
+            self::AREA_SITE_ADMIN => 'admin_top',
+            self::AREA_USER_TOP => 'user_top',
+            'admin' => 'admin_top',
+            'admin_left' => 'left',
+            'admin_hr' => 'admin_top',
+            'hr' => 'admin_top',
+            'member_left' => 'left',
+            'members' => 'left',
+            'top_left' => 'left',
+            'member_top' => 'user_top',
+            'user' => 'user_top',
+        ];
+
+        $mapped = $map[$normalized] ?? 'left';
+        if ($log) {
+            error_log("Menu area '{$original}' normalized to '{$mapped}'");
+        }
+        return $mapped;
     }
 }
