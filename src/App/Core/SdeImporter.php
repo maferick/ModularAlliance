@@ -10,6 +10,7 @@ final class SdeImporter
     private const BASE_URL = 'https://www.fuzzwork.co.uk/dump/latest/';
     private const DEFAULT_CACHE_DIR = __DIR__ . '/../../../sde';
     private const ENV_CACHE_DIR = 'SDE_CACHE_DIR';
+    private const USER_AGENT = 'ModularAllianceSDE/1.0 (+https://github.com/ModularAlliance)';
 
     private ?string $cacheDir = null;
 
@@ -555,6 +556,7 @@ final class SdeImporter
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FILETIME => true,
             CURLOPT_TIMEOUT => 20,
+            CURLOPT_USERAGENT => self::USER_AGENT,
         ]);
         curl_exec($ch);
         $filetime = (int)curl_getinfo($ch, CURLINFO_FILETIME);
@@ -568,6 +570,7 @@ final class SdeImporter
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_USERAGENT => self::USER_AGENT,
         ]);
         $resp = curl_exec($ch);
         $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
