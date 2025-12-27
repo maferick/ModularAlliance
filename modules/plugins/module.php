@@ -92,7 +92,7 @@ return function (ModuleRegistry $registry): void {
         $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
         $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
-        return Response::html(Layout::page($title, $body, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']), 200);
+        return Response::html(Layout::page($title, $body, $menus['left'], $menus['admin_top'], $menus['user'], $menus['top_left']), 200);
     };
 
     $registry->route('GET', '/admin/plugins', function (Request $req) use ($listPlugins, $renderAdmin, $getDisabled, $protectedSlugs): Response {

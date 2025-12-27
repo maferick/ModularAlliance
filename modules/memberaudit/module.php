@@ -121,7 +121,7 @@ return function (ModuleRegistry $registry): void {
         $loggedIn = ((int)($_SESSION['character_id'] ?? 0) > 0);
         $menus = $app->menu->layoutMenus($_SERVER['REQUEST_URI'] ?? '/', $hasRight, $loggedIn);
 
-        return Layout::page($title, $bodyHtml, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module']);
+        return Layout::page($title, $bodyHtml, $menus['left'], $menus['admin_top'], $menus['user'], $menus['top_left']);
     };
 
     $scopePolicy = new ScopePolicy($app->db, $identityResolver);

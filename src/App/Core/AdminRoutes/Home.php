@@ -18,7 +18,7 @@ final class Home
                        <li><a href='/admin/settings'>Settings</a> – site identity & branding</li>
                        <li><a href='/admin/rights'>Rights</a> – groups & permission grants</li>
                        <li><a href='/admin/users'>Users</a> – assign groups to users</li>
-                       <li><a href='/admin/menu'>Menu Editor</a></li>
+                       <li><a href='/admin/menu-builder'>Menu Builder</a></li>
                        <li><a href='/admin/plugins'>Plugins</a> – manage uploaded plugins</li>
                        <li><a href='/admin/cache'>ESI Cache</a></li>
                      </ul>";

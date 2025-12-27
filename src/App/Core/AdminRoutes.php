@@ -5,7 +5,7 @@ namespace App\Core;
 
 use App\Core\AdminRoutes\Cache;
 use App\Core\AdminRoutes\Home;
-use App\Core\AdminRoutes\Menu;
+use App\Core\AdminRoutes\MenuBuilder;
 use App\Core\AdminRoutes\Rights;
 use App\Core\AdminRoutes\Settings;
 use App\Core\IdentityResolver;
@@ -54,7 +54,7 @@ final class AdminRoutes
                     : "https://images.evetech.net/corporations/{$id}/logo?size=64";
             }
 
-            return Response::html(Layout::page($title, $bodyHtml, $menus['left_member'], $menus['left_admin'], $menus['site_admin'], $menus['user'], $menus['module'], $brandName, $brandLogoUrl), 200);
+            return Response::html(Layout::page($title, $bodyHtml, $menus['left'], $menus['admin_top'], $menus['user'], $menus['top_left'], $brandName, $brandLogoUrl), 200);
         };
 
         Home::register($app, $registry, $render);
@@ -62,6 +62,6 @@ final class AdminRoutes
         Cache::register($app, $registry, $render);
         Rights::register($app, $registry, $render);
         Users::register($app, $registry, $render);
-        Menu::register($app, $registry, $render);
+        MenuBuilder::register($app, $registry, $render);
     }
 }

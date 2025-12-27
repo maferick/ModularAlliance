@@ -8,19 +8,18 @@ final class Layout
     public static function page(
         string $title,
         string $bodyHtml,
-        array $leftMemberTree,
-        array $leftAdminTree,
-        array $siteAdminTree,
+        array $leftTree,
+        array $adminTopTree,
         array $userMenuTree,
-        ?array $moduleMenu = null,
+        ?array $topLeftMenu = null,
         ?string $brandName = null,
         ?string $brandLogoUrl = null
     ): string {
-        $adminHtml = self::renderMenuBootstrap($siteAdminTree);
+        $adminHtml = self::renderMenuBootstrap($adminTopTree);
         $userHtml  = self::renderMenuBootstrap($userMenuTree);
         $currentPath = self::normalizePath($_SERVER['REQUEST_URI'] ?? '/');
-        $sideHtml  = self::renderSideMenuBootstrap($leftMemberTree, $leftAdminTree, $currentPath);
-        $moduleHtml = self::renderModuleMenuBootstrap($moduleMenu);
+        $sideHtml  = self::renderSideMenuBootstrap($leftTree, $currentPath);
+        $moduleHtml = self::renderModuleMenuBootstrap($topLeftMenu);
 
         // Resolve branding centrally (future-proof: callers don't need to remember passing it)
         [$brandName, $brandLogoUrl] = self::resolveBranding($brandName, $brandLogoUrl);
@@ -219,37 +218,13 @@ final class Layout
         return $html;
     }
 
-    private static function renderSideMenuBootstrap(array $memberTree, array $adminTree, string $currentPath): string
+    private static function renderSideMenuBootstrap(array $tree, string $currentPath): string
     {
-        $html = '';
-        $sectionIndex = 0;
+        if (empty($tree)) {
+            return '';
+        }
 
-        $renderSection = function (string $label, string $icon, array $tree, string $badgeClass) use (&$html, &$sectionIndex, $currentPath): void {
-            if (empty($tree)) {
-                return;
-            }
-
-            $sectionIndex++;
-            $collapseId = 'sidebar-section-' . $sectionIndex;
-            $expanded = self::treeHasActive($tree, $currentPath);
-            $expandedAttr = $expanded ? 'true' : 'false';
-            $collapseClass = $expanded ? ' collapse show' : ' collapse';
-            $badgeText = $expanded ? '-' : '+';
-            $html .= '<li class="nav-item">';
-            $html .= '<button class="nav-link d-flex justify-content-between align-items-center w-100' . ($expanded ? ' active' : '') . '" type="button" data-bs-toggle="collapse" data-bs-target="#' . $collapseId . '" aria-expanded="' . $expandedAttr . '">';
-            $html .= '<span><i class="bi ' . htmlspecialchars($icon) . ' me-2"></i>' . htmlspecialchars($label) . '</span>';
-            $html .= '<span class="badge ' . htmlspecialchars($badgeClass) . '">' . $badgeText . '</span>';
-            $html .= '</button>';
-            $html .= '<div class="' . $collapseClass . '" id="' . $collapseId . '">';
-            $html .= '<ul class="nav flex-column ms-3 mt-1">';
-            $html .= self::renderSideMenuItems($tree, $currentPath);
-            $html .= '</ul></div></li>';
-        };
-
-        $renderSection('Member Features', 'bi-grid-1x2', $memberTree, 'text-bg-primary');
-        $renderSection('Admin / HR Tools', 'bi-shield-check', $adminTree, 'text-bg-warning');
-
-        return $html;
+        return self::renderSideMenuItems($tree, $currentPath);
     }
 
     private static function renderSideMenuItems(array $tree, string $currentPath): string
