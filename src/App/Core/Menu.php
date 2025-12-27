@@ -25,15 +25,78 @@ final class Menu
     {
         // slug, title, url, parent_slug?, sort_order?, area?, right_slug?, enabled?
         $moduleSlug = (string)($item['module_slug'] ?? 'system');
-        $slug = (string)($item['slug'] ?? '');
+        $slug = trim((string)($item['slug'] ?? ''));
         $area = self::normalizeArea((string)($item['area'] ?? self::AREA_LEFT_MEMBER), true);
         $parentSlug = $item['parent_slug'] ?? null;
         $kind = self::normalizeKind((string)($item['kind'] ?? ''), $parentSlug, $area);
         $allowedAreas = self::normalizeAllowedAreas($item['allowed_areas'] ?? null, $area, $kind);
+        $url = trim((string)($item['url'] ?? '/'));
         if ($slug === '') {
-            $slug = self::generateSlug($moduleSlug, (string)($item['title'] ?? ''), (string)($item['url'] ?? ''), $kind);
+            $slug = self::generateSlug($moduleSlug, (string)($item['title'] ?? ''), $url, $kind);
         }
         if ($slug === '') throw new \RuntimeException("Menu item missing slug");
+
+        $canonicalSlug = $slug;
+        if ($url !== '') {
+            $canonicalUrl = self::normalizeUrl($url);
+            $existingRows = db_all(
+                $this->db,
+                "SELECT slug, url FROM menu_registry WHERE area = ? ORDER BY id ASC",
+                [$area]
+            );
+            foreach ($existingRows as $existing) {
+                $existingUrl = self::normalizeUrl((string)($existing['url'] ?? ''));
+                if ($existingUrl !== '' && $existingUrl === $canonicalUrl) {
+                    $existingSlug = (string)($existing['slug'] ?? '');
+                    if ($existingSlug !== '' && $existingSlug !== $slug) {
+                        $canonicalSlug = $existingSlug;
+
+                        db_exec($this->db, "UPDATE menu_registry SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $slug]);
+                        db_exec($this->db, "UPDATE menu_overrides SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $slug]);
+
+                        $dupOverride = db_one($this->db, "SELECT * FROM menu_overrides WHERE slug=?", [$slug]);
+                        if ($dupOverride) {
+                            $canonicalOverride = db_one($this->db, "SELECT * FROM menu_overrides WHERE slug=?", [$canonicalSlug]) ?: [];
+                            $fields = ['title', 'url', 'parent_slug', 'sort_order', 'area', 'right_slug', 'enabled'];
+                            foreach ($fields as $field) {
+                                if (($canonicalOverride[$field] ?? null) === null && isset($dupOverride[$field])) {
+                                    $canonicalOverride[$field] = $dupOverride[$field];
+                                }
+                            }
+                            if ($canonicalOverride !== []) {
+                                db_exec(
+                                    $this->db,
+                                    "INSERT INTO menu_overrides (slug, title, url, parent_slug, sort_order, area, right_slug, enabled)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                     ON DUPLICATE KEY UPDATE
+                                       title=VALUES(title),
+                                       url=VALUES(url),
+                                       parent_slug=VALUES(parent_slug),
+                                       sort_order=VALUES(sort_order),
+                                       area=VALUES(area),
+                                       right_slug=VALUES(right_slug),
+                                       enabled=VALUES(enabled)",
+                                    [
+                                        $canonicalSlug,
+                                        $canonicalOverride['title'] ?? null,
+                                        $canonicalOverride['url'] ?? null,
+                                        $canonicalOverride['parent_slug'] ?? null,
+                                        $canonicalOverride['sort_order'] ?? null,
+                                        $canonicalOverride['area'] ?? null,
+                                        $canonicalOverride['right_slug'] ?? null,
+                                        $canonicalOverride['enabled'] ?? null,
+                                    ]
+                                );
+                            }
+                            db_exec($this->db, "DELETE FROM menu_overrides WHERE slug=?", [$slug]);
+                        }
+
+                        db_exec($this->db, "DELETE FROM menu_registry WHERE slug=?", [$slug]);
+                    }
+                    break;
+                }
+            }
+        }
 
         db_exec($this->db, 
             "INSERT INTO menu_registry (slug, module_slug, kind, allowed_areas, title, url, parent_slug, sort_order, area, right_slug, enabled)
@@ -50,12 +113,12 @@ final class Menu
                right_slug=VALUES(right_slug),
                enabled=VALUES(enabled)",
             [
-                $slug,
+                $canonicalSlug,
                 $moduleSlug,
                 $kind,
                 json_encode($allowedAreas, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                 (string)($item['title'] ?? $slug),
-                (string)($item['url'] ?? '/'),
+                $url !== '' ? $url : '/',
                 $parentSlug,
                 (int)($item['sort_order'] ?? 10),
                 $area,
@@ -68,7 +131,7 @@ final class Menu
     public function tree(string $area, callable $hasRight): array
     {
         $area = self::normalizeArea($area);
-        $rows = db_all($this->db, 
+        $rows = db_all($this->db,
             "SELECT r.slug,
                     COALESCE(o.title, r.title) AS title,
                     COALESCE(o.url, r.url) AS url,
@@ -80,16 +143,38 @@ final class Menu
              FROM menu_registry r
              LEFT JOIN menu_overrides o ON o.slug = r.slug
              WHERE COALESCE(o.area, r.area) = ?
-             ORDER BY COALESCE(o.sort_order, r.sort_order) ASC, r.slug ASC",
-            [$area]
+             UNION ALL
+             SELECT c.slug,
+                    COALESCE(o.title, c.title) AS title,
+                    COALESCE(o.url, c.url) AS url,
+                    COALESCE(o.parent_slug, c.parent_slug) AS parent_slug,
+                    COALESCE(o.sort_order, c.sort_order) AS sort_order,
+                    COALESCE(o.area, c.area) AS area,
+                    COALESCE(o.right_slug, c.right_slug) AS right_slug,
+                    COALESCE(o.enabled, c.enabled) AS enabled
+             FROM menu_custom_items c
+             LEFT JOIN menu_overrides o ON o.slug = c.slug
+             WHERE COALESCE(o.area, c.area) = ?
+             ORDER BY sort_order ASC, slug ASC",
+            [$area, $area]
         );
 
         // filter enabled + rights
         $items = [];
+        $seen = [];
         foreach ($rows as $r) {
             if ((int)$r['enabled'] !== 1) continue;
             $right = $r['right_slug'] ?? null;
             if ($right && !$hasRight((string)$right)) continue;
+            $key = self::canonicalKey([
+                'slug' => (string)$r['slug'],
+                'url' => (string)($r['url'] ?? ''),
+                'area' => (string)($r['area'] ?? $area),
+            ]);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
             $items[(string)$r['slug']] = [
                 'slug' => (string)$r['slug'],
                 'title' => (string)$r['title'],
@@ -280,6 +365,37 @@ final class Menu
         }
 
         return $allowed;
+    }
+
+    public static function normalizeUrl(string $url): string
+    {
+        $raw = trim($url);
+        if ($raw === '') {
+            return '';
+        }
+        $parsed = parse_url($raw);
+        if ($parsed !== false && is_array($parsed)) {
+            $path = (string)($parsed['path'] ?? '');
+            $query = (string)($parsed['query'] ?? '');
+            $raw = $path !== '' ? $path : $raw;
+            if ($query !== '') {
+                $raw .= '?' . $query;
+            }
+        }
+        $normalized = strtolower($raw);
+        $normalized = rtrim($normalized, '/');
+        return $normalized === '' ? '/' : $normalized;
+    }
+
+    public static function canonicalKey(array $item): string
+    {
+        $area = self::normalizeArea((string)($item['area'] ?? self::AREA_LEFT));
+        $slug = trim((string)($item['slug'] ?? ''));
+        $url = self::normalizeUrl((string)($item['url'] ?? ''));
+        if ($url === '') {
+            return "slug:{$slug}";
+        }
+        return "{$area}|{$url}";
     }
 
     private static function generateSlug(string $moduleSlug, string $title, string $url, string $kind): string

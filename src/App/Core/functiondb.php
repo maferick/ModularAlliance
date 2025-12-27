@@ -40,6 +40,42 @@ function db_all(Db $db, string $sql, array $params = []): array
     return $stmt->fetchAll();
 }
 
+/**
+ * Expand array parameters into IN (?, ?, ...) placeholder lists.
+ *
+ * @return array{0:string,1:array} [sql, params]
+ */
+function db_expand_in(string $sql, array $params): array
+{
+    $parts = explode('?', $sql);
+    $expected = count($parts) - 1;
+    if ($expected !== count($params)) {
+        return [$sql, $params];
+    }
+
+    $outSql = $parts[0];
+    $outParams = [];
+
+    foreach ($params as $index => $param) {
+        if (is_array($param)) {
+            if ($param === []) {
+                $outSql .= 'NULL';
+            } else {
+                $outSql .= implode(', ', array_fill(0, count($param), '?'));
+                foreach ($param as $value) {
+                    $outParams[] = $value;
+                }
+            }
+        } else {
+            $outSql .= '?';
+            $outParams[] = $param;
+        }
+        $outSql .= $parts[$index + 1];
+    }
+
+    return [$outSql, $outParams];
+}
+
 function db_value(Db $db, string $sql, array $params = [], mixed $default = null): mixed
 {
     $stmt = $db->pdo()->prepare($sql);
