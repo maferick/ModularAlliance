@@ -364,7 +364,8 @@ final class SdeImporter
         $setSql = [];
         foreach ($columns as $col => $headerName) {
             if (!isset($headerMap[$headerName])) {
-                throw new \RuntimeException("Missing column {$headerName} in {$csvPath}");
+                $setSql[] = "`{$col}` = NULL";
+                continue;
             }
             $setSql[] = "`{$col}` = {$headerMap[$headerName]}";
         }
@@ -413,11 +414,7 @@ final class SdeImporter
         $orderedCols = array_keys($columns);
         $columnIndexes = [];
         foreach ($columns as $col => $headerName) {
-            if (!isset($headerIndexes[$headerName])) {
-                fclose($handle);
-                throw new \RuntimeException("Missing column {$headerName} in {$csvPath}");
-            }
-            $columnIndexes[$col] = $headerIndexes[$headerName];
+            $columnIndexes[$col] = $headerIndexes[$headerName] ?? null;
         }
 
         $batchSize = 2000;
@@ -431,6 +428,10 @@ final class SdeImporter
                 $entry = [];
                 foreach ($orderedCols as $col) {
                     $idx = $columnIndexes[$col];
+                    if ($idx === null || !array_key_exists($idx, $row)) {
+                        $entry[] = null;
+                        continue;
+                    }
                     $entry[] = $row[$idx] !== '' ? $row[$idx] : null;
                 }
                 $values[] = $entry;
