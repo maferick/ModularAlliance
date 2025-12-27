@@ -299,26 +299,26 @@ final class SdeImporter
 
     private function decompressBz2(string $source, string $dest): void
     {
-        $in = bzopen($source, 'r');
+        $in = \bzopen($source, 'r');
         if (!$in) {
             throw new \RuntimeException('Unable to open bzip file: ' . $source);
         }
 
         $out = fopen($dest, 'wb');
         if (!$out) {
-            bzclose($in);
+            \bzclose($in);
             throw new \RuntimeException('Unable to write decompressed file: ' . $dest);
         }
 
         while (!feof($in)) {
-            $chunk = bzread($in, 8192);
+            $chunk = \bzread($in, 8192);
             if ($chunk === false) {
                 break;
             }
             fwrite($out, $chunk);
         }
 
-        bzclose($in);
+        \bzclose($in);
         fclose($out);
     }
 
