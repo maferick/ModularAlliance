@@ -6,6 +6,7 @@ namespace App\Core;
 use App\Core\AdminRoutes\Cache;
 use App\Core\AdminRoutes\Home;
 use App\Core\AdminRoutes\MenuBuilder;
+use App\Core\AdminRoutes\Migrations;
 use App\Core\AdminRoutes\Rights;
 use App\Core\AdminRoutes\Settings;
 use App\Core\IdentityResolver;
@@ -60,6 +61,7 @@ final class AdminRoutes
         Home::register($app, $registry, $render);
         Settings::register($app, $registry, $render);
         Cache::register($app, $registry, $render);
+        Migrations::register($app, $registry, $render);
         Rights::register($app, $registry, $render);
         Users::register($app, $registry, $render);
         MenuBuilder::register($app, $registry, $render);

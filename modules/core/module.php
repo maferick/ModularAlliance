@@ -30,6 +30,7 @@ return function (ModuleRegistry $registry): void {
     $registry->right('admin.access', 'Access admin dashboard');
     $registry->right('admin.settings', 'Manage site settings');
     $registry->right('admin.cache', 'Manage cache');
+    $registry->right('admin.migrations', 'Manage database migrations');
     $registry->right('admin.rights', 'Manage rights & groups');
     $registry->right('admin.users', 'Manage users & groups');
     $registry->right('admin.menu', 'Edit menu overrides');
@@ -40,6 +41,7 @@ return function (ModuleRegistry $registry): void {
     $registry->menu(['slug' => 'admin.root', 'title' => 'Admin Home', 'url' => '/admin', 'sort_order' => 10, 'area' => 'site_admin_top', 'right_slug' => 'admin.access']);
     $registry->menu(['slug' => 'admin.settings', 'title' => 'Settings', 'url' => '/admin/settings', 'sort_order' => 15, 'area' => 'site_admin_top', 'right_slug' => 'admin.settings']);
     $registry->menu(['slug' => 'admin.cache', 'title' => 'ESI Cache', 'url' => '/admin/cache', 'sort_order' => 20, 'area' => 'site_admin_top', 'right_slug' => 'admin.cache']);
+    $registry->menu(['slug' => 'admin.migrations', 'title' => 'Migrations', 'url' => '/admin/migrations', 'sort_order' => 22, 'area' => 'site_admin_top', 'right_slug' => 'admin.migrations']);
     $registry->menu(['slug' => 'admin.rights', 'title' => 'Rights', 'url' => '/admin/rights', 'sort_order' => 25, 'area' => 'site_admin_top', 'right_slug' => 'admin.rights']);
     $registry->menu(['slug' => 'admin.users', 'title' => 'Users & Groups', 'url' => '/admin/users', 'sort_order' => 30, 'area' => 'site_admin_top', 'right_slug' => 'admin.users']);
     $registry->menu(['slug' => 'admin.menu', 'title' => 'Menu Builder', 'url' => '/admin/menu-builder', 'sort_order' => 40, 'area' => 'site_admin_top', 'right_slug' => 'admin.menu']);
