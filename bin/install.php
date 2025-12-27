@@ -152,7 +152,8 @@ $statements = [
           'character','corporation','alliance',
           'system','constellation','region',
           'type','group','category',
-          'station','structure'
+          'station','structure',
+          'race','bloodline','faction'
         ) NOT NULL,
         entity_id BIGINT UNSIGNED NOT NULL,
         name VARCHAR(255) NOT NULL,

@@ -1,4 +1,4 @@
--- Fix universe_entities.entity_type enum to include all types used by Universe + modules
+-- Extend universe_entities.entity_type to include race, bloodline, faction
 ALTER TABLE universe_entities
 MODIFY entity_type ENUM(
   'character',
