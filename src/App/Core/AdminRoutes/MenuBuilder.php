@@ -331,7 +331,7 @@ final class MenuBuilder
                   }));
                   entries.sort((a, b) => a.label.localeCompare(b.label));
 
-                  editParent.innerHTML = "<option value=''>No parent (default)</option>";
+                  editParent.innerHTML = `<option value=''>No parent (default)</option>`;
                   entries.forEach(entry => {
                     const option = document.createElement('option');
                     option.value = entry.slug;
@@ -341,7 +341,7 @@ final class MenuBuilder
                 }
 
                 function buildRightOptions(showTechnical) {
-                  editRight.innerHTML = "<option value=''>Default</option>";
+                  editRight.innerHTML = `<option value=''>Default</option>`;
                   rights.forEach(right => {
                     const option = document.createElement('option');
                     const label = right.description || right.slug;
