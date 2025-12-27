@@ -8,7 +8,10 @@ use PDO;
 final class SdeImporter
 {
     private const BASE_URL = 'https://www.fuzzwork.co.uk/dump/latest/';
-    private const CACHE_DIR = __DIR__ . '/../../../sde';
+    private const DEFAULT_CACHE_DIR = __DIR__ . '/../../../sde';
+    private const ENV_CACHE_DIR = 'SDE_CACHE_DIR';
+
+    private ?string $cacheDir = null;
 
     /** @var array<string, array<string, mixed>> */
     private array $files = [
@@ -188,11 +191,7 @@ final class SdeImporter
 
     private function ensureCacheDir(): void
     {
-        if (!is_dir(self::CACHE_DIR)) {
-            if (!mkdir(self::CACHE_DIR, 0o755, true) && !is_dir(self::CACHE_DIR)) {
-                throw new \RuntimeException('Unable to create cache directory: ' . self::CACHE_DIR);
-            }
-        }
+        $this->cacheDir = $this->cacheDir ?? $this->resolveCacheDir();
     }
 
     /** @param array<int, string> $logLines */
@@ -201,7 +200,7 @@ final class SdeImporter
         $url = self::BASE_URL . $filename;
         $md5Url = $url . '.md5';
 
-        $localPath = rtrim(self::CACHE_DIR, '/') . '/' . $filename;
+        $localPath = rtrim($this->cacheDir(), '/') . '/' . $filename;
         $remoteMd5 = $this->fetchRemoteMd5($md5Url);
         $remoteMtime = $this->fetchRemoteMtime($url);
 
@@ -241,7 +240,7 @@ final class SdeImporter
     /** @param array<int, string> $logLines */
     private function decompressIfNeeded(string $filename, array &$logLines): string
     {
-        $bz2Path = rtrim(self::CACHE_DIR, '/') . '/' . $filename;
+        $bz2Path = rtrim($this->cacheDir(), '/') . '/' . $filename;
         $csvPath = substr($bz2Path, 0, -4);
 
         $bzMtime = is_file($bz2Path) ? (int)filemtime($bz2Path) : 0;
@@ -255,6 +254,46 @@ final class SdeImporter
         }
 
         return $csvPath;
+    }
+
+    private function cacheDir(): string
+    {
+        if ($this->cacheDir === null) {
+            $this->cacheDir = $this->resolveCacheDir();
+        }
+
+        return $this->cacheDir;
+    }
+
+    private function resolveCacheDir(): string
+    {
+        $envDir = getenv(self::ENV_CACHE_DIR);
+        $explicitDir = is_string($envDir) && $envDir !== '' ? $envDir : null;
+        $preferredDir = $explicitDir ?? self::DEFAULT_CACHE_DIR;
+        $fallbackDir = rtrim(sys_get_temp_dir(), '/') . '/modularalliance/sde';
+
+        if ($this->ensureDirExists($preferredDir)) {
+            return $preferredDir;
+        }
+
+        if ($explicitDir !== null) {
+            throw new \RuntimeException('Unable to create cache directory: ' . $preferredDir);
+        }
+
+        if ($this->ensureDirExists($fallbackDir)) {
+            return $fallbackDir;
+        }
+
+        throw new \RuntimeException('Unable to create cache directory: ' . $preferredDir . ' (fallback failed: ' . $fallbackDir . ')');
+    }
+
+    private function ensureDirExists(string $path): bool
+    {
+        if (is_dir($path)) {
+            return is_writable($path);
+        }
+
+        return mkdir($path, 0o755, true);
     }
 
     private function decompressBz2(string $source, string $dest): void
