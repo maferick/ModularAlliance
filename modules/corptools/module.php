@@ -492,7 +492,7 @@ return function (ModuleRegistry $registry): void {
         return true;
     };
 
-    $getCorpProfiles = function (array $corpIds) use ($app): array {
+    $getCorpProfiles = function (array $corpIds) use ($app, $universeShared): array {
         $client = new EsiClient(new HttpClient());
         $cache = new EsiCache($app->db, $client);
 
@@ -512,7 +512,7 @@ return function (ModuleRegistry $registry): void {
                 86400,
                 fn() => $client->get("/latest/corporations/{$corpId}/icons/")
             );
-            $name = (string)($corp['name'] ?? 'Unknown');
+            $name = $universeShared->nameOrUnknown('corporation', $corpId, 'Corporation');
             $ticker = (string)($corp['ticker'] ?? '');
             $label = $ticker !== '' ? "{$name} [{$ticker}]" : $name;
             $profiles[$corpId] = [
@@ -723,10 +723,18 @@ return function (ModuleRegistry $registry): void {
         return $enabled;
     };
 
-    $updateMemberSummary = function (int $userId, int $mainCharacterId, string $mainName) use ($app, $parseEsiDatetimeToMysql, $identityResolver): void {
-        $org = $identityResolver->resolveCharacter($mainCharacterId);
-        $corpId = (int)($org['corp_id'] ?? 0);
-        $allianceId = (int)($org['alliance_id'] ?? 0);
+    $updateMemberSummary = function (int $userId, int $mainCharacterId, string $mainName) use ($app, $parseEsiDatetimeToMysql): void {
+        $summaryOrg = db_one($app->db, 
+            "SELECT character_id, corp_id, alliance_id
+             FROM module_corptools_character_summary
+             WHERE user_id=?
+             ORDER BY is_main DESC, updated_at DESC, character_id ASC
+             LIMIT 1",
+            [$userId]
+        );
+        $corpId = (int)($summaryOrg['corp_id'] ?? 0);
+        $allianceId = (int)($summaryOrg['alliance_id'] ?? 0);
+        $orgCharacterId = (int)($summaryOrg['character_id'] ?? $mainCharacterId);
 
         $stats = db_one($app->db, 
             "SELECT MAX(total_sp) AS max_sp, MIN(audit_loaded) AS audit_loaded
@@ -744,7 +752,7 @@ return function (ModuleRegistry $registry): void {
             $historyRow = db_one($app->db, 
                 "SELECT data_json FROM module_corptools_character_audit
                  WHERE character_id=? AND category='corp_history' LIMIT 1",
-                [$mainCharacterId]
+                [$orgCharacterId]
             );
             if ($historyRow) {
                 $historyPayloads = json_decode((string)($historyRow['data_json'] ?? '[]'), true);
@@ -907,9 +915,36 @@ return function (ModuleRegistry $registry): void {
             return ['status' => 'failed', 'message' => 'Audit collectors unavailable'];
         }
 
+        $resolveOrgFromProfile = function (int $characterId, array $profile) use ($app): array {
+            $characterData = $profile['character']['data'] ?? null;
+            $hasCorp = is_array($characterData) && array_key_exists('corporation_id', $characterData);
+            $hasAlliance = is_array($characterData) && array_key_exists('alliance_id', $characterData);
+            $corpId = $hasCorp ? (int)($characterData['corporation_id'] ?? 0) : null;
+            $allianceId = $hasAlliance ? (int)($characterData['alliance_id'] ?? 0) : null;
+
+            if (!$hasCorp || ($corpId ?? 0) <= 0) {
+                $existing = db_one($app->db, 
+                    "SELECT corp_id, alliance_id FROM module_corptools_character_summary WHERE character_id=? LIMIT 1",
+                    [$characterId]
+                ) ?? [];
+                if (($corpId ?? 0) <= 0) {
+                    $corpId = (int)($existing['corp_id'] ?? 0);
+                }
+                if (!$hasAlliance) {
+                    $allianceId = (int)($existing['alliance_id'] ?? 0);
+                }
+            }
+
+            return [
+                'corp_id' => $corpId ?? 0,
+                'alliance_id' => $allianceId ?? 0,
+                'corp_known' => $hasCorp && ($corpId ?? 0) > 0,
+                'alliance_known' => $hasAlliance,
+            ];
+        };
+
         $batchSize = 50;
         $offset = 0;
-        $now = time();
         $refreshThreshold = 300;
         $throttleMs = (int)($context['throttle_ms'] ?? 0);
         $logLines = [];
@@ -971,13 +1006,18 @@ return function (ModuleRegistry $registry): void {
 
                 $identityResolver->upsertIdentity($mainCharacterId, $userId, true);
                 $mainProfile = $universe->characterProfile($mainCharacterId);
-                $mainCorpId = (int)($mainProfile['corporation']['id'] ?? 0);
-                $mainAllianceId = (int)($mainProfile['alliance']['id'] ?? 0);
-                $identityResolver->upsertOrgMapping($mainCharacterId, $mainCorpId, $mainAllianceId);
+                $mainOrgIds = $resolveOrgFromProfile($mainCharacterId, $mainProfile);
+                if ($mainOrgIds['corp_known']) {
+                    $identityResolver->upsertOrgMappingFromEsi(
+                        $mainCharacterId,
+                        (int)$mainOrgIds['corp_id'],
+                        (bool)$mainOrgIds['alliance_known'],
+                        (int)$mainOrgIds['alliance_id']
+                    );
+                }
 
-                $mainOrg = $identityResolver->resolveCharacter($mainCharacterId);
-                $corpId = (int)($mainOrg['corp_id'] ?? 0);
-                $allianceId = (int)($mainOrg['alliance_id'] ?? 0);
+                $corpId = (int)($mainOrgIds['corp_id'] ?? 0);
+                $allianceId = (int)($mainOrgIds['alliance_id'] ?? 0);
 
                 $scopeSet = $scopePolicy->getEffectiveScopesForContext($userId, $corpId, $allianceId);
                 $requiredScopes = $scopeSet['required'] ?? [];
@@ -1018,17 +1058,25 @@ return function (ModuleRegistry $registry): void {
 
                     $profile = $characterId === $mainCharacterId ? $mainProfile : $universe->characterProfile($characterId);
                     $identityResolver->upsertIdentity($characterId, $userId, $characterId === $mainCharacterId);
-                    $corpId = (int)($profile['corporation']['id'] ?? 0);
-                    $allianceId = (int)($profile['alliance']['id'] ?? 0);
-                    $identityResolver->upsertOrgMapping($characterId, $corpId, $allianceId);
+                    $orgIds = $resolveOrgFromProfile($characterId, $profile);
+                    if ($orgIds['corp_known']) {
+                        $identityResolver->upsertOrgMappingFromEsi(
+                            $characterId,
+                            (int)$orgIds['corp_id'],
+                            (bool)$orgIds['alliance_known'],
+                            (int)$orgIds['alliance_id']
+                        );
+                    }
 
                     $characterName = (string)($profile['character']['name'] ?? ($character['character_name'] ?? 'Unknown'));
                     $baseSummary = [
                         'is_main' => $characterId === $mainCharacterId ? 1 : 0,
+                        'corp_id' => (int)($orgIds['corp_id'] ?? 0),
+                        'alliance_id' => (int)($orgIds['alliance_id'] ?? 0),
                     ];
 
                     try {
-                        db_exec($dispatcher, 
+                        $dispatcher->run(
                             $userId,
                             $characterId,
                             $characterName,
@@ -3556,9 +3604,9 @@ return function (ModuleRegistry $registry): void {
         return Response::html($renderPage('CorpTools Status', $body), 200);
     }, ['right' => 'corptools.admin']);
 
-    $registry->route('GET', '/admin/corptools/identity', function () use ($app, $renderPage, $csrfToken, $universeShared): Response {
+    $registry->route('GET', '/admin/corptools/identity', function () use ($app, $renderPage, $csrfToken): Response {
         $stats = identity_mapping_stats($app->db);
-        $mismatches = identity_mapping_mismatches($app->db);
+        $rows = identity_diagnostics_rows($app->db, 250);
 
         $flash = $_SESSION['corptools_identity_flash'] ?? null;
         unset($_SESSION['corptools_identity_flash']);
@@ -3569,36 +3617,70 @@ return function (ModuleRegistry $registry): void {
             $flashHtml = "<div class='alert alert-{$type}'>{$message}</div>";
         }
 
-        $formatOrg = function (string $type, int $id) use ($universeShared): string {
-            return corptools_format_org($universeShared, $type, $id);
-        };
-
         $rowsHtml = '';
-        foreach ($mismatches as $row) {
+        foreach ($rows as $row) {
             $userLabel = htmlspecialchars((string)($row['user_public_id'] ?? 'Unknown'));
             $characterLabel = htmlspecialchars((string)($row['character_name'] ?? 'Unknown'));
+            $characterId = (int)($row['character_id'] ?? 0);
             $isMain = (int)($row['is_main'] ?? 0) === 1 ? 'Yes' : 'No';
-            $mappedCorp = htmlspecialchars($formatOrg('corporation', (int)($row['mapped_corp_id'] ?? 0)));
-            $mappedAlliance = htmlspecialchars($formatOrg('alliance', (int)($row['mapped_alliance_id'] ?? 0)));
-            $summaryCorp = htmlspecialchars($formatOrg('corporation', (int)($row['summary_corp_id'] ?? 0)));
-            $summaryAlliance = htmlspecialchars($formatOrg('alliance', (int)($row['summary_alliance_id'] ?? 0)));
-            $mappedVerified = htmlspecialchars((string)($row['mapped_verified_at'] ?? '—'));
-            $summaryUpdated = htmlspecialchars((string)($row['summary_updated_at'] ?? '—'));
+
+            $summaryCorpId = (int)($row['summary_corp_id'] ?? 0);
+            $summaryAllianceId = (int)($row['summary_alliance_id'] ?? 0);
+            $corpName = $summaryCorpId > 0
+                ? htmlspecialchars((string)($row['corp_name'] ?? 'Unknown'))
+                : '—';
+            $allianceName = $summaryAllianceId > 0
+                ? htmlspecialchars((string)($row['alliance_name'] ?? 'Unknown'))
+                : '—';
+
+            $corpError = (string)($row['corp_error'] ?? '');
+            $corpFailCount = (int)($row['corp_fail_count'] ?? 0);
+            $corpAttempt = (string)($row['corp_last_attempt_at'] ?? '');
+            $corpErrorLabel = $corpFailCount > 0 ? "{$corpFailCount}× {$corpError}" : '—';
+            $corpErrorLabel = htmlspecialchars($corpErrorLabel);
+            $corpErrorDetail = $corpAttempt !== ''
+                ? "{$corpErrorLabel}<div class='text-muted small'>" . htmlspecialchars($corpAttempt) . "</div>"
+                : $corpErrorLabel;
+
+            $alliError = (string)($row['alliance_error'] ?? '');
+            $alliFailCount = (int)($row['alliance_fail_count'] ?? 0);
+            $alliAttempt = (string)($row['alliance_last_attempt_at'] ?? '');
+            $alliErrorLabel = $alliFailCount > 0 ? "{$alliFailCount}× {$alliError}" : '—';
+            $alliErrorLabel = htmlspecialchars($alliErrorLabel);
+            $alliErrorDetail = $alliAttempt !== ''
+                ? "{$alliErrorLabel}<div class='text-muted small'>" . htmlspecialchars($alliAttempt) . "</div>"
+                : $alliErrorLabel;
+
+            $lastRefresh = (string)($row['org_verified_at'] ?? '');
+            if ($lastRefresh === '') {
+                $lastRefresh = (string)($row['summary_updated_at'] ?? '—');
+            }
 
             $rowsHtml .= "<tr>
                 <td>{$userLabel}</td>
-                <td>{$characterLabel}</td>
+                <td>
+                  <div class='fw-semibold'>{$characterLabel}</div>
+                  <div class='text-muted small'>ID {$characterId}</div>
+                </td>
                 <td>{$isMain}</td>
-                <td>{$mappedCorp}</td>
-                <td>{$mappedAlliance}</td>
-                <td>{$summaryCorp}</td>
-                <td>{$summaryAlliance}</td>
-                <td>{$mappedVerified}</td>
-                <td>{$summaryUpdated}</td>
+                <td>{$summaryCorpId}</td>
+                <td>{$corpName}</td>
+                <td>{$corpErrorDetail}</td>
+                <td>{$summaryAllianceId}</td>
+                <td>{$allianceName}</td>
+                <td>{$alliErrorDetail}</td>
+                <td>" . htmlspecialchars($lastRefresh) . "</td>
+                <td>
+                  <form method='post' action='/admin/corptools/identity/rebuild' class='d-inline'>
+                    <input type='hidden' name='csrf_token' value='" . htmlspecialchars($csrfToken('corptools_identity_rebuild')) . "'>
+                    <input type='hidden' name='character_id' value='" . htmlspecialchars((string)$characterId) . "'>
+                    <button class='btn btn-sm btn-outline-primary'>Rebuild identity</button>
+                  </form>
+                </td>
               </tr>";
         }
         if ($rowsHtml === '') {
-            $rowsHtml = "<tr><td colspan='9' class='text-muted'>No mismatches detected.</td></tr>";
+            $rowsHtml = "<tr><td colspan='11' class='text-muted'>No identity rows found.</td></tr>";
         }
 
         $csrf = $csrfToken('corptools_identity_rebuild');
@@ -3610,7 +3692,7 @@ return function (ModuleRegistry $registry): void {
             </div>
             <form method='post' action='/admin/corptools/identity/rebuild'>
               <input type='hidden' name='csrf_token' value='" . htmlspecialchars($csrf) . "'>
-              <button class='btn btn-sm btn-outline-primary'>Rebuild mappings</button>
+              <button class='btn btn-sm btn-outline-primary'>Rebuild all mappings</button>
             </form>
           </div>
           <div class='row g-3 mt-3'>
@@ -3620,7 +3702,7 @@ return function (ModuleRegistry $registry): void {
             <div class='col-md-3'><div class='card card-body'><div class='text-muted small'>Stale orgs</div><div class='fs-5 fw-semibold'>{$stats['stale_orgs']}</div></div></div>
           </div>
           <div class='card card-body mt-3'>
-            <div class='fw-semibold mb-2'>Mismatches vs legacy summaries</div>
+            <div class='fw-semibold mb-2'>Identity resolution by character</div>
             <div class='table-responsive'>
               <table class='table table-sm align-middle'>
                 <thead>
@@ -3628,12 +3710,14 @@ return function (ModuleRegistry $registry): void {
                     <th>User</th>
                     <th>Character</th>
                     <th>Main</th>
-                    <th>Mapped Corp</th>
-                    <th>Mapped Alliance</th>
-                    <th>Summary Corp</th>
-                    <th>Summary Alliance</th>
-                    <th>Mapped Verified</th>
-                    <th>Summary Updated</th>
+                    <th>Summary Corp ID</th>
+                    <th>Corp Name</th>
+                    <th>Corp Errors</th>
+                    <th>Summary Alliance ID</th>
+                    <th>Alliance Name</th>
+                    <th>Alliance Errors</th>
+                    <th>Last Refresh</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>{$rowsHtml}</tbody>
@@ -3647,6 +3731,16 @@ return function (ModuleRegistry $registry): void {
     $registry->route('POST', '/admin/corptools/identity/rebuild', function (Request $req) use ($app, $csrfCheck): Response {
         if (!$csrfCheck('corptools_identity_rebuild', (string)($req->post['csrf_token'] ?? ''))) {
             $_SESSION['corptools_identity_flash'] = ['type' => 'danger', 'message' => 'Invalid CSRF token.'];
+            return Response::redirect('/admin/corptools/identity');
+        }
+
+        $characterId = (int)($req->post['character_id'] ?? 0);
+        if ($characterId > 0) {
+            $stats = identity_mapping_rebuild_character($app->db, $characterId);
+            $_SESSION['corptools_identity_flash'] = [
+                'type' => 'success',
+                'message' => "Rebuilt identity for character {$characterId}. Identities: {$stats['identities']}, orgs: {$stats['orgs']}, missing orgs: {$stats['missing_orgs']}, stale orgs: {$stats['stale_orgs']}.",
+            ];
             return Response::redirect('/admin/corptools/identity');
         }
 

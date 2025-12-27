@@ -279,6 +279,116 @@ function identity_mapping_mismatches(Db $db, int $limit = 50): array
     );
 }
 
+function identity_diagnostics_rows(Db $db, int $limit = 200): array
+{
+    return db_all(
+        $db,
+        "SELECT ci.user_id,
+                ci.character_id,
+                ci.is_main,
+                u.public_id AS user_public_id,
+                COALESCE(cl.character_name, u.character_name, 'Unknown') AS character_name,
+                co.verified_at AS org_verified_at,
+                cs.corp_id AS summary_corp_id,
+                cs.alliance_id AS summary_alliance_id,
+                cs.updated_at AS summary_updated_at,
+                corp.name AS corp_name,
+                corp.last_error AS corp_error,
+                corp.fail_count AS corp_fail_count,
+                corp.last_attempt_at AS corp_last_attempt_at,
+                alli.name AS alliance_name,
+                alli.last_error AS alliance_error,
+                alli.fail_count AS alliance_fail_count,
+                alli.last_attempt_at AS alliance_last_attempt_at
+         FROM core_character_identities ci
+         LEFT JOIN eve_users u ON u.id=ci.user_id
+         LEFT JOIN character_links cl ON cl.character_id=ci.character_id AND cl.status='linked'
+         LEFT JOIN core_character_orgs co ON co.character_id=ci.character_id
+         LEFT JOIN module_corptools_character_summary cs ON cs.character_id=ci.character_id
+         LEFT JOIN universe_entities corp ON corp.entity_type='corporation' AND corp.entity_id=cs.corp_id
+         LEFT JOIN universe_entities alli ON alli.entity_type='alliance' AND alli.entity_id=cs.alliance_id
+         ORDER BY ci.is_main DESC, ci.user_id ASC, ci.character_id ASC
+         LIMIT ?",
+        [$limit]
+    );
+}
+
+function identity_mapping_rebuild_character(Db $db, int $characterId): array
+{
+    if ($characterId <= 0) {
+        return identity_mapping_stats($db);
+    }
+
+    db_exec(
+        $db,
+        "INSERT INTO core_character_identities (character_id, user_id, is_main, last_verified_at)
+         SELECT character_id, user_id, 0, linked_at
+         FROM character_links
+         WHERE status='linked' AND character_id=?
+         ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), last_verified_at=VALUES(last_verified_at)",
+        [$characterId]
+    );
+
+    db_exec(
+        $db,
+        "INSERT INTO core_character_identities (character_id, user_id, is_main, last_verified_at)
+         SELECT character_id, user_id, 0, updated_at
+         FROM module_charlink_links
+         WHERE character_id=?
+         ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), last_verified_at=VALUES(last_verified_at)",
+        [$characterId]
+    );
+
+    db_exec(
+        $db,
+        "INSERT INTO core_character_identities (character_id, user_id, is_main, last_verified_at)
+         SELECT character_id, id AS user_id, 1, UTC_TIMESTAMP()
+         FROM eve_users
+         WHERE character_id=?
+         ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), is_main=1, last_verified_at=VALUES(last_verified_at)",
+        [$characterId]
+    );
+
+    db_exec(
+        $db,
+        "UPDATE core_character_identities ci
+         JOIN eve_users u ON u.id=ci.user_id
+         SET ci.is_main = IF(ci.character_id = u.character_id, 1, 0)
+         WHERE ci.character_id=?",
+        [$characterId]
+    );
+
+    db_exec(
+        $db,
+        "INSERT INTO core_character_orgs (character_id, corp_id, alliance_id, verified_at)
+         SELECT ci.character_id, cs.corp_id, cs.alliance_id, cs.updated_at
+         FROM core_character_identities ci
+         JOIN module_corptools_character_summary cs ON cs.character_id=ci.character_id
+         WHERE ci.character_id=?
+         ON DUPLICATE KEY UPDATE
+           corp_id=VALUES(corp_id),
+           alliance_id=VALUES(alliance_id),
+           verified_at=VALUES(verified_at)",
+        [$characterId]
+    );
+
+    db_exec(
+        $db,
+        "INSERT INTO core_character_orgs (character_id, corp_id, alliance_id, verified_at)
+         SELECT ci.character_id, ms.corp_id, ms.alliance_id, ms.updated_at
+         FROM core_character_identities ci
+         JOIN module_corptools_member_summary ms ON ms.user_id=ci.user_id AND ci.is_main=1
+         WHERE ci.character_id=?
+         ON DUPLICATE KEY UPDATE
+           corp_id=IF(VALUES(corp_id) > 0, VALUES(corp_id), core_character_orgs.corp_id),
+           alliance_id=IF(VALUES(alliance_id) > 0, VALUES(alliance_id), core_character_orgs.alliance_id),
+           verified_at=IF(core_character_orgs.verified_at IS NULL OR VALUES(verified_at) > core_character_orgs.verified_at, VALUES(verified_at), core_character_orgs.verified_at)",
+        [$characterId]
+    );
+
+    return identity_mapping_stats($db);
+}
+
 function identity_mapping_rebuild(Db $db): array
 {
     db_exec(

@@ -1762,9 +1762,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $corpId = (int)($req->post['corp_id'] ?? 0);
-        $corpName = trim((string)($req->post['corp_name'] ?? ''));
         $allianceId = (int)($req->post['alliance_id'] ?? 0);
-        $allianceName = trim((string)($req->post['alliance_name'] ?? ''));
 
         if ($type === 'alt_corp' && $corpId <= 0) {
             return Response::text('Select a corporation from the search results.', 422);
@@ -1815,9 +1813,7 @@ return function (ModuleRegistry $registry): void {
         }
         $config = [
             'corp_id' => $corpId,
-            'corp_name' => $corpName,
             'alliance_id' => $allianceId,
-            'alliance_name' => $allianceName,
             'group_ids' => $groupIds,
             'group_slugs' => $groupSlugs,
             'exempt_user_ids' => $exemptUserIds,
@@ -2169,9 +2165,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $corpId = (int)($req->post['corp_id'] ?? 0);
-        $corpName = trim((string)($req->post['corp_name'] ?? ''));
         $allianceId = (int)($req->post['alliance_id'] ?? 0);
-        $allianceName = trim((string)($req->post['alliance_name'] ?? ''));
 
         if ($type === 'alt_corp' && $corpId <= 0) {
             return Response::text('Select a corporation from the search results.', 422);
@@ -2224,9 +2218,7 @@ return function (ModuleRegistry $registry): void {
 
         $config = [
             'corp_id' => $corpId,
-            'corp_name' => $corpName,
             'alliance_id' => $allianceId,
-            'alliance_name' => $allianceName,
             'group_ids' => $groupIds,
             'group_slugs' => $groupSlugs,
             'exempt_user_ids' => $exemptUserIds,

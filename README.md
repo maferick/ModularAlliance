@@ -24,6 +24,12 @@ This repo is intentionally designed as a platform, not a one-off site:
   - payload stored in `payload_json` (longtext)
 - **Universe Resolver** cache in MariaDB (`universe_entities`) to translate IDs → names/icons
 
+## Identity + Universe Name Resolution
+
+- Summary tables store only IDs (corp/alliance). All name resolution comes from `universe_entities`.
+- Failed name lookups never overwrite existing names; error metadata is tracked in `universe_entities`.
+- The `universe.repair_unknowns` cron job re-attempts missing names using local SDE first, then public ESI.
+
 ## Configuration
 
 The live site reads a server-only config file (not in git):
