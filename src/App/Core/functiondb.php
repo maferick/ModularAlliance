@@ -2,8 +2,6 @@
 declare(strict_types=1);
 
 use App\Core\Db;
-use PDO;
-use Throwable;
 
 function db_normalize_params(array $params): array
 {

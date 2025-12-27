@@ -6,7 +6,7 @@ require APP_ROOT . '/core/bootstrap.php';
 
 use App\Core\App;
 
-$app = App::boot();
+$app = App::boot(false);
 
 $m = $app->migrator;
 $m->ensureLogTable();
