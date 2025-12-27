@@ -63,6 +63,21 @@ return function (ModuleRegistry $registry): void {
             return $importer->refresh($context);
         },
     ]);
+    JobRegistry::register([
+        'key' => 'universe.repair_unknowns',
+        'name' => 'Universe Repair Unknowns',
+        'description' => 'Refresh missing or unknown universe entity names via SDE/ESI.',
+        'schedule' => 3600,
+        'handler' => function (App $app, array $context = []): array {
+            $limit = (int)($context['limit'] ?? 200);
+            $universe = new Universe($app->db);
+            $result = $universe->repairUnknowns($limit);
+            return [
+                'message' => "Universe repair complete. Repaired {$result['repaired']} of {$result['attempted']} entities.",
+                'metrics' => $result,
+            ];
+        },
+    ]);
     JobRegistry::sync($app->db);
 
     $registry->route('GET', '/', function () use ($app, $hasRight, $universeShared, $identityResolver): Response {

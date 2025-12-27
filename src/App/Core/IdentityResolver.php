@@ -137,6 +137,31 @@ final class IdentityResolver
         );
     }
 
+    public function upsertOrgMappingFromEsi(
+        int $characterId,
+        ?int $corpId,
+        bool $allianceKnown,
+        ?int $allianceId = null,
+        ?string $verifiedAt = null
+    ): void {
+        if ($characterId <= 0 || $corpId === null || $corpId <= 0) {
+            return;
+        }
+
+        $existing = db_one(
+            $this->db,
+            "SELECT corp_id, alliance_id FROM core_character_orgs WHERE character_id=?",
+            [$characterId]
+        ) ?? [];
+
+        $finalCorpId = $corpId;
+        $finalAllianceId = $allianceKnown
+            ? max(0, (int)($allianceId ?? 0))
+            : (int)($existing['alliance_id'] ?? 0);
+
+        $this->upsertOrgMapping($characterId, $finalCorpId, $finalAllianceId, $verifiedAt);
+    }
+
     private function resolveName(string $type, int $id): string
     {
         if ($id <= 0) {

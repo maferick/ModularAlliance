@@ -30,7 +30,7 @@ final class Universe
     public function name(string $type, int $id): string
     {
         $e = $this->entity($type, $id);
-        return $e['name'] ?? 'Unknown';
+        return $this->normalizeName($e['name'] ?? null);
     }
 
     public function nameOrUnknown(string $type, int $id, string $fallback = 'Unknown'): string
@@ -65,9 +65,26 @@ final class Universe
 
     public function entity(string $type, int $id): array
     {
+        if ($id <= 0) {
+            return [];
+        }
         $sde = $this->sdeEntity($type, $id);
         if ($sde) {
-            return $sde;
+            $payload = [];
+            if (!empty($sde['extra_json'])) {
+                $decoded = json_decode((string)$sde['extra_json'], true);
+                if (is_array($decoded)) {
+                    $payload = $decoded;
+                }
+            }
+            if (empty($payload)) {
+                $payload = ['name' => $sde['name']];
+            }
+            $this->upsertEntity($type, $id, (string)($sde['name'] ?? ''), $payload, 2592000);
+            return db_one($this->db, 
+                "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
+                [$type, $id]
+            ) ?? $sde;
         }
 
         $row = db_one($this->db, 
@@ -75,11 +92,11 @@ final class Universe
             [$type, $id]
         );
 
-        if ($row && !$this->isStale($row)) {
+        if ($row && !$this->isStale($row) && $this->normalizeName($row['name'] ?? null) !== '') {
             return $row;
         }
 
-        return $this->refresh($type, $id);
+        return $this->refresh($type, $id, $row ?: null);
     }
 
     private function isStale(array $row): bool
@@ -89,15 +106,16 @@ final class Universe
         return $fetched <= 0 || (time() > ($fetched + max(60, $ttl)));
     }
 
-    private function refresh(string $type, int $id): array
+    private function refresh(string $type, int $id, ?array $existing = null): array
     {
         if (isset(self::LIST_ENTITY_TYPES[$type])) {
-            return $this->refreshFromList($type, $id);
+            return $this->refreshFromList($type, $id, $existing);
         }
 
         [$path, $ttl] = $this->endpointFor($type, $id);
         if (!$path) {
-            return $this->fallback($type, $id);
+            $this->recordFailure($type, $id, 'Missing ESI endpoint');
+            return $existing ?? [];
         }
 
         $client = new EsiClient(new HttpClient(), 'https://esi.evetech.net');
@@ -119,14 +137,20 @@ final class Universe
             );
 
             if (!is_array($payload) || !isset($payload['name'])) {
-                return $this->fallback($type, $id);
+                $this->recordFailure($type, $id, 'ESI response missing name');
+                return $existing ?? [];
             }
 
             if (!empty($payload['solar_system_id'])) {
                 $this->prime('system', (int)$payload['solar_system_id']);
             }
 
-            $this->upsertEntity($type, $id, (string)$payload['name'], $payload, $ttl);
+            $name = (string)$payload['name'];
+            if ($this->normalizeName($name) === '') {
+                $this->recordFailure($type, $id, 'ESI returned empty name');
+                return $existing ?? [];
+            }
+            $this->upsertEntity($type, $id, $name, $payload, $ttl);
 
             return db_one($this->db, 
                 "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
@@ -141,7 +165,8 @@ final class Universe
         );
 
         if (!is_array($payload) || !isset($payload['name'])) {
-            return $this->fallback($type, $id);
+            $this->recordFailure($type, $id, 'ESI response missing name');
+            return $existing ?? [];
         }
 
         if ($type === 'system' && !empty($payload['constellation_id'])) {
@@ -162,7 +187,12 @@ final class Universe
             $this->prime('system', (int)$payload['system_id']);
         }
 
-        $this->upsertEntity($type, $id, (string)$payload['name'], $payload, $ttl);
+        $name = (string)$payload['name'];
+        if ($this->normalizeName($name) === '') {
+            $this->recordFailure($type, $id, 'ESI returned empty name');
+            return $existing ?? [];
+        }
+        $this->upsertEntity($type, $id, $name, $payload, $ttl);
 
         return db_one($this->db, 
             "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
@@ -170,11 +200,12 @@ final class Universe
         ) ?? [];
     }
 
-    private function refreshFromList(string $type, int $id): array
+    private function refreshFromList(string $type, int $id, ?array $existing = null): array
     {
         $config = self::LIST_ENTITY_TYPES[$type] ?? null;
         if (!$config) {
-            return $this->fallback($type, $id);
+            $this->recordFailure($type, $id, 'Missing list config');
+            return $existing ?? [];
         }
 
         $client = new EsiClient(new HttpClient(), 'https://esi.evetech.net');
@@ -195,7 +226,7 @@ final class Universe
                     continue;
                 }
                 $name = (string)($row['name'] ?? '');
-                if ($name === '') {
+                if ($this->normalizeName($name) === '') {
                     break;
                 }
                 $this->upsertEntity($type, $id, $name, $row, (int)$config['ttl']);
@@ -206,19 +237,27 @@ final class Universe
             }
         }
 
-        return $this->fallback($type, $id);
+        $this->recordFailure($type, $id, 'List lookup missing');
+        return $existing ?? [];
     }
 
     private function upsertEntity(string $type, int $id, string $name, array $payload, int $ttl): void
     {
+        if ($this->normalizeName($name) === '') {
+            $this->recordFailure($type, $id, 'Attempted upsert with empty name');
+            return;
+        }
         db_exec($this->db, 
-            "INSERT INTO universe_entities (entity_type, entity_id, name, extra_json, fetched_at, ttl_seconds)
-             VALUES (?, ?, ?, ?, NOW(), ?)
+            "INSERT INTO universe_entities (entity_type, entity_id, name, extra_json, fetched_at, ttl_seconds, last_attempt_at)
+             VALUES (?, ?, ?, ?, NOW(), ?, NOW())
              ON DUPLICATE KEY UPDATE
                name=VALUES(name),
                extra_json=VALUES(extra_json),
                fetched_at=NOW(),
-               ttl_seconds=VALUES(ttl_seconds)",
+               ttl_seconds=VALUES(ttl_seconds),
+               last_error=NULL,
+               fail_count=0,
+               last_attempt_at=NOW()",
             [
                 $type,
                 $id,
@@ -238,6 +277,9 @@ final class Universe
     private function endpointFor(string $type, int $id): array
     {
         return match ($type) {
+            'corporation' => ["/latest/corporations/{$id}/", 86400],
+            'alliance' => ["/latest/alliances/{$id}/", 86400],
+            'character' => ["/latest/characters/{$id}/", 86400],
             'system' => ["/latest/universe/systems/{$id}/", 604800],
             'constellation' => ["/latest/universe/constellations/{$id}/", 2592000],
             'region' => ["/latest/universe/regions/{$id}/", 2592000],
@@ -255,24 +297,31 @@ final class Universe
 
     private function fallback(string $type, int $id): array
     {
-        $name = 'Unknown';
-
         error_log("Universe: missing {$type} {$id} after SDE+ESI lookup.");
 
-        db_exec($this->db, 
-            "INSERT INTO universe_entities (entity_type, entity_id, name, ttl_seconds, fetched_at)
-             VALUES (?, ?, ?, 3600, NOW())
-             ON DUPLICATE KEY UPDATE
-               name=VALUES(name),
-               fetched_at=NOW(),
-               ttl_seconds=VALUES(ttl_seconds)",
-            [$type, $id, $name]
-        );
+        $this->recordFailure($type, $id, 'SDE+ESI lookup failed');
 
         return db_one($this->db, 
             "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
             [$type, $id]
         ) ?? [];
+    }
+
+    private function recordFailure(string $type, int $id, string $message): void
+    {
+        if ($id <= 0) {
+            return;
+        }
+
+        db_exec($this->db, 
+            "INSERT INTO universe_entities (entity_type, entity_id, name, ttl_seconds, last_error, fail_count, last_attempt_at)
+             VALUES (?, ?, NULL, 3600, ?, 1, NOW())
+             ON DUPLICATE KEY UPDATE
+               last_error=VALUES(last_error),
+               fail_count=fail_count + 1,
+               last_attempt_at=NOW()",
+            [$type, $id, $message]
+        );
     }
 
     private function sdeEntity(string $type, int $id): ?array
@@ -417,7 +466,7 @@ final class Universe
         );
     }
 
-    return [
+        return [
         'character' => [
             'id' => $characterId,               // internal only; do not display in UI
             'name' => $character['name'] ?? null,
@@ -438,8 +487,52 @@ final class Universe
             'data' => $alliance,
             'icons' => $allianceIcons,
         ],
-    ];
+        ];
 }
+
+    public function repairUnknowns(int $limit = 200): array
+    {
+        $rows = db_all($this->db, 
+            "SELECT entity_type, entity_id FROM universe_entities
+             WHERE name IS NULL OR name IN ('', 'Unknown')
+             ORDER BY COALESCE(last_attempt_at, fetched_at) ASC
+             LIMIT ?",
+            [$limit]
+        );
+
+        $repaired = 0;
+        $attempted = 0;
+        foreach ($rows as $row) {
+            $type = (string)($row['entity_type'] ?? '');
+            $id = (int)($row['entity_id'] ?? 0);
+            if ($type === '' || $id <= 0) {
+                continue;
+            }
+            $attempted++;
+            $before = $this->entity($type, $id);
+            $name = $this->normalizeName($before['name'] ?? null);
+            if ($name !== '') {
+                $repaired++;
+            }
+        }
+
+        return [
+            'attempted' => $attempted,
+            'repaired' => $repaired,
+        ];
+    }
+
+    private function normalizeName(?string $name): string
+    {
+        if ($name === null) {
+            return '';
+        }
+        $trimmed = trim($name);
+        if ($trimmed === '' || $trimmed === 'Unknown') {
+            return '';
+        }
+        return $trimmed;
+    }
 
     private function bestEffortAccessToken(): ?array
     {

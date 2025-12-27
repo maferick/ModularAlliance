@@ -1230,9 +1230,19 @@ return function (ModuleRegistry $registry): void {
             $identityResolver->upsertIdentity($characterId, $userId, $mainCharacterId > 0 && $mainCharacterId === $characterId);
 
             $profile = $universeShared->characterProfile($characterId);
-            $corpId = (int)($profile['corporation']['id'] ?? 0);
-            $allianceId = (int)($profile['alliance']['id'] ?? 0);
-            $identityResolver->upsertOrgMapping($characterId, $corpId, $allianceId);
+            $characterData = $profile['character']['data'] ?? null;
+            $hasCorp = is_array($characterData) && array_key_exists('corporation_id', $characterData);
+            $hasAlliance = is_array($characterData) && array_key_exists('alliance_id', $characterData);
+            $corpId = $hasCorp ? (int)($characterData['corporation_id'] ?? 0) : null;
+            $allianceId = $hasAlliance ? (int)($characterData['alliance_id'] ?? 0) : null;
+            if ($corpId !== null && $corpId > 0) {
+                $identityResolver->upsertOrgMappingFromEsi(
+                    $characterId,
+                    $corpId,
+                    $hasAlliance,
+                    (int)($allianceId ?? 0)
+                );
+            }
 
             $scopeSet = $scopePolicy->getEffectiveScopesForUser($userId);
             $requiredScopes = $scopeSet['required'] ?? [];
