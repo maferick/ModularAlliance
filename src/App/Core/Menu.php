@@ -5,7 +5,21 @@ namespace App\Core;
 
 final class Menu
 {
-    public function __construct(private readonly Db $db) {}
+    private const NODE_CONTAINER = 'container';
+    private const NODE_LINK = 'link';
+    private const NODE_BOTH = 'both';
+
+    private const AUDIENCE_ADMIN = 'admin';
+    private const AUDIENCE_MEMBER = 'member';
+
+    private const REPAIR_SETTING_KEY = 'menu.repair.v2.completed';
+
+    private static bool $repairChecked = false;
+
+    public function __construct(private readonly Db $db)
+    {
+        $this->maybeRepairSlugs();
+    }
 
     public const AREA_LEFT = 'left';
     public const AREA_ADMIN_TOP = 'admin_top';
@@ -26,84 +40,29 @@ final class Menu
         // slug, title, url, parent_slug?, sort_order?, area?, right_slug?, enabled?
         $moduleSlug = (string)($item['module_slug'] ?? 'system');
         $slug = trim((string)($item['slug'] ?? ''));
-        $area = self::normalizeArea((string)($item['area'] ?? self::AREA_LEFT_MEMBER), true);
+        $rawArea = (string)($item['area'] ?? self::AREA_LEFT_MEMBER);
+        $area = self::normalizeArea($rawArea, true);
         $parentSlug = $item['parent_slug'] ?? null;
         $kind = self::normalizeKind((string)($item['kind'] ?? ''), $parentSlug, $area);
         $allowedAreas = self::normalizeAllowedAreas($item['allowed_areas'] ?? null, $area, $kind);
         $url = trim((string)($item['url'] ?? '/'));
+        $nodeType = self::normalizeNodeType((string)($item['node_type'] ?? ''), $kind);
         if ($slug === '') {
             $slug = self::generateSlug($moduleSlug, (string)($item['title'] ?? ''), $url, $kind);
         }
         if ($slug === '') throw new \RuntimeException("Menu item missing slug");
 
-        $canonicalSlug = $slug;
-        if ($url !== '') {
-            $canonicalUrl = self::normalizeUrl($url);
-            $existingRows = db_all(
-                $this->db,
-                "SELECT slug, url FROM menu_registry WHERE area = ? ORDER BY id ASC",
-                [$area]
-            );
-            foreach ($existingRows as $existing) {
-                $existingUrl = self::normalizeUrl((string)($existing['url'] ?? ''));
-                if ($existingUrl !== '' && $existingUrl === $canonicalUrl) {
-                    $existingSlug = (string)($existing['slug'] ?? '');
-                    if ($existingSlug !== '' && $existingSlug !== $slug) {
-                        $canonicalSlug = $existingSlug;
-
-                        db_exec($this->db, "UPDATE menu_registry SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $slug]);
-                        db_exec($this->db, "UPDATE menu_overrides SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $slug]);
-
-                        $dupOverride = db_one($this->db, "SELECT * FROM menu_overrides WHERE slug=?", [$slug]);
-                        if ($dupOverride) {
-                            $canonicalOverride = db_one($this->db, "SELECT * FROM menu_overrides WHERE slug=?", [$canonicalSlug]) ?: [];
-                            $fields = ['title', 'url', 'parent_slug', 'sort_order', 'area', 'right_slug', 'enabled'];
-                            foreach ($fields as $field) {
-                                if (($canonicalOverride[$field] ?? null) === null && isset($dupOverride[$field])) {
-                                    $canonicalOverride[$field] = $dupOverride[$field];
-                                }
-                            }
-                            if ($canonicalOverride !== []) {
-                                db_exec(
-                                    $this->db,
-                                    "INSERT INTO menu_overrides (slug, title, url, parent_slug, sort_order, area, right_slug, enabled)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                     ON DUPLICATE KEY UPDATE
-                                       title=VALUES(title),
-                                       url=VALUES(url),
-                                       parent_slug=VALUES(parent_slug),
-                                       sort_order=VALUES(sort_order),
-                                       area=VALUES(area),
-                                       right_slug=VALUES(right_slug),
-                                       enabled=VALUES(enabled)",
-                                    [
-                                        $canonicalSlug,
-                                        $canonicalOverride['title'] ?? null,
-                                        $canonicalOverride['url'] ?? null,
-                                        $canonicalOverride['parent_slug'] ?? null,
-                                        $canonicalOverride['sort_order'] ?? null,
-                                        $canonicalOverride['area'] ?? null,
-                                        $canonicalOverride['right_slug'] ?? null,
-                                        $canonicalOverride['enabled'] ?? null,
-                                    ]
-                                );
-                            }
-                            db_exec($this->db, "DELETE FROM menu_overrides WHERE slug=?", [$slug]);
-                        }
-
-                        db_exec($this->db, "DELETE FROM menu_registry WHERE slug=?", [$slug]);
-                    }
-                    break;
-                }
-            }
-        }
+        $audience = self::audienceForArea($rawArea, $slug, (string)($item['right_slug'] ?? ''));
+        $canonicalSlug = self::normalizeSlugForAudience($slug, $audience);
+        $parentSlug = self::normalizeParentSlugForAudience($parentSlug, $audience);
 
         db_exec($this->db, 
-            "INSERT INTO menu_registry (slug, module_slug, kind, allowed_areas, title, url, parent_slug, sort_order, area, right_slug, enabled)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO menu_registry (slug, module_slug, kind, node_type, allowed_areas, title, url, parent_slug, sort_order, area, right_slug, enabled)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                module_slug=VALUES(module_slug),
                kind=VALUES(kind),
+               node_type=VALUES(node_type),
                allowed_areas=VALUES(allowed_areas),
                title=VALUES(title),
                url=VALUES(url),
@@ -116,6 +75,7 @@ final class Menu
                 $canonicalSlug,
                 $moduleSlug,
                 $kind,
+                $nodeType,
                 json_encode($allowedAreas, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                 (string)($item['title'] ?? $slug),
                 $url !== '' ? $url : '/',
@@ -139,7 +99,8 @@ final class Menu
                     COALESCE(o.sort_order, r.sort_order) AS sort_order,
                     COALESCE(o.area, r.area) AS area,
                     COALESCE(o.right_slug, r.right_slug) AS right_slug,
-                    COALESCE(o.enabled, r.enabled) AS enabled
+                    COALESCE(o.enabled, r.enabled) AS enabled,
+                    COALESCE(o.node_type, r.node_type) AS node_type
              FROM menu_registry r
              LEFT JOIN menu_overrides o ON o.slug = r.slug
              WHERE COALESCE(o.area, r.area) = ?
@@ -151,7 +112,8 @@ final class Menu
                     COALESCE(o.sort_order, c.sort_order) AS sort_order,
                     COALESCE(o.area, c.area) AS area,
                     COALESCE(o.right_slug, c.right_slug) AS right_slug,
-                    COALESCE(o.enabled, c.enabled) AS enabled
+                    COALESCE(o.enabled, c.enabled) AS enabled,
+                    COALESCE(o.node_type, c.node_type) AS node_type
              FROM menu_custom_items c
              LEFT JOIN menu_overrides o ON o.slug = c.slug
              WHERE COALESCE(o.area, c.area) = ?
@@ -161,26 +123,21 @@ final class Menu
 
         // filter enabled + rights
         $items = [];
-        $seen = [];
         foreach ($rows as $r) {
             if ((int)$r['enabled'] !== 1) continue;
             $right = $r['right_slug'] ?? null;
             if ($right && !$hasRight((string)$right)) continue;
-            $key = self::canonicalKey([
-                'slug' => (string)$r['slug'],
-                'url' => (string)($r['url'] ?? ''),
-                'area' => (string)($r['area'] ?? $area),
-            ]);
-            if (isset($seen[$key])) {
+            $slug = (string)$r['slug'];
+            if ($slug === '' || isset($items[$slug])) {
                 continue;
             }
-            $seen[$key] = true;
-            $items[(string)$r['slug']] = [
+            $items[$slug] = [
                 'slug' => (string)$r['slug'],
                 'title' => (string)$r['title'],
                 'url' => (string)$r['url'],
                 'parent_slug' => $r['parent_slug'] ? (string)$r['parent_slug'] : null,
                 'sort_order' => (int)$r['sort_order'],
+                'node_type' => (string)($r['node_type'] ?? self::NODE_LINK),
                 'children' => [],
             ];
         }
@@ -205,6 +162,7 @@ final class Menu
             }
         };
         $sortFn($root);
+        self::applyNodeTypes($root);
 
         return $root;
     }
@@ -214,11 +172,12 @@ final class Menu
         $left = $this->tree(self::AREA_LEFT, $hasRight);
         $adminTop = $this->tree(self::AREA_ADMIN_TOP, $hasRight);
         $user = $this->tree(self::AREA_USER_TOP, fn(string $r) => true);
+        $loginSlug = self::normalizeSlugForAudience('user.login', self::AUDIENCE_MEMBER);
 
         if ($loggedIn) {
-            $user = array_values(array_filter($user, fn($n) => $n['slug'] !== 'user.login'));
+            $user = array_values(array_filter($user, fn($n) => $n['slug'] !== $loginSlug));
         } else {
-            $user = array_values(array_filter($user, fn($n) => $n['slug'] === 'user.login'));
+            $user = array_values(array_filter($user, fn($n) => $n['slug'] === $loginSlug));
         }
 
         $moduleTree = $this->tree(self::AREA_TOP_LEFT, $hasRight);
@@ -389,13 +348,8 @@ final class Menu
 
     public static function canonicalKey(array $item): string
     {
-        $area = self::normalizeArea((string)($item['area'] ?? self::AREA_LEFT));
         $slug = trim((string)($item['slug'] ?? ''));
-        $url = self::normalizeUrl((string)($item['url'] ?? ''));
-        if ($url === '') {
-            return "slug:{$slug}";
-        }
-        return "{$area}|{$url}";
+        return "slug:{$slug}";
     }
 
     private static function generateSlug(string $moduleSlug, string $title, string $url, string $kind): string
@@ -413,5 +367,283 @@ final class Menu
         }
         $hash = substr(sha1($moduleSlug . '|' . $base . '|' . $url), 0, 8);
         return rtrim($moduleSlug, '.') . '.' . $base . '-' . $hash;
+    }
+
+    private static function normalizeNodeType(string $nodeType, string $kind): string
+    {
+        $normalized = strtolower(trim($nodeType));
+        $valid = [self::NODE_CONTAINER, self::NODE_LINK, self::NODE_BOTH];
+        if (in_array($normalized, $valid, true)) {
+            return $normalized;
+        }
+        if ($kind === self::KIND_MODULE_ROOT) {
+            return self::NODE_BOTH;
+        }
+        return self::NODE_LINK;
+    }
+
+    public static function normalizeSlugForAudience(string $slug, string $audience): string
+    {
+        $slug = trim($slug);
+        if ($slug === '') {
+            return $slug;
+        }
+
+        if ($audience === self::AUDIENCE_ADMIN) {
+            if (str_ends_with($slug, '.member')) {
+                $slug = substr($slug, 0, -7);
+            }
+            if (str_starts_with($slug, 'admin.') || str_ends_with($slug, '.admin')) {
+                return $slug;
+            }
+            if (str_starts_with($slug, 'custom.')) {
+                return $slug . '.admin';
+            }
+            return 'admin.' . $slug;
+        }
+
+        if (str_ends_with($slug, '.admin')) {
+            $slug = substr($slug, 0, -6);
+        }
+        if (str_starts_with($slug, 'admin.')) {
+            $slug = substr($slug, 6);
+        }
+        if (str_ends_with($slug, '.member')) {
+            return $slug;
+        }
+        return $slug . '.member';
+    }
+
+    private static function normalizeParentSlugForAudience(mixed $parentSlug, string $audience): ?string
+    {
+        if (!is_string($parentSlug)) {
+            return $parentSlug === null ? null : (string)$parentSlug;
+        }
+        $parentSlug = trim($parentSlug);
+        if ($parentSlug === '') {
+            return null;
+        }
+        return self::normalizeSlugForAudience($parentSlug, $audience);
+    }
+
+    public static function audienceForArea(string $area, ?string $slug = null, ?string $rightSlug = null): string
+    {
+        $raw = strtolower(trim($area));
+        if (in_array($raw, ['admin_top', 'site_admin_top', 'left_admin', 'admin', 'admin_left', 'admin_hr', 'hr'], true)) {
+            return self::AUDIENCE_ADMIN;
+        }
+        if (is_string($slug) && ($slug !== '')) {
+            if (str_starts_with($slug, 'admin.') || str_ends_with($slug, '.admin')) {
+                return self::AUDIENCE_ADMIN;
+            }
+        }
+        if (is_string($rightSlug) && $rightSlug !== '') {
+            if (str_starts_with($rightSlug, 'admin.') || str_ends_with($rightSlug, '.admin')) {
+                return self::AUDIENCE_ADMIN;
+            }
+        }
+        $normalized = self::normalizeArea($area);
+        if (in_array($normalized, [self::AREA_ADMIN_TOP, self::AREA_SITE_ADMIN], true)) {
+            return self::AUDIENCE_ADMIN;
+        }
+        return self::AUDIENCE_MEMBER;
+    }
+
+    private static function applyNodeTypes(array &$nodes): void
+    {
+        foreach ($nodes as &$node) {
+            if (!empty($node['children'])) {
+                self::applyNodeTypes($node['children']);
+            }
+
+            $nodeType = strtolower((string)($node['node_type'] ?? self::NODE_LINK));
+            $nodeType = in_array($nodeType, [self::NODE_CONTAINER, self::NODE_LINK, self::NODE_BOTH], true)
+                ? $nodeType
+                : self::NODE_LINK;
+            $hasChildren = !empty($node['children']);
+            $url = (string)($node['url'] ?? '');
+
+            if ($hasChildren && $url !== '' && $nodeType === self::NODE_LINK) {
+                $nodeType = self::NODE_BOTH;
+            } elseif ($hasChildren && $url === '' && $nodeType === self::NODE_LINK) {
+                $nodeType = self::NODE_CONTAINER;
+            } elseif (!$hasChildren && $nodeType === self::NODE_CONTAINER) {
+                $nodeType = $url === '' ? self::NODE_CONTAINER : self::NODE_LINK;
+            }
+
+            $node['node_type'] = $nodeType;
+        }
+        unset($node);
+    }
+
+    private function maybeRepairSlugs(): void
+    {
+        if (self::$repairChecked) {
+            return;
+        }
+        self::$repairChecked = true;
+
+        try {
+            if (!self::tableExists($this->db, 'settings')) {
+                return;
+            }
+            $settings = new Settings($this->db);
+            $completed = (string)($settings->get(self::REPAIR_SETTING_KEY, '') ?? '');
+            if ($completed !== '') {
+                return;
+            }
+            if (!self::tableExists($this->db, 'menu_registry')
+                || !self::tableExists($this->db, 'menu_custom_items')
+                || !self::tableExists($this->db, 'menu_repair_report')) {
+                return;
+            }
+        } catch (\Throwable $e) {
+            return;
+        }
+
+        try {
+            $this->repairMenuSlugs();
+            $settings = new Settings($this->db);
+            $settings->set(self::REPAIR_SETTING_KEY, gmdate('Y-m-d H:i:s'));
+        } catch (\Throwable $e) {
+            // Do not fail menu loads if repair fails.
+        }
+    }
+
+    private static function tableExists(Db $db, string $table): bool
+    {
+        try {
+            $row = db_one($db, "SHOW TABLES LIKE ?", [$table]);
+            return $row !== null;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    private function repairMenuSlugs(): void
+    {
+        $registryRows = db_all(
+            $this->db,
+            "SELECT id, slug, area, right_slug
+             FROM menu_registry
+             ORDER BY id ASC"
+        );
+        $customRows = db_all(
+            $this->db,
+            "SELECT id, slug, area, right_slug, public_id
+             FROM menu_custom_items
+             ORDER BY id ASC"
+        );
+
+        $used = [];
+        foreach ($registryRows as $row) {
+            $used[(string)$row['slug']] = (int)$row['id'];
+        }
+        foreach ($customRows as $row) {
+            $used[(string)$row['slug']] = (int)$row['id'];
+        }
+
+        $slugMap = [];
+        foreach ($registryRows as $row) {
+            $slug = (string)$row['slug'];
+            $audience = self::audienceForArea((string)$row['area'], $slug, (string)($row['right_slug'] ?? ''));
+            $normalized = self::normalizeSlugForAudience($slug, $audience);
+            $normalized = $this->ensureUniqueSlug($normalized, $used, (int)$row['id']);
+            if ($normalized !== $slug) {
+                $slugMap[$slug] = $normalized;
+                $used[$normalized] = (int)$row['id'];
+            }
+        }
+
+        $customPublicIds = [];
+        foreach ($customRows as $row) {
+            $publicId = (string)($row['public_id'] ?? '');
+            if ($publicId === '') {
+                $publicId = Identifiers::generatePublicId($this->db, 'menu_custom_items');
+                $customPublicIds[(int)$row['id']] = $publicId;
+            }
+        }
+
+        foreach ($customRows as $row) {
+            $slug = (string)$row['slug'];
+            $publicId = $customPublicIds[(int)$row['id']] ?? (string)($row['public_id'] ?? '');
+            if ($publicId === '') {
+                continue;
+            }
+            $audience = self::audienceForArea((string)$row['area'], $slug, (string)($row['right_slug'] ?? ''));
+            $baseSlug = 'custom.' . $publicId;
+            $normalized = self::normalizeSlugForAudience($baseSlug, $audience);
+            $normalized = $this->ensureUniqueSlug($normalized, $used, (int)$row['id']);
+            if ($normalized !== $slug) {
+                $slugMap[$slug] = $normalized;
+                $used[$normalized] = (int)$row['id'];
+            }
+        }
+
+        if ($slugMap === [] && $customPublicIds === []) {
+            return;
+        }
+
+        db_tx($this->db, function () use ($slugMap, $customPublicIds): void {
+            foreach ($customPublicIds as $id => $publicId) {
+                db_exec($this->db, "UPDATE menu_custom_items SET public_id=? WHERE id=?", [$publicId, $id]);
+                $this->logRepair('custom_public_id', "Assigned public ID {$publicId} to custom item {$id}.", [
+                    'custom_id' => $id,
+                    'public_id' => $publicId,
+                ]);
+            }
+
+            foreach ($slugMap as $old => $new) {
+                $updatedRegistry = db_exec($this->db, "UPDATE menu_registry SET slug=? WHERE slug=?", [$new, $old]);
+                $updatedCustom = db_exec($this->db, "UPDATE menu_custom_items SET slug=? WHERE slug=?", [$new, $old]);
+                $updatedOverrides = db_exec($this->db, "UPDATE menu_overrides SET slug=? WHERE slug=?", [$new, $old]);
+
+                $this->logRepair('slug_rename', "Renamed menu slug {$old} to {$new}.", [
+                    'old_slug' => $old,
+                    'new_slug' => $new,
+                    'registry' => $updatedRegistry,
+                    'custom' => $updatedCustom,
+                    'overrides' => $updatedOverrides,
+                ]);
+            }
+
+            foreach ($slugMap as $old => $new) {
+                $registryParents = db_exec($this->db, "UPDATE menu_registry SET parent_slug=? WHERE parent_slug=?", [$new, $old]);
+                $customParents = db_exec($this->db, "UPDATE menu_custom_items SET parent_slug=? WHERE parent_slug=?", [$new, $old]);
+                $overrideParents = db_exec($this->db, "UPDATE menu_overrides SET parent_slug=? WHERE parent_slug=?", [$new, $old]);
+
+                if ($registryParents + $customParents + $overrideParents > 0) {
+                    $this->logRepair('parent_update', "Re-parented menu items from {$old} to {$new}.", [
+                        'old_slug' => $old,
+                        'new_slug' => $new,
+                        'registry' => $registryParents,
+                        'custom' => $customParents,
+                        'overrides' => $overrideParents,
+                    ]);
+                }
+            }
+        });
+    }
+
+    private function ensureUniqueSlug(string $slug, array $used, int $id): string
+    {
+        if (!isset($used[$slug]) || $used[$slug] === $id) {
+            return $slug;
+        }
+        return $slug . '-' . $id;
+    }
+
+    private function logRepair(string $type, string $message, array $details): void
+    {
+        db_exec(
+            $this->db,
+            "INSERT INTO menu_repair_report (change_type, message, details_json)
+             VALUES (?, ?, ?)",
+            [
+                $type,
+                $message,
+                json_encode($details, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            ]
+        );
     }
 }

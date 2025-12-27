@@ -237,12 +237,24 @@ final class Layout
                 $expanded = self::treeHasActive($n['children'], $currentPath) || self::urlMatchesPath($currentPath, (string)$n['url']);
                 $expandedAttr = $expanded ? 'true' : 'false';
                 $collapseClass = $expanded ? ' collapse show' : ' collapse';
-                $badgeText = $expanded ? '-' : '+';
+                $nodeType = strtolower((string)($n['node_type'] ?? 'link'));
+                $nodeType = in_array($nodeType, ['container', 'link', 'both'], true) ? $nodeType : 'link';
+                $hasUrl = trim((string)($n['url'] ?? '')) !== '';
                 $html .= '<li class="nav-item">';
-                $html .= '<button class="nav-link d-flex justify-content-between align-items-center w-100' . ($expanded ? ' active' : '') . '" type="button" data-bs-toggle="collapse" data-bs-target="#' . $nodeId . '" aria-expanded="' . $expandedAttr . '">';
-                $html .= '<span>' . htmlspecialchars($n['title']) . '</span>';
-                $html .= '<span class="badge text-bg-secondary">' . $badgeText . '</span>';
-                $html .= '</button>';
+                if ($nodeType === 'container' || !$hasUrl) {
+                    $html .= '<button class="nav-link d-flex justify-content-between align-items-center w-100' . ($expanded ? ' active' : '') . '" type="button" data-bs-toggle="collapse" data-bs-target="#' . $nodeId . '" aria-expanded="' . $expandedAttr . '">';
+                    $html .= '<span>' . htmlspecialchars($n['title']) . '</span>';
+                    $html .= '<span class="badge text-bg-secondary">' . ($expanded ? '-' : '+') . '</span>';
+                    $html .= '</button>';
+                } else {
+                    $active = self::urlMatchesPath($currentPath, (string)$n['url']);
+                    $html .= '<div class="d-flex align-items-center">';
+                    $html .= '<a class="nav-link flex-grow-1' . ($active ? ' active' : '') . '" href="' . htmlspecialchars((string)$n['url']) . '">' . htmlspecialchars((string)$n['title']) . '</a>';
+                    $html .= '<button class="btn btn-sm btn-outline-secondary ms-1" type="button" data-bs-toggle="collapse" data-bs-target="#' . $nodeId . '" aria-expanded="' . $expandedAttr . '" aria-label="Toggle submenu">';
+                    $html .= '<i class="bi bi-chevron-down"></i>';
+                    $html .= '</button>';
+                    $html .= '</div>';
+                }
                 $html .= '<div class="' . $collapseClass . '" id="' . $nodeId . '">';
                 $html .= '<ul class="nav flex-column ms-3 mt-1">';
                 $html .= self::renderSideMenuItems($n['children'], $currentPath);
