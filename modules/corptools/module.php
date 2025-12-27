@@ -1906,7 +1906,7 @@ return function (ModuleRegistry $registry): void {
                 'is_main' => $characterId === $mainId ? 1 : 0,
             ];
 
-            db_exec($dispatch, 
+            $dispatch->run(
                 $uid,
                 $characterId,
                 $owned[$characterId],
@@ -3322,7 +3322,8 @@ return function (ModuleRegistry $registry): void {
 
         $rowsHtml = '';
         foreach ($tables as $table) {
-            $exists = db_one($app->db, "SHOW TABLES LIKE ?", [$table]);
+            $tableQuoted = db_quote($app->db, $table);
+            $exists = db_one($app->db, "SHOW TABLES LIKE {$tableQuoted}");
             $status = $exists ? "<span class='badge bg-success'>OK</span>" : "<span class='badge bg-danger'>Missing</span>";
             $rowsHtml .= "<tr><td>{$table}</td><td>{$status}</td></tr>";
         }
