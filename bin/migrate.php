@@ -5,74 +5,46 @@ define('APP_ROOT', dirname(__DIR__));
 require APP_ROOT . '/core/bootstrap.php';
 
 use App\Core\App;
+use App\Core\MigrationCatalog;
 
 $app = App::boot(false);
 
 $m = $app->migrator;
 $m->ensureLogTable();
 
-function migration_dirs(): array
+function show_help(): void
 {
-    $dirs = [
-        ['core', APP_ROOT . '/core/migrations'],
-    ];
+    echo <<<TXT
+[USAGE] php bin/migrate.php <command>
 
-    foreach (glob(APP_ROOT . '/modules/*/migrations') ?: [] as $dir) {
-        if (!is_dir($dir)) {
-            continue;
-        }
-        $slug = basename(dirname($dir));
-        $dirs[] = [$slug, $dir];
-    }
+Commands:
+  apply                Apply pending migrations (default).
+  status               Show applied/pending/mismatch status.
+  doctor               Show mismatches and suggested fix statements.
+  repair --accept-checksum <module> <file>
+                       Accept updated checksum for an applied migration.
+  recreate             Drop all tables and re-apply latest migrations.
+  help                 Show this help text.
 
-    return $dirs;
+Examples:
+  php bin/migrate.php apply
+  php bin/migrate.php status
+  php bin/migrate.php doctor
+  php bin/migrate.php repair --accept-checksum core 001_init.sql
+  php bin/migrate.php recreate
+TXT;
 }
 
-function resolve_migration_file(string $module, string $file): ?string
-{
-    $file = ltrim($file, '/');
-    if (str_contains($file, '/')) {
-        $path = APP_ROOT . '/' . $file;
-    } else {
-        $base = $module === 'core'
-            ? APP_ROOT . '/core/migrations'
-            : APP_ROOT . '/modules/' . $module . '/migrations';
-        $path = $base . '/' . $file;
-    }
+$command = strtolower((string)($argv[1] ?? 'apply'));
 
-    return is_file($path) ? $path : null;
+if (in_array($command, ['help', '--help', '-h'], true)) {
+    show_help();
+    exit(0);
 }
-
-function migration_entries(): array
-{
-    $entries = [];
-    foreach (migration_dirs() as [$module, $dir]) {
-        if (!is_dir($dir)) {
-            continue;
-        }
-        $files = glob(rtrim($dir, '/') . '/*.sql') ?: [];
-        sort($files, SORT_STRING);
-        foreach ($files as $file) {
-            $sql = trim((string)file_get_contents($file));
-            if ($sql === '') {
-                continue;
-            }
-            $entries[] = [
-                'module' => $module,
-                'path' => str_starts_with($file, APP_ROOT . '/') ? substr($file, strlen(APP_ROOT) + 1) : $file,
-                'full' => $file,
-                'checksum' => hash('sha256', $sql),
-            ];
-        }
-    }
-    return $entries;
-}
-
-$command = $argv[1] ?? 'apply';
 
 if ($command === 'status') {
     $applied = $m->appliedMigrations();
-    $entries = migration_entries();
+    $entries = MigrationCatalog::migrationEntries();
     $counts = ['applied' => 0, 'pending' => 0, 'mismatch' => 0];
 
     echo "[STATUS] Migration status\n";
@@ -102,7 +74,7 @@ if ($command === 'status') {
 
 if ($command === 'doctor') {
     $applied = $m->appliedMigrations();
-    $entries = migration_entries();
+    $entries = MigrationCatalog::migrationEntries();
     $hasMismatch = false;
 
     echo "[DOCTOR] Checking for migration mismatches\n";
@@ -151,7 +123,7 @@ if ($command === 'repair') {
         exit(1);
     }
 
-    $path = resolve_migration_file($module, $file);
+    $path = MigrationCatalog::resolveMigrationFile($module, $file);
     if ($path === null) {
         echo "[ERROR] Migration file not found for module {$module}: {$file}\n";
         exit(1);
@@ -172,10 +144,20 @@ if ($command === 'repair') {
     exit(0);
 }
 
+if ($command === 'recreate') {
+    $result = $m->recreateDatabase();
+    if (!($result['ok'] ?? false)) {
+        echo "[ERROR] {$result['message']}\n";
+        exit(1);
+    }
+    echo "[OK] {$result['message']}\n";
+    exit(0);
+}
+
 echo "[MIGRATE] core: " . APP_ROOT . "/core/migrations\n";
 $m->applyDir('core', APP_ROOT . '/core/migrations');
 
-foreach (migration_dirs() as [$slug, $dir]) {
+foreach (MigrationCatalog::migrationDirs() as [$slug, $dir]) {
     if ($slug === 'core') {
         continue;
     }

@@ -32,6 +32,38 @@ SQL);
         }
     }
 
+    public function recreateDatabase(): array
+    {
+        $driver = db_driver($this->db);
+        if ($driver !== 'mysql') {
+            return ['ok' => false, 'message' => 'Recreate database is only supported for MySQL/MariaDB.'];
+        }
+
+        try {
+            db_exec($this->db, "SET FOREIGN_KEY_CHECKS=0");
+            $rows = db_all($this->db, "SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'");
+            foreach ($rows as $row) {
+                $table = (string)array_values($row)[0];
+                if ($table === '') {
+                    continue;
+                }
+                $safe = str_replace('`', '``', $table);
+                db_exec($this->db, "DROP TABLE IF EXISTS `{$safe}`");
+            }
+            db_exec($this->db, "SET FOREIGN_KEY_CHECKS=1");
+
+            $this->ensureLogTable();
+            foreach (MigrationCatalog::migrationDirs() as [$slug, $dir]) {
+                echo "[MIGRATE] {$slug}: {$dir}\n";
+                $this->applyDir($slug, $dir);
+            }
+
+            return ['ok' => true, 'message' => 'Database recreated and migrations applied.'];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'message' => $e->getMessage()];
+        }
+    }
+
     public function applyDir(string $moduleSlug, string $dir): void
     {
         if (!is_dir($dir)) return;
