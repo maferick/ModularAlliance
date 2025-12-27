@@ -5,6 +5,8 @@ namespace App\Core;
 
 final class Universe
 {
+    private static ?bool $sdeReady = null;
+
     private const LIST_ENTITY_TYPES = [
         'race' => [
             'endpoint' => '/latest/universe/races/',
@@ -41,6 +43,11 @@ final class Universe
 
     public function entity(string $type, int $id): array
     {
+        $sde = $this->sdeEntity($type, $id);
+        if ($sde) {
+            return $sde;
+        }
+
         $row = $this->db->one(
             "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
             [$type, $id]
@@ -226,7 +233,9 @@ final class Universe
 
     private function fallback(string $type, int $id): array
     {
-        $name = ucfirst($type) . ' #' . $id;
+        $name = 'Unknown';
+
+        error_log("Universe: missing {$type} {$id} after SDE+ESI lookup.");
 
         $this->db->run(
             "INSERT INTO universe_entities (entity_type, entity_id, name, ttl_seconds, fetched_at)
@@ -242,6 +251,88 @@ final class Universe
             "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
             [$type, $id]
         ) ?? [];
+    }
+
+    private function sdeEntity(string $type, int $id): ?array
+    {
+        if (!self::sdeTablesReady($this->db)) {
+            return null;
+        }
+
+        if ($id <= 0) {
+            return null;
+        }
+
+        $table = null;
+        $column = null;
+        $extra = [];
+
+        switch ($type) {
+            case 'category':
+                $table = 'sde_inv_categories';
+                $column = 'category_id';
+                break;
+            case 'group':
+                $table = 'sde_inv_groups';
+                $column = 'group_id';
+                $extra = ['category_id'];
+                break;
+            case 'type':
+                $table = 'sde_inv_types';
+                $column = 'type_id';
+                $extra = ['group_id'];
+                break;
+            case 'region':
+                $table = 'sde_map_regions';
+                $column = 'region_id';
+                break;
+            case 'constellation':
+                $table = 'sde_map_constellations';
+                $column = 'constellation_id';
+                $extra = ['region_id'];
+                break;
+            case 'system':
+                $table = 'sde_map_solar_systems';
+                $column = 'solar_system_id';
+                $extra = ['constellation_id', 'region_id'];
+                break;
+            case 'station':
+                $table = 'sde_sta_stations';
+                $column = 'station_id';
+                $extra = ['solar_system_id', 'constellation_id', 'region_id'];
+                break;
+            default:
+                return null;
+        }
+
+        $fields = array_merge([$column, 'name'], $extra);
+        $row = $this->db->one(
+            "SELECT " . implode(', ', $fields) . " FROM {$table} WHERE {$column}=?",
+            [$id]
+        );
+
+        if (!$row || empty($row['name'])) {
+            return null;
+        }
+
+        return [
+            'entity_type' => $type,
+            'entity_id' => $id,
+            'name' => $row['name'],
+            'extra_json' => !empty($extra) ? json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+            'fetched_at' => null,
+            'ttl_seconds' => 0,
+        ];
+    }
+
+    private static function sdeTablesReady(Db $db): bool
+    {
+        if (self::$sdeReady !== null) {
+            return self::$sdeReady;
+        }
+        $row = $db->one("SHOW TABLES LIKE 'sde_inv_categories'");
+        self::$sdeReady = $row !== null;
+        return self::$sdeReady;
     }
 
     public function characterProfile(int $characterId): array

@@ -3,6 +3,127 @@ declare(strict_types=1);
 
 use App\Core\Db;
 
+function sde_ensure_tables(Db $db): void
+{
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS sde_inv_categories (
+            category_id INT UNSIGNED NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            description TEXT NULL,
+            icon_id INT UNSIGNED NULL,
+            published TINYINT(1) NOT NULL DEFAULT 0,
+            PRIMARY KEY (category_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS sde_inv_groups (
+            group_id INT UNSIGNED NOT NULL,
+            category_id INT UNSIGNED NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            description TEXT NULL,
+            icon_id INT UNSIGNED NULL,
+            published TINYINT(1) NOT NULL DEFAULT 0,
+            PRIMARY KEY (group_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS sde_inv_types (
+            type_id INT UNSIGNED NOT NULL,
+            group_id INT UNSIGNED NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            description TEXT NULL,
+            mass DOUBLE NULL,
+            volume DOUBLE NULL,
+            capacity DOUBLE NULL,
+            portion_size INT UNSIGNED NULL,
+            race_id INT UNSIGNED NULL,
+            base_price DECIMAL(19,4) NULL,
+            published TINYINT(1) NOT NULL DEFAULT 0,
+            market_group_id INT UNSIGNED NULL,
+            icon_id INT UNSIGNED NULL,
+            sound_id INT UNSIGNED NULL,
+            graphic_id INT UNSIGNED NULL,
+            PRIMARY KEY (type_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS sde_map_regions (
+            region_id INT UNSIGNED NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            PRIMARY KEY (region_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS sde_map_constellations (
+            constellation_id INT UNSIGNED NOT NULL,
+            region_id INT UNSIGNED NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            PRIMARY KEY (constellation_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS sde_map_solar_systems (
+            solar_system_id INT UNSIGNED NOT NULL,
+            constellation_id INT UNSIGNED NOT NULL,
+            region_id INT UNSIGNED NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            security DECIMAL(4,2) NULL,
+            security_class VARCHAR(5) NULL,
+            PRIMARY KEY (solar_system_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS sde_sta_stations (
+            station_id BIGINT UNSIGNED NOT NULL,
+            station_type_id INT UNSIGNED NULL,
+            corporation_id INT UNSIGNED NULL,
+            solar_system_id INT UNSIGNED NOT NULL,
+            constellation_id INT UNSIGNED NULL,
+            region_id INT UNSIGNED NULL,
+            name VARCHAR(255) NOT NULL,
+            security DECIMAL(4,2) NULL,
+            PRIMARY KEY (station_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS sde_meta (
+            meta_key VARCHAR(64) NOT NULL,
+            meta_value TEXT NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (meta_key)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    sde_ensure_index($db, 'sde_inv_groups', 'idx_category_id', 'category_id');
+    sde_ensure_index($db, 'sde_inv_types', 'idx_group_id', 'group_id');
+    sde_ensure_index($db, 'sde_map_constellations', 'idx_region_id', 'region_id');
+    sde_ensure_index($db, 'sde_map_solar_systems', 'idx_region_id', 'region_id');
+    sde_ensure_index($db, 'sde_map_solar_systems', 'idx_constellation_id', 'constellation_id');
+    sde_ensure_index($db, 'sde_sta_stations', 'idx_solar_system_id', 'solar_system_id');
+    sde_ensure_index($db, 'sde_sta_stations', 'idx_region_id', 'region_id');
+    sde_ensure_index($db, 'sde_sta_stations', 'idx_constellation_id', 'constellation_id');
+}
+
+function sde_ensure_index(Db $db, string $table, string $indexName, string $columns): void
+{
+    $exists = $db->one(
+        "SHOW INDEX FROM `{$table}` WHERE Key_name=?",
+        [$indexName]
+    );
+    if ($exists) {
+        return;
+    }
+
+    $db->exec("ALTER TABLE `{$table}` ADD INDEX {$indexName} ({$columns})");
+}
+
 function identity_mapping_stats(Db $db): array
 {
     $counts = $db->one(
