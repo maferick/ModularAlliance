@@ -9,12 +9,17 @@ Module Slug: core
 */
 
 use App\Core\AdminRoutes;
+use App\Core\App;
 use App\Core\IdentityResolver;
 use App\Core\Layout;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
+use App\Core\SdeImporter;
 use App\Core\Universe;
+use App\Corptools\Cron\JobRegistry;
 use App\Http\Response;
+
+require_once APP_ROOT . '/core/functiondb.php';
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
@@ -46,6 +51,18 @@ return function (ModuleRegistry $registry): void {
     };
 
     $registry->route('GET', '/health', fn() => Response::text("OK\n", 200), ['public' => true]);
+
+    JobRegistry::register([
+        'key' => 'core.sde_refresh',
+        'name' => 'SDE Refresh',
+        'description' => 'Refresh local SDE tables from Fuzzwork.',
+        'schedule' => 86400,
+        'handler' => function (App $app, array $context = []): array {
+            $importer = new SdeImporter($app->db);
+            return $importer->refresh($context);
+        },
+    ]);
+    JobRegistry::sync($app->db);
 
     $registry->route('GET', '/', function () use ($app, $hasRight, $universeShared, $identityResolver): Response {
         $leftTree  = $app->menu->tree('left', $hasRight);
