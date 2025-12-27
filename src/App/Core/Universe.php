@@ -5,6 +5,24 @@ namespace App\Core;
 
 final class Universe
 {
+    private const LIST_ENTITY_TYPES = [
+        'race' => [
+            'endpoint' => '/latest/universe/races/',
+            'id_key' => 'race_id',
+            'ttl' => 2592000,
+        ],
+        'bloodline' => [
+            'endpoint' => '/latest/universe/bloodlines/',
+            'id_key' => 'bloodline_id',
+            'ttl' => 2592000,
+        ],
+        'faction' => [
+            'endpoint' => '/latest/universe/factions/',
+            'id_key' => 'faction_id',
+            'ttl' => 2592000,
+        ],
+    ];
+
     public function __construct(private Db $db) {}
 
     public function name(string $type, int $id): string
@@ -44,6 +62,10 @@ final class Universe
 
     private function refresh(string $type, int $id): array
     {
+        if (isset(self::LIST_ENTITY_TYPES[$type])) {
+            return $this->refreshFromList($type, $id);
+        }
+
         [$path, $ttl] = $this->endpointFor($type, $id);
         if (!$path) {
             return $this->fallback($type, $id);
@@ -117,6 +139,45 @@ final class Universe
             "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
             [$type, $id]
         ) ?? [];
+    }
+
+    private function refreshFromList(string $type, int $id): array
+    {
+        $config = self::LIST_ENTITY_TYPES[$type] ?? null;
+        if (!$config) {
+            return $this->fallback($type, $id);
+        }
+
+        $client = new EsiClient(new HttpClient(), 'https://esi.evetech.net');
+        $cache  = new EsiCache($this->db, $client);
+
+        $payload = $cache->getCached(
+            "universe:list:{$type}",
+            (string)$config['endpoint'],
+            (int)$config['ttl']
+        );
+
+        if (is_array($payload)) {
+            foreach ($payload as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                if ((int)($row[$config['id_key']] ?? 0) !== $id) {
+                    continue;
+                }
+                $name = (string)($row['name'] ?? '');
+                if ($name === '') {
+                    break;
+                }
+                $this->upsertEntity($type, $id, $name, $row, (int)$config['ttl']);
+                return $this->db->one(
+                    "SELECT * FROM universe_entities WHERE entity_type=? AND entity_id=?",
+                    [$type, $id]
+                ) ?? [];
+            }
+        }
+
+        return $this->fallback($type, $id);
     }
 
     private function upsertEntity(string $type, int $id, string $name, array $payload, int $ttl): void

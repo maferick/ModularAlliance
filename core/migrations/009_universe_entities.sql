@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS universe_entities (
   entity_type ENUM(
     'character','corporation','alliance',
     'type','system','constellation','region',
-    'station','structure'
+    'station','structure',
+    'race','bloodline','faction'
   ) NOT NULL,
   entity_id BIGINT UNSIGNED NOT NULL,
   name VARCHAR(255) NOT NULL,
