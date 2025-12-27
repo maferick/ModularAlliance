@@ -80,7 +80,7 @@ final class CorptoolsMemberProvider implements ProviderInterface
 
     public function evaluateRule(int $userId, array $rule, array $context = []): array
     {
-        $summary = $this->db->one(
+        $summary = db_one($this->db, 
             "SELECT main_character_id, highest_sp, last_login_at, corp_joined_at, audit_loaded, main_character_name\n"
             . " FROM module_corptools_member_summary WHERE user_id=? LIMIT 1",
             [$userId]

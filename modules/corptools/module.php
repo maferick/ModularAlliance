@@ -40,7 +40,8 @@ use App\Corptools\Cron\JobRunner;
 use App\Http\Request;
 use App\Http\Response;
 
-require_once APP_ROOT . '/core/functiondb.php';
+require_once APP_ROOT . '/src/App/Core/functiondb.php';
+require_once __DIR__ . '/functions.php';
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
@@ -361,7 +362,7 @@ return function (ModuleRegistry $registry): void {
     };
 
     $bucketTokenData = function (int $characterId, string $bucket, string $orgType = '', int $orgId = 0) use ($app): array {
-        $row = $app->db->one(
+        $row = db_one($app->db, 
             "SELECT access_token, scopes_json, expires_at, refresh_token, status, last_refresh_at, error_last
              FROM eve_token_buckets
              WHERE character_id=? AND bucket=? AND org_type=? AND org_id=?
@@ -476,7 +477,7 @@ return function (ModuleRegistry $registry): void {
     };
 
     $getCorpToken = function (int $corpId, array $requiredScopes) use ($app, $hasScopes, $sso, $makeRefreshCallback): array {
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT user_id, character_id, scopes_json
              FROM eve_token_buckets
              WHERE bucket='org_audit' AND org_type='corporation' AND org_id=?
@@ -645,7 +646,7 @@ return function (ModuleRegistry $registry): void {
         $corpId = (int)($org['corp_id'] ?? 0);
         $allianceId = (int)($org['alliance_id'] ?? 0);
 
-        $stats = $app->db->one(
+        $stats = db_one($app->db, 
             "SELECT MAX(total_sp) AS max_sp, MIN(audit_loaded) AS audit_loaded
              FROM module_corptools_character_summary WHERE user_id=?",
             [$userId]
@@ -653,12 +654,12 @@ return function (ModuleRegistry $registry): void {
         $highestSp = (int)($stats['max_sp'] ?? 0);
         $auditLoaded = (int)($stats['audit_loaded'] ?? 0);
 
-        $lastLogin = $app->db->one("SELECT updated_at FROM eve_users WHERE id=? LIMIT 1", [$userId]);
+        $lastLogin = db_one($app->db, "SELECT updated_at FROM eve_users WHERE id=? LIMIT 1", [$userId]);
         $lastLoginAt = $lastLogin['updated_at'] ?? null;
 
         $corpJoinedAt = null;
         if ($corpId > 0) {
-            $historyRow = $app->db->one(
+            $historyRow = db_one($app->db, 
                 "SELECT data_json FROM module_corptools_character_audit
                  WHERE character_id=? AND category='corp_history' LIMIT 1",
                 [$mainCharacterId]
@@ -676,7 +677,7 @@ return function (ModuleRegistry $registry): void {
             }
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_corptools_member_summary
              (user_id, main_character_id, main_character_name, corp_id, alliance_id, highest_sp, last_login_at, corp_joined_at, audit_loaded, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
@@ -768,7 +769,7 @@ return function (ModuleRegistry $registry): void {
                     $reason = (string)($entry['reason'] ?? '');
 
                     try {
-                        $app->db->run(
+                        db_exec($app->db, 
                             "INSERT INTO module_corptools_invoice_payments
                              (corp_id, wallet_division, journal_id, ref_type, amount, balance, entry_date, first_party_id, second_party_id, reason, raw_json, created_at)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
@@ -840,7 +841,7 @@ return function (ModuleRegistry $registry): void {
         ];
 
         while (true) {
-            $users = $app->db->all(
+            $users = db_all($app->db, 
                 "SELECT id, character_id, character_name
                  FROM eve_users
                  ORDER BY id ASC
@@ -859,7 +860,7 @@ return function (ModuleRegistry $registry): void {
 
             $placeholders = implode(',', array_fill(0, count($userIds), '?'));
 
-            $links = $app->db->all(
+            $links = db_all($app->db, 
                 "SELECT user_id, character_id, character_name
                  FROM character_links
                  WHERE status='linked' AND user_id IN ({$placeholders})",
@@ -945,7 +946,7 @@ return function (ModuleRegistry $registry): void {
                     ];
 
                     try {
-                        $dispatcher->run(
+                        db_exec($dispatcher, 
                             $userId,
                             $characterId,
                             $characterName,
@@ -1057,7 +1058,7 @@ return function (ModuleRegistry $registry): void {
                 $payload = $response['data'] ?? [];
 
                 try {
-                    $app->db->run(
+                    db_exec($app->db, 
                         "INSERT INTO module_corptools_corp_audit (corp_id, category, data_json, fetched_at)
                          VALUES (?, ?, ?, NOW())
                          ON DUPLICATE KEY UPDATE data_json=VALUES(data_json), fetched_at=NOW()",
@@ -1067,7 +1068,7 @@ return function (ModuleRegistry $registry): void {
                             json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                         ]
                     );
-                    $app->db->run(
+                    db_exec($app->db, 
                         "INSERT INTO module_corptools_corp_audit_snapshots (corp_id, category, data_json, fetched_at)
                          VALUES (?, ?, ?, NOW())",
                         [
@@ -1102,7 +1103,7 @@ return function (ModuleRegistry $registry): void {
 
                         $fuelExpires = $parseEsiDatetimeToMysql($structure['fuel_expires'] ?? null);
                         try {
-                            $app->db->run(
+                            db_exec($app->db, 
                                 "INSERT INTO module_corptools_industry_structures
                                  (corp_id, structure_id, name, system_id, region_id, rigs_json, services_json, fuel_expires_at, state)
                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1135,13 +1136,13 @@ return function (ModuleRegistry $registry): void {
             }
 
             if (!empty($enabled['metenox'])) {
-                $app->db->run(
+                db_exec($app->db, 
                     "INSERT INTO module_corptools_corp_audit (corp_id, category, data_json, fetched_at)
                      VALUES (?, 'metenox', ?, NOW())
                      ON DUPLICATE KEY UPDATE data_json=VALUES(data_json), fetched_at=NOW()",
                     [$corpId, json_encode(['status' => 'scaffolded'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
                 );
-                $app->db->run(
+                db_exec($app->db, 
                     "INSERT INTO module_corptools_corp_audit_snapshots (corp_id, category, data_json, fetched_at)
                      VALUES (?, 'metenox', ?, NOW())",
                     [$corpId, json_encode(['status' => 'scaffolded'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
@@ -1160,7 +1161,7 @@ return function (ModuleRegistry $registry): void {
             'tokens_failed' => 0,
         ];
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT user_id, character_id, bucket, org_type, org_id, refresh_token, expires_at, status
              FROM eve_token_buckets
              WHERE refresh_token IS NOT NULL AND refresh_token != ''"
@@ -1228,27 +1229,27 @@ return function (ModuleRegistry $registry): void {
         if ($retentionDays <= 0) return ['message' => 'Retention disabled'];
         $cutoff = date('Y-m-d H:i:s', time() - ($retentionDays * 86400));
 
-        $app->db->run(
+        db_exec($app->db, 
             "DELETE FROM module_corptools_audit_runs WHERE started_at < ?",
             [$cutoff]
         );
-        $app->db->run(
+        db_exec($app->db, 
             "DELETE FROM module_corptools_character_audit WHERE updated_at < ?",
             [$cutoff]
         );
-        $app->db->run(
+        db_exec($app->db, 
             "DELETE FROM module_corptools_pings WHERE received_at < ?",
             [$cutoff]
         );
-        $app->db->run(
+        db_exec($app->db, 
             "DELETE FROM module_corptools_character_audit_snapshots WHERE fetched_at < ?",
             [$cutoff]
         );
-        $app->db->run(
+        db_exec($app->db, 
             "DELETE FROM module_corptools_corp_audit_snapshots WHERE fetched_at < ?",
             [$cutoff]
         );
-        $app->db->run(
+        db_exec($app->db, 
             "DELETE FROM module_corptools_job_runs WHERE started_at < ?",
             [$cutoff]
         );
@@ -1375,21 +1376,21 @@ return function (ModuleRegistry $registry): void {
         $moonsEnabled = !empty($settings['moons']['enabled']);
         $indyEnabled = !empty($settings['indy']['enabled']);
         $pingerEnabled = !empty($settings['pinger']['enabled']);
-        $invoiceTotal = (float)($app->db->one(
+        $invoiceTotal = (float)(db_one($app->db, 
             "SELECT COALESCE(SUM(amount),0) AS total
              FROM module_corptools_invoice_payments
              WHERE corp_id=? AND entry_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)",
             [$corp['id']]
         )['total'] ?? 0);
 
-        $miningTotal = (float)($app->db->one(
+        $miningTotal = (float)(db_one($app->db, 
             "SELECT COALESCE(SUM(quantity),0) AS total
              FROM module_corptools_moon_events
              WHERE corp_id=? AND event_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)",
             [$corp['id']]
         )['total'] ?? 0);
 
-        $walletDelta = (float)($app->db->one(
+        $walletDelta = (float)(db_one($app->db, 
             "SELECT COALESCE(SUM(amount),0) AS total
              FROM module_corptools_invoice_payments
              WHERE corp_id=? AND entry_date >= DATE_SUB(NOW(), INTERVAL 1 DAY)",
@@ -1501,11 +1502,11 @@ return function (ModuleRegistry $registry): void {
         $search = trim((string)($_GET['q'] ?? ''));
         $statusFilter = trim((string)($_GET['status'] ?? ''));
 
-        $primary = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
+        $primary = db_one($app->db, "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
         $mainId = (int)($primary['character_id'] ?? 0);
         $mainName = (string)($primary['character_name'] ?? 'Unknown');
 
-        $links = $app->db->all(
+        $links = db_all($app->db, 
             "SELECT character_id, character_name FROM character_links WHERE user_id=? AND status='linked' ORDER BY linked_at ASC",
             [$uid]
         );
@@ -1541,7 +1542,7 @@ return function (ModuleRegistry $registry): void {
         foreach ($characters as $character) {
             $characterId = (int)($character['character_id'] ?? 0);
             if ($characterId <= 0) continue;
-            $summary = $app->db->one(
+            $summary = db_one($app->db, 
                 "SELECT audit_loaded, last_audit_at, total_sp, wallet_balance, assets_count
                  FROM module_corptools_character_summary WHERE character_id=? LIMIT 1",
                 [$characterId]
@@ -1717,13 +1718,13 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/corptools/characters');
         }
 
-        $primary = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
+        $primary = db_one($app->db, "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
         $mainId = (int)($primary['character_id'] ?? 0);
         $owned = [];
         if ($mainId > 0) {
             $owned[$mainId] = (string)($primary['character_name'] ?? 'Unknown');
         }
-        $links = $app->db->all(
+        $links = db_all($app->db, 
             "SELECT character_id, character_name FROM character_links WHERE user_id=? AND status='linked'",
             [$uid]
         );
@@ -1767,7 +1768,7 @@ return function (ModuleRegistry $registry): void {
                 'is_main' => $characterId === $mainId ? 1 : 0,
             ];
 
-            $dispatch->run(
+            db_exec($dispatch, 
                 $uid,
                 $characterId,
                 $owned[$characterId],
@@ -1822,11 +1823,11 @@ return function (ModuleRegistry $registry): void {
         ];
         $tabs = array_values(array_filter(array_keys($tabConfig), fn(string $key) => in_array($key, $enabledScopes, true)));
 
-        $primary = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
+        $primary = db_one($app->db, "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
         $mainId = (int)($primary['character_id'] ?? 0);
         $mainName = (string)($primary['character_name'] ?? 'Unknown');
 
-        $links = $app->db->all(
+        $links = db_all($app->db, 
             "SELECT character_id, character_name FROM character_links WHERE user_id=? AND status='linked' ORDER BY linked_at ASC",
             [$uid]
         );
@@ -1865,7 +1866,7 @@ return function (ModuleRegistry $registry): void {
 
         $snapshots = [];
         if ($selectedId > 0) {
-            $rows = $app->db->all(
+            $rows = db_all($app->db, 
                 "SELECT s.category, s.data_json, s.fetched_at
                  FROM module_corptools_character_audit_snapshots s
                  JOIN (
@@ -2036,7 +2037,7 @@ return function (ModuleRegistry $registry): void {
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($cid <= 0 || $uid <= 0) return Response::redirect('/auth/login');
 
-        $summary = $app->db->one(
+        $summary = db_one($app->db, 
             "SELECT SUM(wallet_balance) AS wallet_total, SUM(assets_count) AS assets_total, MAX(total_sp) AS max_sp
              FROM module_corptools_character_summary WHERE user_id=?",
             [$uid]
@@ -2116,7 +2117,7 @@ return function (ModuleRegistry $registry): void {
         $requiredScopes = ['esi-wallet.read_corporation_wallets.v1'];
         $missingScopes = !$token['expired'] && $token['access_token'] ? [] : $requiredScopes;
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT entry_date, ref_type, amount, wallet_division
              FROM module_corptools_invoice_payments
              WHERE {$where}
@@ -2214,14 +2215,7 @@ return function (ModuleRegistry $registry): void {
         $defaultAuditStatus = $useDefaults ? 'needs_attention' : (string)($req->query['audit_status'] ?? '');
 
         $resolveEntityId = function (string $type, string $value) use ($app): string {
-            $value = trim($value);
-            if ($value === '') return '';
-            if (ctype_digit($value)) return $value;
-            $row = $app->db->one(
-                "SELECT entity_id FROM universe_entities WHERE entity_type=? AND name LIKE ? ORDER BY fetched_at DESC LIMIT 1",
-                [$type, '%' . $value . '%']
-            );
-            return $row ? (string)($row['entity_id'] ?? '') : '';
+            return corptools_resolve_entity_id($app->db, $type, $value);
         };
 
         $locationSystemInput = (string)($req->query['location_system_id'] ?? '');
@@ -2253,27 +2247,27 @@ return function (ModuleRegistry $registry): void {
             'missing_scopes' => (string)($req->query['missing_scopes'] ?? ''),
             'missing_scope' => (string)($req->query['missing_scope'] ?? ''),
             'last_audit_age' => (string)($req->query['last_audit_age'] ?? ''),
-            'skill_id' => (string)($req->query['skill_id'] ?? ''),
-            'asset_type_id' => (string)($req->query['asset_type_id'] ?? ''),
-            'asset_group_id' => (string)($req->query['asset_group_id'] ?? ''),
-            'asset_category_id' => (string)($req->query['asset_category_id'] ?? ''),
+            'skill_id' => corptools_resolve_entity_id($app->db, 'type', (string)($req->query['skill_id'] ?? '')),
+            'asset_type_id' => corptools_resolve_entity_id($app->db, 'type', (string)($req->query['asset_type_id'] ?? '')),
+            'asset_group_id' => corptools_resolve_entity_id($app->db, 'group', (string)($req->query['asset_group_id'] ?? '')),
+            'asset_category_id' => corptools_resolve_entity_id($app->db, 'category', (string)($req->query['asset_category_id'] ?? '')),
         ];
 
         $builder = new MemberQueryBuilder();
         $query = $builder->build($filters);
         $page = max(1, (int)($req->query['page'] ?? 1));
         $perPage = 50;
-        $countRow = $app->db->one(
+        $countRow = db_one($app->db, 
             "SELECT COUNT(*) AS total FROM (" . $query['sql'] . ") AS t",
             $query['params']
         );
         $totalRows = (int)($countRow['total'] ?? 0);
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             $query['sql'] . ' LIMIT ? OFFSET ?',
             array_merge($query['params'], [$perPage, ($page - 1) * $perPage])
         );
 
-        $healthRows = $app->db->all(
+        $healthRows = db_all($app->db, 
             "SELECT css.status, COUNT(*) AS total
              FROM module_corptools_character_scope_status css
              JOIN core_character_identities ci ON ci.character_id=css.character_id AND ci.is_main=1
@@ -2489,20 +2483,20 @@ return function (ModuleRegistry $registry): void {
                         </select>
                       </div>
                       <div class='col-md-3'>
-                        <label class='form-label'>Skill ID</label>
-                        <input class='form-control' name='skill_id' value='" . htmlspecialchars($filters['skill_id']) . "' placeholder='3300'>
+                        <label class='form-label'>Skill (name or ID)</label>
+                        <input class='form-control' name='skill_id' value='" . htmlspecialchars($filters['skill_id']) . "' placeholder='Mining or 3300'>
                       </div>
                       <div class='col-md-3'>
-                        <label class='form-label'>Asset type ID</label>
-                        <input class='form-control' name='asset_type_id' value='" . htmlspecialchars($filters['asset_type_id']) . "' placeholder='34'>
+                        <label class='form-label'>Asset type (name or ID)</label>
+                        <input class='form-control' name='asset_type_id' value='" . htmlspecialchars($filters['asset_type_id']) . "' placeholder='Tritanium or 34'>
                       </div>
                       <div class='col-md-3'>
-                        <label class='form-label'>Asset group ID</label>
-                        <input class='form-control' name='asset_group_id' value='" . htmlspecialchars($filters['asset_group_id']) . "' placeholder='18'>
+                        <label class='form-label'>Asset group (name or ID)</label>
+                        <input class='form-control' name='asset_group_id' value='" . htmlspecialchars($filters['asset_group_id']) . "' placeholder='Materials or 18'>
                       </div>
                       <div class='col-md-3'>
-                        <label class='form-label'>Asset category ID</label>
-                        <input class='form-control' name='asset_category_id' value='" . htmlspecialchars($filters['asset_category_id']) . "' placeholder='6'>
+                        <label class='form-label'>Asset category (name or ID)</label>
+                        <input class='form-control' name='asset_category_id' value='" . htmlspecialchars($filters['asset_category_id']) . "' placeholder='Ship or 6'>
                       </div>
                       <div class='col-md-3'>
                         <label class='form-label'>Last login since</label>
@@ -2553,7 +2547,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/admin/corptools/members');
         }
 
-        $user = $app->db->one(
+        $user = db_one($app->db, 
             "SELECT id, public_id, character_id, character_name, updated_at
              FROM eve_users WHERE public_id=? LIMIT 1",
             [$userPublicId]
@@ -2563,14 +2557,14 @@ return function (ModuleRegistry $registry): void {
         }
         $userId = (int)($user['id'] ?? 0);
 
-        $summary = $app->db->one(
+        $summary = db_one($app->db, 
             "SELECT corp_id, alliance_id, highest_sp, last_login_at, corp_joined_at
              FROM module_corptools_member_summary
              WHERE user_id=? LIMIT 1",
             [$userId]
         );
 
-        $links = $app->db->all(
+        $links = db_all($app->db, 
             "SELECT character_id, character_name, linked_at
              FROM character_links
              WHERE user_id=? AND status='linked'
@@ -2633,7 +2627,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/admin/corptools/members');
         }
 
-        $user = $app->db->one(
+        $user = db_one($app->db, 
             "SELECT id, public_id, character_id, character_name FROM eve_users WHERE public_id=? LIMIT 1",
             [$userPublicId]
         );
@@ -2647,7 +2641,7 @@ return function (ModuleRegistry $registry): void {
         if ($mainId > 0) {
             $characters[$mainId] = (string)($user['character_name'] ?? 'Unknown');
         }
-        $links = $app->db->all(
+        $links = db_all($app->db, 
             "SELECT character_id, character_name
              FROM character_links
              WHERE user_id=? AND status='linked'",
@@ -2666,7 +2660,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $placeholders = implode(',', array_fill(0, count($charIds), '?'));
-        $scopeRows = $app->db->all(
+        $scopeRows = db_all($app->db, 
             "SELECT character_id, status, missing_scopes_json, checked_at, token_expires_at
              FROM module_corptools_character_scope_status
              WHERE character_id IN ({$placeholders})",
@@ -2680,7 +2674,7 @@ return function (ModuleRegistry $registry): void {
             }
         }
 
-        $tokenRows = $app->db->all(
+        $tokenRows = db_all($app->db, 
             "SELECT character_id, expires_at
              FROM eve_token_buckets
              WHERE bucket='member_audit' AND org_type='character' AND org_id=0
@@ -2778,7 +2772,7 @@ return function (ModuleRegistry $registry): void {
 
         $defaultTax = (float)($settings['moons']['default_tax_rate'] ?? 0);
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT event_date, moon_name, pilot_name, ore_name, quantity, tax_rate
              FROM module_corptools_moon_events
              WHERE corp_id=?
@@ -2890,7 +2884,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         if ($eventDate !== '' && $moonName !== '' && $pilotName !== '' && $oreName !== '') {
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_corptools_moon_events
                  (corp_id, event_date, moon_name, pilot_name, ore_name, quantity, tax_rate, created_by_user_id, created_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())",
@@ -2920,7 +2914,7 @@ return function (ModuleRegistry $registry): void {
             return Response::html($renderPage('Industry', $body), 200);
         }
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT structure_id, name, system_id, region_id, rigs_json, services_json, state, fuel_expires_at
              FROM module_corptools_industry_structures
              WHERE corp_id=?
@@ -3003,7 +2997,7 @@ return function (ModuleRegistry $registry): void {
             return Response::html($renderPage('Corp Audit', $body), 200);
         }
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT category, data_json, fetched_at
              FROM module_corptools_corp_audit
              WHERE corp_id=?
@@ -3140,7 +3134,7 @@ return function (ModuleRegistry $registry): void {
         $eventId = (string)($payload['event_id'] ?? $payload['id'] ?? '');
         $eventHash = hash('sha256', $eventId !== '' ? $eventId : $raw);
 
-        $inserted = $app->db->run(
+        $inserted = db_exec($app->db, 
             "INSERT IGNORE INTO module_corptools_pings (event_hash, source, payload_json, received_at)
              VALUES (?, 'webhook', ?, NOW())",
             [$eventHash, json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
@@ -3190,7 +3184,7 @@ return function (ModuleRegistry $registry): void {
 
         $rowsHtml = '';
         foreach ($tables as $table) {
-            $exists = $app->db->one("SHOW TABLES LIKE " . $app->db->pdo()->quote($table));
+            $exists = db_one($app->db, "SHOW TABLES LIKE ?", [$table]);
             $status = $exists ? "<span class='badge bg-success'>OK</span>" : "<span class='badge bg-danger'>Missing</span>";
             $rowsHtml .= "<tr><td>{$table}</td><td>{$status}</td></tr>";
         }
@@ -3241,12 +3235,12 @@ return function (ModuleRegistry $registry): void {
 
         $rowsHtml = '';
         foreach ($tables as $table) {
-            $exists = $app->db->one("SHOW TABLES LIKE " . $app->db->pdo()->quote($table));
+            $exists = db_one($app->db, "SHOW TABLES LIKE ?", [$table]);
             $status = $exists ? "<span class='badge bg-success'>OK</span>" : "<span class='badge bg-danger'>Missing</span>";
             $rowsHtml .= "<tr><td>{$table}</td><td>{$status}</td></tr>";
         }
 
-        $jobRows = $app->db->all(
+        $jobRows = db_all($app->db, 
             "SELECT job_key, last_run_at, last_status, last_duration_ms
              FROM module_corptools_jobs
              ORDER BY job_key ASC"
@@ -3270,7 +3264,7 @@ return function (ModuleRegistry $registry): void {
             $jobCards = "<div class='col-12 text-muted'>No jobs registered yet. Run the scheduler once.</div>";
         }
 
-        $successRows = $app->db->all(
+        $successRows = db_all($app->db, 
             "SELECT job_key, MAX(started_at) AS last_success
              FROM module_corptools_job_runs
              WHERE status='success'
@@ -3290,24 +3284,24 @@ return function (ModuleRegistry $registry): void {
             $successTable = "<tr><td colspan='2' class='text-muted'>No successful runs yet.</td></tr>";
         }
 
-        $queueDepthRow = $app->db->one(
+        $queueDepthRow = db_one($app->db, 
             "SELECT COUNT(*) AS total FROM module_corptools_pings WHERE processed_at IS NULL"
         );
         $queueDepth = (int)($queueDepthRow['total'] ?? 0);
 
-        $failures24 = (int)($app->db->one(
+        $failures24 = (int)(db_one($app->db, 
             "SELECT COUNT(*) AS total
              FROM module_corptools_job_runs
              WHERE status='failed' AND started_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
         )['total'] ?? 0);
-        $total24 = (int)($app->db->one(
+        $total24 = (int)(db_one($app->db, 
             "SELECT COUNT(*) AS total
              FROM module_corptools_job_runs
              WHERE started_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
         )['total'] ?? 0);
         $errorRate = $total24 > 0 ? round(($failures24 / $total24) * 100, 1) : null;
 
-        $recentFailures = $app->db->all(
+        $recentFailures = db_all($app->db, 
             "SELECT job_key, started_at, message
              FROM module_corptools_job_runs
              WHERE status='failed'
@@ -3327,23 +3321,23 @@ return function (ModuleRegistry $registry): void {
 
         $errorRateText = $errorRate !== null ? "{$errorRate}%" : '—';
 
-        $auditLast = $app->db->one(
+        $auditLast = db_one($app->db, 
             "SELECT MAX(finished_at) AS last_finished
              FROM module_corptools_audit_runs"
         );
         $auditLastRun = htmlspecialchars((string)($auditLast['last_finished'] ?? '—'));
-        $auditRuns24 = (int)($app->db->one(
+        $auditRuns24 = (int)(db_one($app->db, 
             "SELECT COUNT(*) AS total
              FROM module_corptools_audit_runs
              WHERE started_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
         )['total'] ?? 0);
-        $auditFailures24 = (int)($app->db->one(
+        $auditFailures24 = (int)(db_one($app->db, 
             "SELECT COUNT(*) AS total
              FROM module_corptools_audit_runs
              WHERE status IN ('partial', 'blocked') AND started_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
         )['total'] ?? 0);
 
-        $scopeStatusRows = $app->db->all(
+        $scopeStatusRows = db_all($app->db, 
             "SELECT status, COUNT(*) AS total
              FROM module_corptools_character_scope_status
              GROUP BY status
@@ -3359,18 +3353,18 @@ return function (ModuleRegistry $registry): void {
             $scopeStatusTable = "<tr><td colspan='2' class='text-muted'>No scope status data yet.</td></tr>";
         }
 
-        $tokenRefreshFailures = (int)($app->db->one(
+        $tokenRefreshFailures = (int)(db_one($app->db, 
             "SELECT COUNT(*) AS total FROM module_corptools_character_scope_status WHERE status='TOKEN_REFRESH_FAILED'"
         )['total'] ?? 0);
-        $missingScopesTotal = (int)($app->db->one(
+        $missingScopesTotal = (int)(db_one($app->db, 
             "SELECT COUNT(*) AS total FROM module_corptools_character_scope_status WHERE status='MISSING_SCOPES'"
         )['total'] ?? 0);
-        $esiErrors24 = (int)($app->db->one(
+        $esiErrors24 = (int)(db_one($app->db, 
             "SELECT COUNT(*) AS total
              FROM module_corptools_audit_events
              WHERE event='esi_error' AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
         )['total'] ?? 0);
-        $dbErrors24 = (int)($app->db->one(
+        $dbErrors24 = (int)(db_one($app->db, 
             "SELECT COUNT(*) AS total
              FROM module_corptools_audit_events
              WHERE event='db_error' AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)"
@@ -3486,27 +3480,24 @@ return function (ModuleRegistry $registry): void {
         }
 
         $formatOrg = function (string $type, int $id) use ($universeShared): string {
-            if ($id <= 0) {
-                return 'Unknown';
-            }
-            return $universeShared->name($type, $id) . " ({$id})";
+            return corptools_format_org($universeShared, $type, $id);
         };
 
         $rowsHtml = '';
         foreach ($mismatches as $row) {
-            $characterId = (int)($row['character_id'] ?? 0);
-            $userId = (int)($row['user_id'] ?? 0);
+            $userLabel = htmlspecialchars((string)($row['user_public_id'] ?? 'Unknown'));
+            $characterLabel = htmlspecialchars((string)($row['character_name'] ?? 'Unknown'));
             $isMain = (int)($row['is_main'] ?? 0) === 1 ? 'Yes' : 'No';
-            $mappedCorp = $formatOrg('corporation', (int)($row['mapped_corp_id'] ?? 0));
-            $mappedAlliance = $formatOrg('alliance', (int)($row['mapped_alliance_id'] ?? 0));
-            $summaryCorp = $formatOrg('corporation', (int)($row['summary_corp_id'] ?? 0));
-            $summaryAlliance = $formatOrg('alliance', (int)($row['summary_alliance_id'] ?? 0));
+            $mappedCorp = htmlspecialchars($formatOrg('corporation', (int)($row['mapped_corp_id'] ?? 0)));
+            $mappedAlliance = htmlspecialchars($formatOrg('alliance', (int)($row['mapped_alliance_id'] ?? 0)));
+            $summaryCorp = htmlspecialchars($formatOrg('corporation', (int)($row['summary_corp_id'] ?? 0)));
+            $summaryAlliance = htmlspecialchars($formatOrg('alliance', (int)($row['summary_alliance_id'] ?? 0)));
             $mappedVerified = htmlspecialchars((string)($row['mapped_verified_at'] ?? '—'));
             $summaryUpdated = htmlspecialchars((string)($row['summary_updated_at'] ?? '—'));
 
             $rowsHtml .= "<tr>
-                <td>{$userId}</td>
-                <td>{$characterId}</td>
+                <td>{$userLabel}</td>
+                <td>{$characterLabel}</td>
                 <td>{$isMain}</td>
                 <td>{$mappedCorp}</td>
                 <td>{$mappedAlliance}</td>
@@ -3584,11 +3575,11 @@ return function (ModuleRegistry $registry): void {
         $groupInput = trim((string)($req->query['group_slug'] ?? ''));
         $statusFilter = trim((string)($req->query['status'] ?? ''));
 
-        $corpId = ctype_digit($corpInput) ? (int)$corpInput : 0;
-        $allianceId = ctype_digit($allianceInput) ? (int)$allianceInput : 0;
+        $corpId = (int)corptools_resolve_entity_id($app->db, 'corporation', $corpInput);
+        $allianceId = (int)corptools_resolve_entity_id($app->db, 'alliance', $allianceInput);
         $groupId = 0;
         if ($groupInput !== '') {
-            $groupRow = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupInput]);
+            $groupRow = db_one($app->db, "SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupInput]);
             $groupId = (int)($groupRow['id'] ?? 0);
         }
 
@@ -3621,7 +3612,7 @@ return function (ModuleRegistry $registry): void {
         $page = max(1, (int)($req->query['page'] ?? 1));
         $perPage = 25;
 
-        $countRow = $app->db->one(
+        $countRow = db_one($app->db, 
             "SELECT COUNT(*) AS total
              FROM eve_users u
              LEFT JOIN core_character_identities ci ON ci.user_id=u.id AND ci.is_main=1
@@ -3632,7 +3623,7 @@ return function (ModuleRegistry $registry): void {
         );
         $totalRows = (int)($countRow['total'] ?? 0);
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT u.id AS user_id,
                     u.public_id AS user_public_id,
                     u.character_id AS main_character_id,
@@ -3657,7 +3648,7 @@ return function (ModuleRegistry $registry): void {
 
         $linkMap = [];
         if ($userIds) {
-            $links = $app->db->all(
+            $links = db_all($app->db, 
                 "SELECT user_id, character_id, character_name
                  FROM character_links
                  WHERE status='linked' AND user_id IN ({$placeholders})",
@@ -3675,7 +3666,7 @@ return function (ModuleRegistry $registry): void {
 
         $scopeMap = [];
         if ($userIds) {
-            $scopeRows = $app->db->all(
+            $scopeRows = db_all($app->db, 
                 "SELECT css.user_id, css.character_id, css.status, css.reason, css.missing_scopes_json, css.checked_at,
                         cs.character_name, cs.last_audit_at, cs.current_ship_name, cs.location_system_id
                  FROM module_corptools_character_scope_status css
@@ -3698,7 +3689,7 @@ return function (ModuleRegistry $registry): void {
             return $universeShared->name($type, $id);
         };
 
-        $summaryRow = $app->db->one(
+        $summaryRow = db_one($app->db, 
             "SELECT COUNT(*) AS total,
                     SUM(status='COMPLIANT') AS compliant,
                     SUM(status='MISSING_SCOPES') AS missing_scopes,
@@ -3729,7 +3720,7 @@ return function (ModuleRegistry $registry): void {
             ], fn($val) => $val !== '' && $val !== null)
         );
 
-        $groupRows = $app->db->all("SELECT id, slug, name FROM groups ORDER BY name ASC");
+        $groupRows = db_all($app->db, "SELECT id, slug, name FROM groups ORDER BY name ASC");
         $universe = $universeShared;
         $groupOptions = "<option value=''>All groups</option>";
         foreach ($groupRows as $group) {
@@ -3920,12 +3911,12 @@ return function (ModuleRegistry $registry): void {
                         <input class='form-control' name='q' value='" . htmlspecialchars($search) . "' placeholder='Search main'>
                       </div>
                       <div class='col-md-2'>
-                        <label class='form-label'>Corp ID</label>
-                        <input class='form-control' name='corp_id' value='" . htmlspecialchars($corpInput) . "' placeholder='Corp ID'>
+                        <label class='form-label'>Corporation (name or ID)</label>
+                        <input class='form-control' name='corp_id' value='" . htmlspecialchars($corpInput) . "' placeholder='Corp'>
                       </div>
                       <div class='col-md-2'>
-                        <label class='form-label'>Alliance ID</label>
-                        <input class='form-control' name='alliance_id' value='" . htmlspecialchars($allianceInput) . "' placeholder='Alliance ID'>
+                        <label class='form-label'>Alliance (name or ID)</label>
+                        <input class='form-control' name='alliance_id' value='" . htmlspecialchars($allianceInput) . "' placeholder='Alliance'>
                       </div>
                       <div class='col-md-2'>
                         <label class='form-label'>Group</label>
@@ -3962,7 +3953,7 @@ return function (ModuleRegistry $registry): void {
         $userIds = [];
         if ($publicIds) {
             $placeholders = implode(',', array_fill(0, count($publicIds), '?'));
-            $rows = $app->db->all(
+            $rows = db_all($app->db, 
                 "SELECT id FROM eve_users WHERE public_id IN ({$placeholders})",
                 $publicIds
             );
@@ -3980,13 +3971,13 @@ return function (ModuleRegistry $registry): void {
                 $token = bin2hex(random_bytes(16));
                 $tokenHash = hash('sha256', $token);
                 $prefix = substr($token, 0, 8);
-                $app->db->run(
+                db_exec($app->db, 
                     "INSERT INTO module_charlink_states
                      (user_id, token_hash, token_prefix, purpose, created_at, expires_at)
                      VALUES (?, ?, ?, 'reauth', NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY))",
                     [$userId, $tokenHash, $prefix]
                 );
-                $userRow = $app->db->one("SELECT character_name FROM eve_users WHERE id=? LIMIT 1", [$userId]);
+                $userRow = db_one($app->db, "SELECT character_name FROM eve_users WHERE id=? LIMIT 1", [$userId]);
                 $userName = (string)($userRow['character_name'] ?? 'Member');
                 $links[] = [
                     'user' => $userName,
@@ -4002,7 +3993,7 @@ return function (ModuleRegistry $registry): void {
         $settings = (new CorpToolsSettings($app->db))->get();
         $enabled = array_keys(array_filter($settings['audit_scopes'] ?? [], fn($enabled) => !empty($enabled)));
         foreach ($userIds as $userId) {
-            $userRow = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$userId]);
+            $userRow = db_one($app->db, "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$userId]);
             $mainId = (int)($userRow['character_id'] ?? 0);
             $mainName = (string)($userRow['character_name'] ?? 'Unknown');
             if ($mainId <= 0) continue;
@@ -4010,7 +4001,7 @@ return function (ModuleRegistry $registry): void {
             $characters = [
                 ['character_id' => $mainId, 'character_name' => $mainName],
             ];
-            $links = $app->db->all(
+            $links = db_all($app->db, 
                 "SELECT character_id, character_name FROM character_links WHERE user_id=? AND status='linked'",
                 [$userId]
             );
@@ -4037,7 +4028,7 @@ return function (ModuleRegistry $registry): void {
                 $baseSummary = [
                     'is_main' => $characterId === $mainId ? 1 : 0,
                 ];
-                $dispatcher->run(
+                db_exec($dispatcher, 
                     $userId,
                     $characterId,
                     (string)($profile['character']['name'] ?? $character['character_name']),
@@ -4058,7 +4049,7 @@ return function (ModuleRegistry $registry): void {
         return Response::redirect('/admin/corptools/member-audit');
     }, ['right' => 'corptools.member_audit']);
 
-    $registry->route('GET', '/admin/corptools/member-audit/export', function (Request $req) use ($app): Response {
+    $registry->route('GET', '/admin/corptools/member-audit/export', function (Request $req) use ($app, $universeShared): Response {
         $search = trim((string)($req->query['q'] ?? ''));
         $corpInput = trim((string)($req->query['corp_id'] ?? ''));
         $allianceInput = trim((string)($req->query['alliance_id'] ?? ''));
@@ -4069,7 +4060,7 @@ return function (ModuleRegistry $registry): void {
         $allianceId = ctype_digit($allianceInput) ? (int)$allianceInput : 0;
         $groupId = 0;
         if ($groupInput !== '') {
-            $groupRow = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupInput]);
+            $groupRow = db_one($app->db, "SELECT id FROM groups WHERE slug=? LIMIT 1", [$groupInput]);
             $groupId = (int)($groupRow['id'] ?? 0);
         }
 
@@ -4099,7 +4090,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT u.public_id AS user_public_id, u.character_name AS main_character_name, co.corp_id, co.alliance_id, ms.highest_sp
              FROM eve_users u
              LEFT JOIN core_character_identities ci ON ci.user_id=u.id AND ci.is_main=1
@@ -4110,13 +4101,22 @@ return function (ModuleRegistry $registry): void {
             $params
         );
 
-        $lines = ["member_id,main_character,corp_id,alliance_id,highest_sp"];
+        $corpIds = array_values(array_unique(array_map(fn($row) => (int)($row['corp_id'] ?? 0), $rows)));
+        $allianceIds = array_values(array_unique(array_map(fn($row) => (int)($row['alliance_id'] ?? 0), $rows)));
+        $corpNames = $universeShared->names('corporation', $corpIds);
+        $allianceNames = $universeShared->names('alliance', $allianceIds);
+
+        $lines = ["member_id,main_character,corporation,alliance,highest_sp"];
         foreach ($rows as $row) {
+            $corpId = (int)($row['corp_id'] ?? 0);
+            $allianceId = (int)($row['alliance_id'] ?? 0);
+            $corpName = $corpId > 0 ? ($corpNames[$corpId] ?? 'Unknown') : '—';
+            $allianceName = $allianceId > 0 ? ($allianceNames[$allianceId] ?? 'Unknown') : '—';
             $lines[] = implode(',', [
                 (string)($row['user_public_id'] ?? ''),
                 '"' . str_replace('"', '""', (string)($row['main_character_name'] ?? '')) . '"',
-                (int)($row['corp_id'] ?? 0),
-                (int)($row['alliance_id'] ?? 0),
+                '"' . str_replace('"', '""', $corpName) . '"',
+                '"' . str_replace('"', '""', $allianceName) . '"',
                 (int)($row['highest_sp'] ?? 0),
             ]);
         }
@@ -4134,7 +4134,7 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Missing token', 400);
         }
         $tokenHash = hash('sha256', $token);
-        $row = $app->db->one(
+        $row = db_one($app->db, 
             "SELECT id, user_id, expires_at, used_at
              FROM module_charlink_states
              WHERE token_hash=? AND purpose='reauth' LIMIT 1",
@@ -4164,7 +4164,7 @@ return function (ModuleRegistry $registry): void {
         $_SESSION['sso_org_context'] = ['org_type' => 'character', 'org_id' => 0];
         $_SESSION['charlink_redirect'] = '/corptools/characters';
 
-        $app->db->run(
+        db_exec($app->db, 
             "UPDATE module_charlink_states SET used_at=NOW() WHERE id=?",
             [(int)($row['id'] ?? 0)]
         );
@@ -4189,7 +4189,7 @@ return function (ModuleRegistry $registry): void {
         $tokenRows = [];
         if (!empty($corpIds)) {
             $placeholders = implode(',', array_fill(0, count($corpIds), '?'));
-            $tokenRows = $app->db->all(
+            $tokenRows = db_all($app->db, 
                 "SELECT org_id, scopes_json, expires_at
                  FROM eve_token_buckets
                  WHERE bucket='org_audit' AND org_type='corporation' AND org_id IN ({$placeholders})
@@ -4259,13 +4259,13 @@ return function (ModuleRegistry $registry): void {
         }
 
         if ($cards === '') {
-            $cards = "<div class='alert alert-warning'>No corp identities are configured for CorpTools. Set corp IDs in Admin → Corp Tools.</div>";
+            $cards = "<div class='alert alert-warning'>No corporations are configured for CorpTools. Set corporations in Admin → Corp Tools.</div>";
         }
 
         $body = "<div class='d-flex flex-wrap justify-content-between align-items-center gap-2'>
                     <div>
                       <h1 class='mb-1'>Org Token Linking</h1>
-                      <div class='text-muted'>Authorize director-level scopes per corporation. Tokens are tied to configured corp IDs.</div>
+                      <div class='text-muted'>Authorize director-level scopes per corporation. Tokens are tied to configured corporations.</div>
                     </div>
                   </div>
                   {$cards}";
@@ -4279,7 +4279,7 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('GET', '/admin/corptools/cron', function () use ($app, $renderPage): Response {
         JobRegistry::sync($app->db);
-        $jobs = $app->db->all(
+        $jobs = db_all($app->db, 
             "SELECT job_key, name, schedule_seconds, is_enabled, last_run_at, next_run_at, last_status, last_duration_ms
              FROM module_corptools_jobs
              ORDER BY job_key ASC"
@@ -4362,7 +4362,7 @@ return function (ModuleRegistry $registry): void {
         }
         JobRegistry::sync($app->db);
 
-        $job = $app->db->one(
+        $job = db_one($app->db, 
             "SELECT job_key, name, description, schedule_seconds, is_enabled, last_run_at, next_run_at, last_status, last_duration_ms, last_message
              FROM module_corptools_jobs WHERE job_key=? LIMIT 1",
             [$jobKey]
@@ -4371,7 +4371,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/admin/corptools/cron');
         }
 
-        $runs = $app->db->all(
+        $runs = db_all($app->db, 
             "SELECT id, status, started_at, finished_at, duration_ms, message
              FROM module_corptools_job_runs
              WHERE job_key=?
@@ -4470,13 +4470,13 @@ return function (ModuleRegistry $registry): void {
         $page = max(1, (int)($req->query['page'] ?? 1));
         $perPage = 50;
 
-        $countRow = $app->db->one(
+        $countRow = db_one($app->db, 
             "SELECT COUNT(*) AS total FROM module_corptools_job_runs {$whereSql}",
             $params
         );
         $totalRows = (int)($countRow['total'] ?? 0);
 
-        $runs = $app->db->all(
+        $runs = db_all($app->db, 
             "SELECT id, job_key, status, started_at, finished_at, duration_ms, message
              FROM module_corptools_job_runs
              {$whereSql}
@@ -4556,7 +4556,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/admin/corptools/cron/runs');
         }
 
-        $run = $app->db->one(
+        $run = db_one($app->db, 
             "SELECT job_key, status, started_at, finished_at, duration_ms, message, error_trace, meta_json
              FROM module_corptools_job_runs WHERE id=? LIMIT 1",
             [$runId]
@@ -4634,7 +4634,7 @@ return function (ModuleRegistry $registry): void {
         $jobKey = (string)($req->post['job_key'] ?? '');
         $enabled = !empty($req->post['enabled']) ? 1 : 0;
         if ($jobKey !== '') {
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE module_corptools_jobs SET is_enabled=? WHERE job_key=?",
                 [$enabled, $jobKey]
             );
@@ -4801,7 +4801,7 @@ return function (ModuleRegistry $registry): void {
                 $policyRows = "<tr><td colspan='4' class='text-muted'>No policies defined yet.</td></tr>";
             }
 
-            $groupRows = $app->db->all("SELECT slug, name FROM groups ORDER BY name ASC");
+            $groupRows = db_all($app->db, "SELECT slug, name FROM groups ORDER BY name ASC");
             $groupOptions = "<option value=''>Select group</option>";
             foreach ($groupRows as $group) {
                 $gslug = (string)($group['slug'] ?? '');
@@ -4812,7 +4812,7 @@ return function (ModuleRegistry $registry): void {
 
             $overrideRows = '';
             if ($policyId > 0) {
-                $overrides = $app->db->all(
+                $overrides = db_all($app->db, 
                     "SELECT id, public_id, target_type, target_id, required_scopes_json, optional_scopes_json
                      FROM corp_scope_policy_overrides
                      WHERE policy_id=?
@@ -4826,12 +4826,12 @@ return function (ModuleRegistry $registry): void {
                     $targetId = (int)($override['target_id'] ?? 0);
                     $targetLabel = '';
                     if ($type === 'user') {
-                        $userRow = $app->db->one("SELECT character_name, public_id FROM eve_users WHERE id=? LIMIT 1", [$targetId]);
+                        $userRow = db_one($app->db, "SELECT character_name, public_id FROM eve_users WHERE id=? LIMIT 1", [$targetId]);
                         $userName = (string)($userRow['character_name'] ?? 'User');
                         $userPublicId = (string)($userRow['public_id'] ?? '');
                         $targetLabel = htmlspecialchars($userName) . ($userPublicId !== '' ? " (" . htmlspecialchars($userPublicId) . ")" : '');
                     } else {
-                        $groupRow = $app->db->one("SELECT name, slug FROM groups WHERE id=? LIMIT 1", [$targetId]);
+                        $groupRow = db_one($app->db, "SELECT name, slug FROM groups WHERE id=? LIMIT 1", [$targetId]);
                         $groupName = (string)($groupRow['name'] ?? 'Group');
                         $groupSlug = (string)($groupRow['slug'] ?? '');
                         $targetLabel = htmlspecialchars($groupName) . ($groupSlug !== '' ? " (" . htmlspecialchars($groupSlug) . ")" : '');
@@ -4878,7 +4878,7 @@ return function (ModuleRegistry $registry): void {
             $overrideRequiredOptions = $renderScopeOptions([], 'override_required_scopes', 'ovr-req');
             $overrideOptionalOptions = $renderScopeOptions([], 'override_optional_scopes', 'ovr-opt');
 
-            $impactRows = $app->db->one(
+            $impactRows = db_one($app->db, 
                 "SELECT COUNT(*) AS total,
                         SUM(status='COMPLIANT') AS compliant,
                         SUM(status='MISSING_SCOPES') AS missing_scopes,
@@ -5078,7 +5078,7 @@ return function (ModuleRegistry $registry): void {
                 <button class='btn btn-primary mt-3'>Save Pinger Settings</button>
               </form>";
 
-            $rules = $app->db->all(
+            $rules = db_all($app->db, 
                 "SELECT name, filters_json, is_enabled
                  FROM module_corptools_notification_rules
                  ORDER BY id DESC"
@@ -5230,7 +5230,7 @@ return function (ModuleRegistry $registry): void {
         $policyPublicId = trim((string)($req->post['policy_id'] ?? ''));
         $policyId = 0;
         if ($policyPublicId !== '') {
-            $policyRow = $app->db->one("SELECT id FROM corp_scope_policies WHERE public_id=? LIMIT 1", [$policyPublicId]);
+            $policyRow = db_one($app->db, "SELECT id FROM corp_scope_policies WHERE public_id=? LIMIT 1", [$policyPublicId]);
             $policyId = (int)($policyRow['id'] ?? 0);
         }
         $name = trim((string)($req->post['name'] ?? ''));
@@ -5253,7 +5253,7 @@ return function (ModuleRegistry $registry): void {
         $payloadOptional = json_encode($optional, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
         if ($policyId > 0) {
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE corp_scope_policies
                  SET name=?, description=?, applies_to=?, required_scopes_json=?, optional_scopes_json=?, is_active=?
                  WHERE id=?",
@@ -5261,18 +5261,18 @@ return function (ModuleRegistry $registry): void {
             );
         } else {
             $policyPublicId = Identifiers::generatePublicId($app->db, 'corp_scope_policies');
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO corp_scope_policies
                  (public_id, name, description, applies_to, required_scopes_json, optional_scopes_json, is_active, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
                 [$policyPublicId, $name, $description, $appliesTo, $payloadRequired, $payloadOptional, $isActive]
             );
-            $row = $app->db->one("SELECT LAST_INSERT_ID() AS id");
+            $row = db_one($app->db, "SELECT LAST_INSERT_ID() AS id");
             $policyId = (int)($row['id'] ?? 0);
         }
 
         if ($isActive === 1 && $policyId > 0) {
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE corp_scope_policies SET is_active=0 WHERE applies_to=? AND id<>?",
                 [$appliesTo, $policyId]
             );
@@ -5284,13 +5284,13 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('POST', '/admin/corptools/scope-policy/override', function (Request $req) use ($app): Response {
         $policyPublicId = trim((string)($req->post['policy_id'] ?? ''));
-        $policyRow = $policyPublicId !== '' ? $app->db->one("SELECT id FROM corp_scope_policies WHERE public_id=? LIMIT 1", [$policyPublicId]) : null;
+        $policyRow = $policyPublicId !== '' ? db_one($app->db, "SELECT id FROM corp_scope_policies WHERE public_id=? LIMIT 1", [$policyPublicId]) : null;
         $policyId = (int)($policyRow['id'] ?? 0);
         $targetType = (string)($req->post['target_type'] ?? 'user');
         $targetUserPublicId = trim((string)($req->post['target_user_public_id'] ?? ''));
         $targetGroupSlug = trim((string)($req->post['target_group_slug'] ?? ''));
-        $targetUserRow = $targetUserPublicId !== '' ? $app->db->one("SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$targetUserPublicId]) : null;
-        $targetGroupRow = $targetGroupSlug !== '' ? $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$targetGroupSlug]) : null;
+        $targetUserRow = $targetUserPublicId !== '' ? db_one($app->db, "SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$targetUserPublicId]) : null;
+        $targetGroupRow = $targetGroupSlug !== '' ? db_one($app->db, "SELECT id FROM groups WHERE slug=? LIMIT 1", [$targetGroupSlug]) : null;
         $targetUserId = (int)($targetUserRow['id'] ?? 0);
         $targetGroupId = (int)($targetGroupRow['id'] ?? 0);
         $required = $req->post['override_required_scopes'] ?? [];
@@ -5306,7 +5306,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . $policyId);
         }
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO corp_scope_policy_overrides
              (public_id, policy_id, target_type, target_id, required_scopes_json, optional_scopes_json, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())",
@@ -5328,7 +5328,7 @@ return function (ModuleRegistry $registry): void {
         $overridePublicId = trim((string)($req->post['override_public_id'] ?? ''));
         $policyPublicId = trim((string)($req->post['policy_id'] ?? ''));
         if ($overridePublicId !== '') {
-            $app->db->run("DELETE FROM corp_scope_policy_overrides WHERE public_id=?", [$overridePublicId]);
+            db_exec($app->db, "DELETE FROM corp_scope_policy_overrides WHERE public_id=?", [$overridePublicId]);
         }
         $_SESSION['corptools_scope_flash'] = ['type' => 'success', 'message' => 'Scope override removed.'];
         return Response::redirect('/admin/corptools?tab=scope_policy&policy_id=' . rawurlencode($policyPublicId));
@@ -5339,7 +5339,7 @@ return function (ModuleRegistry $registry): void {
         $filtersRaw = trim((string)($req->post['filters'] ?? ''));
         if ($name !== '') {
             $filters = array_values(array_filter(array_map('trim', explode(',', $filtersRaw))));
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_corptools_notification_rules
                  (scope_type, scope_id, name, filters_json, is_enabled, created_at, updated_at)
                  VALUES ('global', 0, ?, ?, 1, NOW(), NOW())",

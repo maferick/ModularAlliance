@@ -114,7 +114,7 @@ final class SecureGroupService
     /** @return array<string, mixed> */
     public function buildUserContext(int $userId): array
     {
-        $identityRows = $this->db->all(
+        $identityRows = db_all($this->db, 
             "SELECT character_id, is_main FROM core_character_identities WHERE user_id=?",
             [$userId]
         );
@@ -131,14 +131,14 @@ final class SecureGroupService
         }
 
         if ($mainCharacterId === 0) {
-            $main = $this->db->one(
+            $main = db_one($this->db, 
                 "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
                 [$userId]
             );
             $mainCharacterId = (int)($main['character_id'] ?? 0);
         }
 
-        $mainNameRow = $this->db->one(
+        $mainNameRow = db_one($this->db, 
             "SELECT character_name FROM eve_users WHERE id=? LIMIT 1",
             [$userId]
         );

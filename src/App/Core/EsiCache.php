@@ -79,7 +79,7 @@ final class EsiCache
         try {
             // Read from DB cache if allowed
             if (!$force) {
-                $row = $this->db->one(
+                $row = db_one($this->db, 
                     "SELECT payload_json, fetched_at, ttl_seconds, status_code
                      FROM esi_cache
                      WHERE scope_key=? AND cache_key=?
@@ -136,7 +136,7 @@ final class EsiCache
 
             $payload = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-            $this->db->run(
+            db_exec($this->db, 
                 "REPLACE INTO esi_cache (scope_key, cache_key, url, payload_json, fetched_at, ttl_seconds, status_code)
                  VALUES (?, ?, ?, ?, NOW(), ?, ?)",
                 [
@@ -165,7 +165,7 @@ final class EsiCache
         } catch (\Throwable $e) {
             // Cache failure entry (best effort) to avoid hammering ESI in loops
             try {
-                $this->db->run(
+                db_exec($this->db, 
                     "REPLACE INTO esi_cache (scope_key, cache_key, url, payload_json, fetched_at, ttl_seconds, status_code)
                      VALUES (?, ?, ?, ?, NOW(), ?, ?)",
                     [
@@ -247,7 +247,7 @@ final class EsiCache
             } catch (\Throwable $ignore) {}
         }
 
-        $row = $this->db->one(
+        $row = db_one($this->db, 
             "SELECT payload_json, fetched_at, ttl_seconds, status_code
              FROM esi_cache
              WHERE scope_key=? AND cache_key=?
@@ -289,7 +289,7 @@ final class EsiCache
             }
             if ($status >= 200 && $status < 300) {
                 $payload = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                $this->db->run(
+                db_exec($this->db, 
                     "REPLACE INTO esi_cache (scope_key, cache_key, url, payload_json, fetched_at, ttl_seconds, status_code)
                      VALUES (?, ?, ?, ?, NOW(), ?, ?)",
                     [$scopeKey, $cacheKey, $urlKey, $payload, $ttlSeconds, $status]
@@ -308,7 +308,7 @@ final class EsiCache
             }
 
             if (in_array($status, $ignoreStatus, true)) {
-                $this->db->run(
+                db_exec($this->db, 
                     "REPLACE INTO esi_cache (scope_key, cache_key, url, payload_json, fetched_at, ttl_seconds, status_code)
                      VALUES (?, ?, ?, ?, NOW(), ?, ?)",
                     [$scopeKey, $cacheKey, $urlKey, json_encode([]), min($ttlSeconds, 300), $status]
@@ -319,7 +319,7 @@ final class EsiCache
             throw new \RuntimeException("ESI HTTP {$status}");
         } catch (\Throwable $e) {
             try {
-                $this->db->run(
+                db_exec($this->db, 
                     "REPLACE INTO esi_cache (scope_key, cache_key, url, payload_json, fetched_at, ttl_seconds, status_code)
                      VALUES (?, ?, ?, ?, NOW(), ?, ?)",
                     [

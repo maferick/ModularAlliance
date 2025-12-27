@@ -28,7 +28,7 @@ final class EveSso
         $verifier = rtrim(strtr(base64_encode(random_bytes(64)), '+/', '-_'), '=');
         $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
 
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO sso_login_state (state, code_verifier, created_at) VALUES (?, ?, NOW())",
             [$state, $verifier]
         );
@@ -57,11 +57,11 @@ final class EveSso
     {
         $meta = $this->getMetadata();
 
-        $row = $this->db->one("SELECT state, code_verifier FROM sso_login_state WHERE state=? LIMIT 1", [$state]);
+        $row = db_one($this->db, "SELECT state, code_verifier FROM sso_login_state WHERE state=? LIMIT 1", [$state]);
         if (!$row) throw new \RuntimeException("Invalid/expired state");
 
         // one-time use
-        $this->db->run("DELETE FROM sso_login_state WHERE state=?", [$state]);
+        db_exec($this->db, "DELETE FROM sso_login_state WHERE state=?", [$state]);
 
         $clientId = (string)$this->cfg['client_id'];
         $secret   = (string)$this->cfg['client_secret'];
@@ -100,7 +100,7 @@ final class EveSso
         $characterName = (string)($jwtPayload['name'] ?? 'Unknown');
         $owner = (string)($jwtPayload['owner'] ?? '');
 
-        $existingUser = $this->db->one("SELECT id FROM eve_users WHERE character_id=? LIMIT 1", [$characterId]);
+        $existingUser = db_one($this->db, "SELECT id FROM eve_users WHERE character_id=? LIMIT 1", [$characterId]);
         $existingUserId = (int)($existingUser['id'] ?? 0);
 
         $linkFlash = null;
@@ -122,7 +122,7 @@ final class EveSso
             unset($_SESSION['charlink_token']);
             $linkIntent = true;
             $tokenHash = hash('sha256', $pendingToken);
-            $linkTokenRow = $this->db->one(
+            $linkTokenRow = db_one($this->db, 
                 "SELECT id, user_id, expires_at, used_at
                  FROM module_charlink_states
                  WHERE token_hash=? AND purpose='link' LIMIT 1",
@@ -158,7 +158,7 @@ final class EveSso
         $finalUserId = $userId > 0 ? $userId : 0;
 
         if ($linkIntent && $linkAllowed && $linkTargetUserId !== null) {
-            $targetUser = $this->db->one("SELECT id FROM eve_users WHERE id=? LIMIT 1", [$linkTargetUserId]);
+            $targetUser = db_one($this->db, "SELECT id FROM eve_users WHERE id=? LIMIT 1", [$linkTargetUserId]);
             if (!$targetUser) {
                 $linkFlash = ['type' => 'danger', 'message' => 'Unable to link character: target account not found.'];
                 $linkAllowed = false;
@@ -180,7 +180,7 @@ final class EveSso
         }
 
         if ($linkIntent && $linkAllowed && $linkTargetUserId !== null) {
-            $existingLink = $this->db->one(
+            $existingLink = db_one($this->db, 
                 "SELECT user_id, status
                  FROM character_links
                  WHERE character_id=? LIMIT 1",
@@ -201,14 +201,14 @@ final class EveSso
                     $finalUserId = $linkTargetUserId;
                 }
             } else {
-                $this->db->run(
+                db_exec($this->db, 
                     "INSERT INTO character_links (user_id, character_id, character_name, status, linked_at, linked_by_user_id)
                      VALUES (?, ?, ?, 'linked', NOW(), ?)
                      ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), character_name=VALUES(character_name), status='linked', linked_at=NOW(), linked_by_user_id=VALUES(linked_by_user_id), revoked_at=NULL, revoked_by_user_id=NULL",
                     [$linkTargetUserId, $characterId, $characterName, $linkTargetUserId]
                 );
                 if ($linkTokenRow) {
-                    $this->db->run(
+                    db_exec($this->db, 
                         "UPDATE module_charlink_states
                          SET used_at=NOW(), used_character_id=?
                          WHERE id=?",
@@ -225,7 +225,7 @@ final class EveSso
         }
 
         if ($finalUserId === $userId) {
-            $linked = $this->db->one(
+            $linked = db_one($this->db, 
                 "SELECT user_id
                  FROM character_links
                  WHERE character_id=? AND status='linked' LIMIT 1",
@@ -258,7 +258,7 @@ final class EveSso
             unset($_SESSION['charlink_pending_targets']);
             $pendingTargets = array_values(array_unique(array_filter($pendingTargets, 'is_string')));
             if (!empty($pendingTargets)) {
-                $existing = $this->db->one(
+                $existing = db_one($this->db, 
                     "SELECT enabled_targets_json
                      FROM module_charlink_links
                      WHERE user_id=? AND character_id=? LIMIT 1",
@@ -270,7 +270,7 @@ final class EveSso
                     if (!is_array($existingTargets)) $existingTargets = [];
                 }
                 $merged = array_values(array_unique(array_merge($existingTargets, $pendingTargets)));
-                $this->db->run(
+                db_exec($this->db, 
                     "INSERT INTO module_charlink_links (user_id, character_id, enabled_targets_json, created_at, updated_at)
                      VALUES (?, ?, ?, NOW(), NOW())
                      ON DUPLICATE KEY UPDATE enabled_targets_json=VALUES(enabled_targets_json), updated_at=NOW()",
@@ -491,7 +491,7 @@ final class EveSso
     {
         $url = (string)$this->cfg['metadata_url'];
 
-        $row = $this->db->one("SELECT payload_json, fetched_at, ttl_seconds FROM oauth_provider_cache WHERE provider='eve' LIMIT 1");
+        $row = db_one($this->db, "SELECT payload_json, fetched_at, ttl_seconds FROM oauth_provider_cache WHERE provider='eve' LIMIT 1");
         if ($row) {
             $fetched = strtotime((string)$row['fetched_at']) ?: 0;
             $ttl = (int)$row['ttl_seconds'];
@@ -507,7 +507,7 @@ final class EveSso
             if (empty($data[$k])) throw new \RuntimeException("SSO metadata missing {$k}");
         }
 
-        $this->db->run(
+        db_exec($this->db, 
             "REPLACE INTO oauth_provider_cache (provider, payload_json, fetched_at, ttl_seconds)
              VALUES ('eve', ?, NOW(), 86400)",
             [json_encode($data, JSON_UNESCAPED_SLASHES)]
@@ -544,10 +544,10 @@ final class EveSso
 
     private function upsertUser(int $characterId, string $name, string $owner, array $jwtPayload): int
     {
-        $existing = $this->db->one("SELECT id FROM eve_users WHERE character_id=? LIMIT 1", [$characterId]);
+        $existing = db_one($this->db, "SELECT id FROM eve_users WHERE character_id=? LIMIT 1", [$characterId]);
 
         if ($existing) {
-            $this->db->run(
+            db_exec($this->db, 
                 "UPDATE eve_users SET character_name=?, owner_hash=?, jwt_payload_json=? WHERE id=?",
                 [$name, $owner ?: null, json_encode($jwtPayload), (int)$existing['id']]
             );
@@ -555,13 +555,13 @@ final class EveSso
         }
 
         $publicId = Identifiers::generatePublicId($this->db, 'eve_users');
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO eve_users (public_id, character_id, character_name, owner_hash, jwt_payload_json)
              VALUES (?, ?, ?, ?, ?)",
             [$publicId, $characterId, $name, $owner ?: null, json_encode($jwtPayload)]
         );
 
-        $row = $this->db->one("SELECT id FROM eve_users WHERE character_id=? LIMIT 1", [$characterId]);
+        $row = db_one($this->db, "SELECT id FROM eve_users WHERE character_id=? LIMIT 1", [$characterId]);
         return (int)($row['id'] ?? 0);
     }
 
@@ -594,7 +594,7 @@ final class EveSso
             $orgType = (string)($orgContext['org_type'] ?? '');
             $orgId = (int)($orgContext['org_id'] ?? 0);
         }
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO eve_token_buckets
              (user_id, character_id, bucket, org_type, org_id, access_token, refresh_token, expires_at, scopes_json, token_json, status, last_refresh_at, error_last, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
@@ -635,7 +635,7 @@ final class EveSso
             $orgType = (string)($orgContext['org_type'] ?? '');
             $orgId = (int)($orgContext['org_id'] ?? 0);
         }
-        return $this->db->one(
+        return db_one($this->db, 
             "SELECT user_id, character_id, access_token, refresh_token, expires_at, scopes_json, status, last_refresh_at, error_last
              FROM eve_token_buckets
              WHERE character_id=? AND bucket=? AND org_type=? AND org_id=?
@@ -685,7 +685,7 @@ final class EveSso
             $orgType = (string)($orgContext['org_type'] ?? '');
             $orgId = (int)($orgContext['org_id'] ?? 0);
         }
-        $this->db->run(
+        db_exec($this->db, 
             "UPDATE eve_token_buckets
              SET status=?, error_last=?, last_refresh_at=?, updated_at=NOW()
              WHERE character_id=? AND user_id=? AND bucket=? AND org_type=? AND org_id=?
@@ -767,7 +767,7 @@ final class EveSso
 
     private function audit(string $event, array $payload): void
     {
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO sso_audit (event, payload_json) VALUES (?, ?)",
             [$event, json_encode($payload, JSON_UNESCAPED_SLASHES)]
         );

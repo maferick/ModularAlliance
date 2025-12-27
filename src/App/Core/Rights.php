@@ -25,11 +25,11 @@ final class Rights
         if ($userId <= 0 || $right === '') return false;
 
         // Hard override: superadmin
-        $su = $this->db->one("SELECT 1 FROM eve_users WHERE id=? AND is_superadmin=1 LIMIT 1", [$userId]);
+        $su = db_one($this->db, "SELECT 1 FROM eve_users WHERE id=? AND is_superadmin=1 LIMIT 1", [$userId]);
         if ($su) return true;
 
         // Hard override: any admin-marked group (never lock out)
-        $admin = $this->db->one(
+        $admin = db_one($this->db, 
             "SELECT 1
              FROM eve_user_groups ug
              JOIN groups g ON g.id = ug.group_id
@@ -57,7 +57,7 @@ final class Rights
         }
 
         // Recompute effective rights for this user
-        $rows = $this->db->all(
+        $rows = db_all($this->db, 
             "SELECT DISTINCT r.slug
              FROM eve_user_groups ug
              JOIN group_rights gr ON gr.group_id = ug.group_id
@@ -99,12 +99,12 @@ final class Rights
      */
     public function getGlobalVersion(): int
     {
-        $row = $this->db->one("SELECT version FROM authz_state WHERE id=1 LIMIT 1");
+        $row = db_one($this->db, "SELECT version FROM authz_state WHERE id=1 LIMIT 1");
         if ($row && isset($row['version'])) return (int)$row['version'];
 
         // self-heal if table exists but row missing
         try {
-            $this->db->run("INSERT IGNORE INTO authz_state (id, version) VALUES (1, 1)");
+            db_exec($this->db, "INSERT IGNORE INTO authz_state (id, version) VALUES (1, 1)");
         } catch (\Throwable $e) {
             // ignore; migrations may not have run yet
         }
@@ -115,8 +115,8 @@ final class Rights
     {
         // Best effort; never break request
         try {
-            $this->db->run("INSERT IGNORE INTO authz_state (id, version) VALUES (1, 1)");
-            $this->db->run("UPDATE authz_state SET version=version+1, updated_at=NOW() WHERE id=1");
+            db_exec($this->db, "INSERT IGNORE INTO authz_state (id, version) VALUES (1, 1)");
+            db_exec($this->db, "UPDATE authz_state SET version=version+1, updated_at=NOW() WHERE id=1");
         } catch (\Throwable $e) {}
         // Clear session cache for current user (optional immediate effect)
         unset($_SESSION['authz.cache']);
@@ -139,14 +139,14 @@ final class Rights
 
         if ($userId <= 0 || $right === '') return $out;
 
-        $su = $this->db->one("SELECT 1 FROM eve_users WHERE id=? AND is_superadmin=1 LIMIT 1", [$userId]);
+        $su = db_one($this->db, "SELECT 1 FROM eve_users WHERE id=? AND is_superadmin=1 LIMIT 1", [$userId]);
         if ($su) {
             $out['superadmin'] = true;
             $out['decision'] = 'allow';
             return $out;
         }
 
-        $groups = $this->db->all(
+        $groups = db_all($this->db, 
             "SELECT g.id, g.slug, g.name, g.is_admin
              FROM eve_user_groups ug
              JOIN groups g ON g.id = ug.group_id
@@ -163,7 +163,7 @@ final class Rights
             return $out;
         }
 
-        $grant = $this->db->all(
+        $grant = db_all($this->db, 
             "SELECT DISTINCT g.id, g.slug, g.name
              FROM eve_user_groups ug
              JOIN groups g ON g.id = ug.group_id

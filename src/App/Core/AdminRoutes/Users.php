@@ -18,10 +18,10 @@ final class Users
             $flash = $_SESSION['users_flash'] ?? null;
             unset($_SESSION['users_flash']);
 
-            $users = $app->db->all("SELECT id, public_id, character_id, character_name, is_superadmin, created_at FROM eve_users ORDER BY id DESC LIMIT 200");
-            $groups = $app->db->all("SELECT id, slug, name, is_admin FROM groups ORDER BY is_admin DESC, name ASC");
+            $users = db_all($app->db, "SELECT id, public_id, character_id, character_name, is_superadmin, created_at FROM eve_users ORDER BY id DESC LIMIT 200");
+            $groups = db_all($app->db, "SELECT id, slug, name, is_admin FROM groups ORDER BY is_admin DESC, name ASC");
             $ug = [];
-            foreach ($app->db->all("SELECT user_id, group_id FROM eve_user_groups") as $r) {
+            foreach (db_all($app->db, "SELECT user_id, group_id FROM eve_user_groups") as $r) {
                 $ug[(int)$r['user_id']][(int)$r['group_id']] = true;
             }
 
@@ -92,20 +92,20 @@ final class Users
         $registry->route('POST', '/admin/users/save', function (Request $req) use ($app): Response {
             $publicId = trim((string)($req->post['user_id'] ?? ''));
             if ($publicId === '') return Response::redirect('/admin/users');
-            $row = $app->db->one("SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$publicId]);
+            $row = db_one($app->db, "SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$publicId]);
             $uid = (int)($row['id'] ?? 0);
             if ($uid <= 0) return Response::redirect('/admin/users');
             $slugs = $req->post['group_slugs'] ?? [];
             if (!is_array($slugs)) $slugs = [];
 
-            $app->db->run("DELETE FROM eve_user_groups WHERE user_id=?", [$uid]);
+            db_exec($app->db, "DELETE FROM eve_user_groups WHERE user_id=?", [$uid]);
             foreach ($slugs as $slug) {
                 $slug = trim((string)$slug);
                 if ($slug === '') continue;
-                $groupRow = $app->db->one("SELECT id FROM groups WHERE slug=? LIMIT 1", [$slug]);
+                $groupRow = db_one($app->db, "SELECT id FROM groups WHERE slug=? LIMIT 1", [$slug]);
                 $gid = (int)($groupRow['id'] ?? 0);
                 if ($gid <= 0) continue;
-                $app->db->run("INSERT IGNORE INTO eve_user_groups (user_id, group_id) VALUES (?, ?)", [$uid, $gid]);
+                db_exec($app->db, "INSERT IGNORE INTO eve_user_groups (user_id, group_id) VALUES (?, ?)", [$uid, $gid]);
             }
             (new Rights($app->db))->bumpGlobalVersion();
             return Response::redirect('/admin/users');
@@ -113,7 +113,7 @@ final class Users
 
         $registry->route('POST', '/admin/users/delete', function (Request $req) use ($app): Response {
             $publicId = trim((string)($req->post['user_id'] ?? ''));
-            $targetRow = $publicId !== '' ? $app->db->one("SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$publicId]) : null;
+            $targetRow = $publicId !== '' ? db_one($app->db, "SELECT id FROM eve_users WHERE public_id=? LIMIT 1", [$publicId]) : null;
             $targetId = (int)($targetRow['id'] ?? 0);
             $currentUserId = (int)($_SESSION['user_id'] ?? 0);
             if ($targetId <= 0) return Response::redirect('/admin/users');
@@ -122,14 +122,14 @@ final class Users
                 return Response::redirect('/admin/users');
             }
 
-            $target = $app->db->one("SELECT id, is_superadmin FROM eve_users WHERE id=? LIMIT 1", [$targetId]);
+            $target = db_one($app->db, "SELECT id, is_superadmin FROM eve_users WHERE id=? LIMIT 1", [$targetId]);
             if (!$target) {
                 $_SESSION['users_flash'] = ['type' => 'warning', 'message' => 'User not found.'];
                 return Response::redirect('/admin/users');
             }
 
             if ((int)($target['is_superadmin'] ?? 0) === 1) {
-                $countRow = $app->db->one("SELECT COUNT(*) AS total FROM eve_users WHERE is_superadmin=1");
+                $countRow = db_one($app->db, "SELECT COUNT(*) AS total FROM eve_users WHERE is_superadmin=1");
                 $total = (int)($countRow['total'] ?? 0);
                 if ($total <= 1) {
                     $_SESSION['users_flash'] = ['type' => 'danger', 'message' => 'Cannot delete the last superadmin account.'];
@@ -137,7 +137,7 @@ final class Users
                 }
             }
 
-            $app->db->run("DELETE FROM eve_users WHERE id=?", [$targetId]);
+            db_exec($app->db, "DELETE FROM eve_users WHERE id=?", [$targetId]);
             $_SESSION['users_flash'] = ['type' => 'success', 'message' => 'User deleted.'];
             return Response::redirect('/admin/users');
         }, ['right' => 'admin.users']);

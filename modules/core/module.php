@@ -19,7 +19,8 @@ use App\Core\Universe;
 use App\Corptools\Cron\JobRegistry;
 use App\Http\Response;
 
-require_once APP_ROOT . '/core/functiondb.php';
+require_once APP_ROOT . '/src/App/Core/functiondb.php';
+require_once __DIR__ . '/functions.php';
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
@@ -86,10 +87,11 @@ return function (ModuleRegistry $registry): void {
 
         $p = $universeShared->characterProfile($cid);
         $org = $identityResolver->resolveCharacter($cid);
+        $orgLabels = core_module_org_labels($org);
 
         $char = htmlspecialchars($p['character']['name'] ?? 'Unknown');
-        $corp = htmlspecialchars(($org['org_status'] ?? '') === 'fresh' && (int)($org['corp_id'] ?? 0) > 0 ? (string)($org['corporation']['name'] ?? 'Unknown') : 'Unknown');
-        $all  = htmlspecialchars(($org['org_status'] ?? '') === 'fresh' && (int)($org['alliance_id'] ?? 0) > 0 ? (string)($org['alliance']['name'] ?? 'Unknown') : 'Unknown');
+        $corp = htmlspecialchars($orgLabels['corp']);
+        $all  = htmlspecialchars($orgLabels['alliance']);
 
         $body = "<h1>Dashboard</h1>
                  <p>Welcome back, <strong>{$char}</strong>.</p>

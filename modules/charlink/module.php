@@ -17,6 +17,8 @@ use App\Corptools\ScopePolicy;
 use App\Http\Request;
 use App\Http\Response;
 
+require_once __DIR__ . '/functions.php';
+
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
     $universeShared = new Universe($app->db);
@@ -143,7 +145,7 @@ return function (ModuleRegistry $registry): void {
     }
 
     $loadTargets = function () use ($app, $defaultTargets): array {
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT slug, name, description, scopes_json, is_enabled, is_ignored
              FROM module_charlink_targets"
         );
@@ -172,7 +174,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         foreach ($missing as $slug => $target) {
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_charlink_targets (slug, name, description, scopes_json, is_enabled, is_ignored, created_at, updated_at)
                  VALUES (?, ?, ?, ?, 1, 0, NOW(), NOW())",
                 [
@@ -185,7 +187,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         if (!empty($missing)) {
-            $rows = $app->db->all(
+            $rows = db_all($app->db, 
                 "SELECT slug, name, description, scopes_json, is_enabled, is_ignored
                  FROM module_charlink_targets"
             );
@@ -229,7 +231,7 @@ return function (ModuleRegistry $registry): void {
     };
 
     $tokenInfo = function (int $characterId) use ($app): array {
-        $row = $app->db->one(
+        $row = db_one($app->db, 
             "SELECT scopes_json, expires_at, status, error_last
              FROM eve_token_buckets
              WHERE character_id=? AND bucket='default' AND org_type='' AND org_id=0
@@ -283,7 +285,7 @@ return function (ModuleRegistry $registry): void {
             }
         }
 
-        $linkRow = $app->db->one(
+        $linkRow = db_one($app->db, 
             "SELECT enabled_targets_json
              FROM module_charlink_links
              WHERE user_id=? AND character_id=? LIMIT 1",
@@ -308,7 +310,7 @@ return function (ModuleRegistry $registry): void {
             ?? $profile['character']['portrait']['px64x64']
             ?? null;
         $org = $identityResolver->resolveCharacter($cid);
-        $corpName = htmlspecialchars(($org['org_status'] ?? '') === 'fresh' && (int)($org['corp_id'] ?? 0) > 0 ? (string)($org['corporation']['name'] ?? 'Unknown') : 'Unknown');
+        $corpName = htmlspecialchars(charlink_corp_label($org));
 
         $flash = $_SESSION['charlink_hub_flash'] ?? null;
         unset($_SESSION['charlink_hub_flash']);
@@ -506,14 +508,14 @@ return function (ModuleRegistry $registry): void {
         $filterGroup = (string)($req->query['group'] ?? '');
         $filterCorp = (string)($req->query['corp'] ?? '');
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT l.user_id, l.character_id, l.enabled_targets_json, l.updated_at
              FROM module_charlink_links l
              ORDER BY l.updated_at DESC
              LIMIT 500"
         );
 
-        $groupRows = $app->db->all(
+        $groupRows = db_all($app->db, 
             "SELECT ug.user_id, g.name
              FROM eve_user_groups ug
              JOIN groups g ON g.id = ug.group_id"
@@ -560,12 +562,11 @@ return function (ModuleRegistry $registry): void {
 
             $profile = $universeShared->characterProfile($characterId);
             $org = $identityResolver->resolveCharacter($characterId);
-            $corpLabel = ($org['org_status'] ?? '') === 'fresh' && (int)($org['corp_id'] ?? 0) > 0
-                ? (string)($org['corporation']['name'] ?? 'Unknown')
-                : 'Unknown';
+            $corpLabel = charlink_corp_label($org);
+            $corpOption = $corpLabel === 'Unknown' ? '' : $corpLabel;
 
-            if ($corpLabel !== '') {
-                $corpOptions[$corpLabel] = true;
+            if ($corpOption !== '') {
+                $corpOptions[$corpOption] = true;
             }
 
             if ($filterCorp !== '' && strcasecmp($corpLabel, $filterCorp) !== 0) {
@@ -746,7 +747,7 @@ return function (ModuleRegistry $registry): void {
             if ($slug === '') continue;
             $isEnabled = array_key_exists($slug, $enabled) ? 1 : 0;
             $isIgnored = array_key_exists($slug, $ignored) ? 1 : 0;
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE module_charlink_targets
                  SET is_enabled=?, is_ignored=?, updated_at=NOW()
                  WHERE slug=?",
@@ -789,7 +790,7 @@ return function (ModuleRegistry $registry): void {
         $tokenPrefix = substr($rawToken, 0, 8);
         $expiresAt = gmdate('Y-m-d H:i:s', time() + 3600);
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_charlink_states (user_id, token_hash, token_prefix, purpose, expires_at)
              VALUES (?, ?, ?, 'link', ?)",
             [$uid, $tokenHash, $tokenPrefix, $expiresAt]
@@ -810,7 +811,7 @@ return function (ModuleRegistry $registry): void {
 
         $characterId = (int)($req->post['character_id'] ?? 0);
         if ($characterId > 0) {
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE character_links
                  SET status='revoked', revoked_at=NOW(), revoked_by_user_id=?
                  WHERE user_id=? AND character_id=?",
@@ -829,7 +830,7 @@ return function (ModuleRegistry $registry): void {
         $newMainId = (int)($req->post['character_id'] ?? 0);
         if ($newMainId <= 0) return Response::redirect('/user/alts');
 
-        $currentMain = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
+        $currentMain = db_one($app->db, "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
         $currentMainId = (int)($currentMain['character_id'] ?? 0);
         $currentMainName = (string)($currentMain['character_name'] ?? 'Unknown');
 
@@ -838,7 +839,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/user/alts');
         }
 
-        $link = $app->db->one(
+        $link = db_one($app->db, 
             "SELECT character_id, character_name
              FROM character_links
              WHERE user_id=? AND character_id=? AND status='linked' LIMIT 1",
@@ -852,7 +853,7 @@ return function (ModuleRegistry $registry): void {
 
         $newMainName = (string)($link['character_name'] ?? 'Unknown');
 
-        $conflict = $app->db->one(
+        $conflict = db_one($app->db, 
             "SELECT id FROM eve_users WHERE character_id=? AND id<>? LIMIT 1",
             [$newMainId, $uid]
         );
@@ -863,18 +864,18 @@ return function (ModuleRegistry $registry): void {
 
         $app->db->begin();
         try {
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE eve_users SET character_id=?, character_name=? WHERE id=?",
                 [$newMainId, $newMainName, $uid]
             );
 
-            $app->db->run(
+            db_exec($app->db, 
                 "DELETE FROM character_links WHERE user_id=? AND character_id=?",
                 [$uid, $newMainId]
             );
 
             if ($currentMainId > 0) {
-                $app->db->run(
+                db_exec($app->db, 
                     "INSERT INTO character_links (user_id, character_id, character_name, status, linked_at, linked_by_user_id)
                      VALUES (?, ?, ?, 'linked', NOW(), ?)
                      ON DUPLICATE KEY UPDATE status='linked', character_name=VALUES(character_name), linked_at=NOW(), linked_by_user_id=VALUES(linked_by_user_id), revoked_at=NULL, revoked_by_user_id=NULL",
@@ -899,7 +900,7 @@ return function (ModuleRegistry $registry): void {
 
         $tokenId = (int)($req->post['token_id'] ?? 0);
         if ($tokenId > 0) {
-            $app->db->run(
+            db_exec($app->db, 
                 "DELETE FROM module_charlink_states WHERE id=? AND user_id=? AND purpose='link'",
                 [$tokenId, $uid]
             );
@@ -918,15 +919,15 @@ return function (ModuleRegistry $registry): void {
         $newToken = $_SESSION['charlink_new_token'] ?? null;
         unset($_SESSION['charlink_new_token']);
 
-        $primary = $app->db->one("SELECT id, character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
-        $links = $app->db->all(
+        $primary = db_one($app->db, "SELECT id, character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$uid]);
+        $links = db_all($app->db, 
             "SELECT character_id, character_name, linked_at
              FROM character_links
              WHERE user_id=? AND status='linked'
              ORDER BY linked_at ASC",
             [$uid]
         );
-        $tokens = $app->db->all(
+        $tokens = db_all($app->db, 
             "SELECT id, token_prefix, expires_at, used_at, used_character_id
              FROM module_charlink_states
              WHERE user_id=? AND purpose='link'
@@ -1100,7 +1101,7 @@ return function (ModuleRegistry $registry): void {
         $flash = $_SESSION['charlink_admin_flash'] ?? null;
         unset($_SESSION['charlink_admin_flash']);
 
-        $links = $app->db->all(
+        $links = db_all($app->db, 
             "SELECT cl.character_id, cl.character_name, cl.user_id, cl.linked_at, eu.character_name AS user_name
              FROM character_links cl
              JOIN eve_users eu ON eu.id = cl.user_id
@@ -1109,7 +1110,7 @@ return function (ModuleRegistry $registry): void {
              LIMIT 200"
         );
 
-        $tokens = $app->db->all(
+        $tokens = db_all($app->db, 
             "SELECT t.id, t.token_prefix, t.expires_at, t.used_at, t.used_character_id, eu.character_name AS user_name
              FROM module_charlink_states t
              JOIN eve_users eu ON eu.id = t.user_id
@@ -1222,7 +1223,7 @@ return function (ModuleRegistry $registry): void {
         $characterId = (int)($req->post['character_id'] ?? 0);
         $uid = (int)($_SESSION['user_id'] ?? 0);
         if ($characterId > 0) {
-            $app->db->run(
+            db_exec($app->db, 
                 "UPDATE character_links
                  SET status='revoked', revoked_at=NOW(), revoked_by_user_id=?
                  WHERE character_id=?",
@@ -1236,7 +1237,7 @@ return function (ModuleRegistry $registry): void {
     $registry->route('POST', '/admin/charlink/token-revoke', function (Request $req) use ($app): Response {
         $tokenId = (int)($req->post['token_id'] ?? 0);
         if ($tokenId > 0) {
-            $app->db->run("DELETE FROM module_charlink_states WHERE id=? AND purpose='link'", [$tokenId]);
+            db_exec($app->db, "DELETE FROM module_charlink_states WHERE id=? AND purpose='link'", [$tokenId]);
             $_SESSION['charlink_admin_flash'] = ['type' => 'info', 'message' => 'Token deleted.'];
         }
         return Response::redirect('/admin/charlink');

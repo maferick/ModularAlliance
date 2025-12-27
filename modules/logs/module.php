@@ -13,6 +13,8 @@ use App\Core\Rights;
 use App\Http\Request;
 use App\Http\Response;
 
+require_once __DIR__ . '/functions.php';
+
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
 
@@ -44,13 +46,13 @@ return function (ModuleRegistry $registry): void {
         $perPage = 50;
         $offset = ($page - 1) * $perPage;
 
-        $countRow = $app->db->one("SELECT COUNT(*) AS total FROM access_log");
+        $countRow = db_one($app->db, "SELECT COUNT(*) AS total FROM access_log");
         $total = (int)($countRow['total'] ?? 0);
 
         $limit = max(1, min($perPage, 200));
         $offset = max(0, $offset);
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT l.id, l.created_at, l.user_id, l.character_id, l.ip, l.method, l.path, l.status, l.decision, l.reason, l.context_json,
                     u.public_id AS user_public_id, u.character_name AS user_character_name
              FROM access_log l
@@ -67,10 +69,9 @@ return function (ModuleRegistry $registry): void {
             $status = htmlspecialchars((string)($row['status'] ?? ''));
             $decision = htmlspecialchars((string)($row['decision'] ?? ''));
             $reason = htmlspecialchars((string)($row['reason'] ?? ''));
-            $userId = htmlspecialchars((string)($row['user_public_id'] ?? ''));
-            $characterName = htmlspecialchars((string)($row['user_character_name'] ?? ''));
-            $userLabel = $userId !== '' ? $userId : '-';
-            $characterLabel = $characterName !== '' ? $characterName : '-';
+            $labels = logs_format_user_labels($row);
+            $userLabel = htmlspecialchars($labels['user']);
+            $characterLabel = htmlspecialchars($labels['character']);
             $ip = htmlspecialchars((string)($row['ip'] ?? ''));
             $context = '';
 

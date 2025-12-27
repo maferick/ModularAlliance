@@ -50,28 +50,4 @@ final class Db
     public function rollback(): void { if ($this->pdo->inTransaction()) $this->pdo->rollBack(); }
     public function inTx(): bool { return $this->pdo->inTransaction(); }
 
-    public function exec(string $sql): void { $this->pdo->exec($sql); }
-
-    public function run(string $sql, array $params = []): int
-    {
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
-        return $stmt->rowCount();
-    }
-
-    public function one(string $sql, array $params = []): ?array
-    {
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
-        $row = $stmt->fetch();
-        return $row !== false ? $row : null;
-    }
-
-        public function all(string $sql, array $params = []): array
-    {
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
-        return $stmt->fetchAll();
-    }
-
 }

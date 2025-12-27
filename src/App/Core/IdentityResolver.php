@@ -34,7 +34,7 @@ final class IdentityResolver
         }
 
         $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
-        $rows = $this->db->all(
+        $rows = db_all($this->db, 
             "SELECT ci.character_id, ci.user_id, ci.is_main, ci.last_verified_at, co.corp_id, co.alliance_id, co.verified_at AS org_verified_at
              FROM core_character_identities ci
              LEFT JOIN core_character_orgs co ON co.character_id=ci.character_id
@@ -101,7 +101,7 @@ final class IdentityResolver
         }
 
         $verifiedAt = $verifiedAt ?? gmdate('Y-m-d H:i:s');
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO core_character_identities (character_id, user_id, is_main, last_verified_at)
              VALUES (?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
@@ -112,7 +112,7 @@ final class IdentityResolver
         );
 
         if ($isMain) {
-            $this->db->run(
+            db_exec($this->db, 
                 "UPDATE core_character_identities SET is_main=0 WHERE user_id=? AND character_id<>?",
                 [$userId, $characterId]
             );
@@ -126,7 +126,7 @@ final class IdentityResolver
         }
 
         $verifiedAt = $verifiedAt ?? gmdate('Y-m-d H:i:s');
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO core_character_orgs (character_id, corp_id, alliance_id, verified_at)
              VALUES (?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE

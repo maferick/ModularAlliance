@@ -25,6 +25,8 @@ use App\Corptools\Settings as CorpToolsSettings;
 use App\Http\Request;
 use App\Http\Response;
 
+require_once __DIR__ . '/functions.php';
+
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
     $moduleVersion = '1.0.0';
@@ -244,7 +246,7 @@ return function (ModuleRegistry $registry): void {
     ) use ($app): void {
         $ip = (string)($_SERVER['REMOTE_ADDR'] ?? '');
         $ua = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_memberaudit_access_log\n"
             . " (access_type, viewer_user_id, character_id, token_id, scope, ip_address, user_agent, accessed_at)\n"
             . " VALUES (?, ?, ?, ?, ?, ?, ?, NOW())",
@@ -253,295 +255,19 @@ return function (ModuleRegistry $registry): void {
     };
 
     $resolveEntityName = function (Universe $universe, string $type, int $id): string {
-        if ($id <= 0) return '—';
-        $name = $universe->name($type, $id);
-        $idMarker = '#' . $id;
-        if ($name === '' || str_contains($name, $idMarker)) {
-            return 'Unknown';
-        }
-        return $name;
+        return memberaudit_resolve_entity_name($universe, $type, $id);
     };
     $resolveCharacterName = function (Universe $universe, int $characterId): string {
-        if ($characterId <= 0) return 'Unknown';
-        $profile = $universe->characterProfile($characterId);
-        return (string)($profile['character']['name'] ?? 'Unknown');
+        return memberaudit_resolve_character_name($universe, $characterId);
     };
 
-    $renderAuditData = function (Universe $universe, string $category, array $payload) use ($resolveEntityName): string {
-        if (empty($payload)) {
-            return "<div class='card card-body text-muted'>No cached data yet.</div>";
-        }
-
-        $rows = '';
-        if ($category === 'assets') {
-            foreach ($payload as $row) {
-                $typeName = htmlspecialchars($resolveEntityName($universe, 'type', (int)($row['type_id'] ?? 0)));
-                $qty = number_format((int)($row['quantity'] ?? 0));
-                $locationType = (string)($row['location_type'] ?? '');
-                $locationId = (int)($row['location_id'] ?? 0);
-                $locEntity = match ($locationType) {
-                    'station' => 'station',
-                    'structure' => 'structure',
-                    'solar_system' => 'system',
-                    default => 'structure',
-                };
-                $locationName = htmlspecialchars($resolveEntityName($universe, $locEntity, $locationId));
-                $rows .= "<tr><td>{$typeName}</td><td class='text-end'>{$qty}</td><td>{$locationName}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='3' class='text-muted'>No assets cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Item</th><th class='text-end'>Qty</th><th>Location</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'bio') {
-            $bio = htmlspecialchars((string)($payload['description'] ?? ''));
-            $birthday = htmlspecialchars((string)($payload['birthday'] ?? '—'));
-            $gender = htmlspecialchars((string)($payload['gender'] ?? '—'));
-            $raceId = (int)($payload['race_id'] ?? 0);
-            $bloodlineId = (int)($payload['bloodline_id'] ?? 0);
-            $corpId = (int)($payload['corporation_id'] ?? 0);
-            $allianceId = (int)($payload['alliance_id'] ?? 0);
-            $raceName = htmlspecialchars($resolveEntityName($universe, 'race', $raceId));
-            $bloodlineName = htmlspecialchars($resolveEntityName($universe, 'bloodline', $bloodlineId));
-            $corpName = htmlspecialchars($resolveEntityName($universe, 'corporation', $corpId));
-            $allianceName = htmlspecialchars($resolveEntityName($universe, 'alliance', $allianceId));
-            return "<div class='row g-3'>
-                <div class='col-md-6'><div class='card card-body'><div class='fw-semibold'>Bio</div><div class='text-muted small mt-2'>" . nl2br($bio) . "</div></div></div>
-                <div class='col-md-6'>
-                  <div class='card card-body'>
-                    <div class='row'>
-                      <div class='col-6'><div class='text-muted small'>Birthday</div><div>{$birthday}</div></div>
-                      <div class='col-6'><div class='text-muted small'>Gender</div><div>{$gender}</div></div>
-                    </div>
-                    <div class='row mt-2'>
-                      <div class='col-6'><div class='text-muted small'>Race</div><div>{$raceName}</div></div>
-                      <div class='col-6'><div class='text-muted small'>Bloodline</div><div>{$bloodlineName}</div></div>
-                    </div>
-                    <div class='row mt-2'>
-                      <div class='col-6'><div class='text-muted small'>Corporation</div><div>{$corpName}</div></div>
-                      <div class='col-6'><div class='text-muted small'>Alliance</div><div>{$allianceName}</div></div>
-                    </div>
-                  </div>
-                </div>
-              </div>";
-        }
-
-        if ($category === 'contacts') {
-            foreach ($payload as $row) {
-                $contactType = (string)($row['contact_type'] ?? 'character');
-                $contactId = (int)($row['contact_id'] ?? 0);
-                $name = htmlspecialchars($resolveEntityName($universe, $contactType, $contactId));
-                $standing = htmlspecialchars((string)($row['standing'] ?? '0'));
-                $rows .= "<tr><td>{$name}</td><td>{$contactType}</td><td class='text-end'>{$standing}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='3' class='text-muted'>No contacts cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Contact</th><th>Type</th><th class='text-end'>Standing</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'contracts') {
-            foreach ($payload as $row) {
-                $issuer = htmlspecialchars($resolveEntityName($universe, 'character', (int)($row['issuer_id'] ?? 0)));
-                $assignee = htmlspecialchars($resolveEntityName($universe, 'character', (int)($row['assignee_id'] ?? 0)));
-                $status = htmlspecialchars((string)($row['status'] ?? ''));
-                $title = htmlspecialchars((string)($row['title'] ?? ''));
-                $rows .= "<tr><td>{$title}</td><td>{$issuer}</td><td>{$assignee}</td><td>{$status}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='4' class='text-muted'>No contracts cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Title</th><th>Issuer</th><th>Assignee</th><th>Status</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'corp_history') {
-            foreach ($payload as $row) {
-                $corp = htmlspecialchars($resolveEntityName($universe, 'corporation', (int)($row['corporation_id'] ?? 0)));
-                $start = htmlspecialchars((string)($row['start_date'] ?? ''));
-                $rows .= "<tr><td>{$corp}</td><td>{$start}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='2' class='text-muted'>No corp history cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Corporation</th><th>Start Date</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'corp_roles') {
-            $roles = [];
-            foreach (['roles', 'roles_at_hq', 'roles_at_base', 'roles_at_other'] as $key) {
-                $list = $payload[$key] ?? [];
-                if (!is_array($list) || empty($list)) continue;
-                $roles[$key] = array_map('strval', $list);
-            }
-            if (empty($roles)) {
-                return "<div class='card card-body text-muted'>No corp roles cached.</div>";
-            }
-            $blocks = '';
-            foreach ($roles as $bucket => $list) {
-                $items = '';
-                foreach ($list as $role) {
-                    $items .= "<li>" . htmlspecialchars(str_replace('_', ' ', $role)) . "</li>";
-                }
-                $label = htmlspecialchars(ucwords(str_replace('_', ' ', $bucket)));
-                $blocks .= "<div class='col-md-6'><div class='card card-body'>
-                    <div class='fw-semibold'>{$label}</div><ul class='mb-0 mt-2'>{$items}</ul></div></div>";
-            }
-            return "<div class='row g-3'>{$blocks}</div>";
-        }
-
-        if ($category === 'fw_stats') {
-            $factionName = htmlspecialchars($resolveEntityName($universe, 'faction', (int)($payload['faction_id'] ?? 0)));
-            $kills = (int)($payload['kills']['yesterday'] ?? 0);
-            return "<div class='card card-body'>
-                <div class='fw-semibold'>Faction Warfare</div>
-                <div class='text-muted'>Faction: {$factionName}</div>
-                <div class='mt-2'>Kills yesterday: {$kills}</div>
-              </div>";
-        }
-
-        if ($category === 'implants') {
-            foreach ($payload as $typeId) {
-                $rows .= "<li>" . htmlspecialchars($resolveEntityName($universe, 'type', (int)$typeId)) . "</li>";
-            }
-            if ($rows === '') {
-                return "<div class='card card-body text-muted'>No implants cached.</div>";
-            }
-            return "<ul class='mb-0'>{$rows}</ul>";
-        }
-
-        if ($category === 'jump_clones') {
-            $rows = '';
-            foreach (($payload['jump_clones'] ?? []) as $row) {
-                $locationId = (int)($row['location_id'] ?? 0);
-                $locationName = htmlspecialchars($resolveEntityName($universe, 'structure', $locationId));
-                $implants = $row['implants'] ?? [];
-                $implantsText = '';
-                if (is_array($implants) && !empty($implants)) {
-                    $names = [];
-                    foreach ($implants as $typeId) {
-                        $names[] = $resolveEntityName($universe, 'type', (int)$typeId);
-                    }
-                    $implantsText = htmlspecialchars(implode(', ', $names));
-                }
-                $rows .= "<tr><td>{$locationName}</td><td>" . htmlspecialchars($implantsText ?: '—') . "</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='2' class='text-muted'>No jump clones cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Location</th><th>Implants</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'mails') {
-            foreach ($payload as $row) {
-                $from = htmlspecialchars($resolveEntityName($universe, 'character', (int)($row['from'] ?? 0)));
-                $subject = htmlspecialchars((string)($row['subject'] ?? ''));
-                $timestamp = htmlspecialchars((string)($row['timestamp'] ?? ''));
-                $rows .= "<tr><td>{$subject}</td><td>{$from}</td><td>{$timestamp}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='3' class='text-muted'>No mail headers cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Subject</th><th>From</th><th>Date</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'mining') {
-            foreach ($payload as $row) {
-                $typeName = htmlspecialchars($resolveEntityName($universe, 'type', (int)($row['type_id'] ?? 0)));
-                $systemName = htmlspecialchars($resolveEntityName($universe, 'system', (int)($row['solar_system_id'] ?? 0)));
-                $qty = number_format((int)($row['quantity'] ?? 0));
-                $rows .= "<tr><td>{$typeName}</td><td>{$systemName}</td><td class='text-end'>{$qty}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='3' class='text-muted'>No mining ledger cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Ore</th><th>System</th><th class='text-end'>Quantity</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'loyalty') {
-            foreach ($payload as $row) {
-                $corpName = htmlspecialchars($resolveEntityName($universe, 'corporation', (int)($row['corporation_id'] ?? 0)));
-                $points = number_format((int)($row['loyalty_points'] ?? 0));
-                $rows .= "<tr><td>{$corpName}</td><td class='text-end'>{$points}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='2' class='text-muted'>No loyalty points cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Corporation</th><th class='text-end'>LP</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'skills') {
-            foreach (($payload['skills'] ?? []) as $row) {
-                $skillName = htmlspecialchars($resolveEntityName($universe, 'type', (int)($row['skill_id'] ?? 0)));
-                $level = (int)($row['active_skill_level'] ?? 0);
-                $sp = number_format((int)($row['skillpoints_in_skill'] ?? 0));
-                $rows .= "<tr><td>{$skillName}</td><td class='text-end'>{$level}</td><td class='text-end'>{$sp}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='3' class='text-muted'>No skills cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Skill</th><th class='text-end'>Level</th><th class='text-end'>SP</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'skill_queue') {
-            foreach ($payload as $row) {
-                $skillName = htmlspecialchars($resolveEntityName($universe, 'type', (int)($row['skill_id'] ?? 0)));
-                $level = (int)($row['finished_level'] ?? 0);
-                $end = htmlspecialchars((string)($row['finish_date'] ?? ''));
-                $rows .= "<tr><td>{$skillName}</td><td class='text-end'>{$level}</td><td>{$end}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='3' class='text-muted'>No skill queue cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Skill</th><th class='text-end'>Level</th><th>Finish</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        if ($category === 'wallet_journal' || $category === 'wallet_transactions') {
-            foreach ($payload as $row) {
-                $amount = htmlspecialchars(number_format((float)($row['amount'] ?? 0), 2));
-                $balance = htmlspecialchars(number_format((float)($row['balance'] ?? 0), 2));
-                $refType = htmlspecialchars((string)($row['ref_type'] ?? $row['transaction_type'] ?? ''));
-                $first = (int)($row['first_party_id'] ?? $row['client_id'] ?? 0);
-                $second = (int)($row['second_party_id'] ?? $row['character_id'] ?? 0);
-                $firstName = htmlspecialchars($resolveEntityName($universe, 'character', $first));
-                $secondName = htmlspecialchars($resolveEntityName($universe, 'character', $second));
-                $date = htmlspecialchars((string)($row['date'] ?? ''));
-                $rows .= "<tr><td>{$date}</td><td>{$refType}</td><td>{$firstName}</td><td>{$secondName}</td><td class='text-end'>{$amount}</td><td class='text-end'>{$balance}</td></tr>";
-            }
-            if ($rows === '') {
-                $rows = "<tr><td colspan='6' class='text-muted'>No wallet entries cached.</td></tr>";
-            }
-            return "<table class='table table-sm table-striped'>
-                <thead><tr><th>Date</th><th>Type</th><th>First Party</th><th>Second Party</th><th class='text-end'>Amount</th><th class='text-end'>Balance</th></tr></thead>
-                <tbody>{$rows}</tbody></table>";
-        }
-
-        return "<pre class='small text-muted'>" . htmlspecialchars(json_encode($payload, JSON_PRETTY_PRINT)) . "</pre>";
+    $renderAuditData = function (Universe $universe, string $category, array $payload): string {
+        return memberaudit_render_audit_data($universe, $category, $payload);
     };
 
     $fetchMemberCharacters = function (int $userId) use ($app): array {
         $rows = [];
-        $main = $app->db->one(
+        $main = db_one($app->db, 
             "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1",
             [$userId]
         );
@@ -554,7 +280,7 @@ return function (ModuleRegistry $registry): void {
             ];
         }
 
-        $links = $app->db->all(
+        $links = db_all($app->db, 
             "SELECT character_id, character_name, linked_at
              FROM character_links
              WHERE user_id=? AND status='linked'
@@ -580,7 +306,7 @@ return function (ModuleRegistry $registry): void {
         if (empty($categories)) return [];
         $placeholders = implode(',', array_fill(0, count($categories), '?'));
         $params = array_merge([$characterId], $categories);
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT category, data_json, fetched_at
              FROM module_corptools_character_audit
              WHERE character_id=? AND category IN ({$placeholders})",
@@ -601,7 +327,7 @@ return function (ModuleRegistry $registry): void {
     };
 
     $tokenBucketForCharacter = function (int $characterId) use ($app): ?array {
-        return $app->db->one(
+        return db_one($app->db, 
             "SELECT user_id, access_token, refresh_token, expires_at, scopes_json, status, error_last
              FROM eve_token_buckets
              WHERE character_id=? AND bucket='member_audit' AND org_type='character' AND org_id=0
@@ -696,8 +422,8 @@ return function (ModuleRegistry $registry): void {
             $profile = $universeShared->characterProfile($characterId);
             $name = htmlspecialchars((string)($profile['character']['name'] ?? $character['character_name'] ?? 'Unknown'));
             $org = $orgMap[$characterId] ?? null;
-            $corpName = htmlspecialchars($org && ($org['org_status'] ?? '') === 'fresh' && (int)($org['corp_id'] ?? 0) > 0 ? (string)($org['corporation']['name'] ?? 'Unknown') : 'Unknown');
-            $allianceName = htmlspecialchars($org && ($org['org_status'] ?? '') === 'fresh' && (int)($org['alliance_id'] ?? 0) > 0 ? (string)($org['alliance']['name'] ?? 'Unknown') : 'Unknown');
+            $corpName = htmlspecialchars($org ? core_display_org_name($org, 'corporation') : 'Unknown');
+            $allianceName = htmlspecialchars($org ? core_display_org_name($org, 'alliance') : 'Unknown');
             $rows .= "<tr>
                 <td>{$name}</td>
                 <td>{$corpName}</td>
@@ -817,7 +543,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $rows = '';
-        $tokens = $app->db->all(
+        $tokens = db_all($app->db, 
             "SELECT id, token_prefix, expires_at, created_at
              FROM module_memberaudit_share_tokens
              WHERE user_id=?
@@ -877,14 +603,14 @@ return function (ModuleRegistry $registry): void {
         $tokenPrefix = bin2hex(random_bytes(8));
         $tokenHash = hash('sha256', $tokenPrefix);
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_memberaudit_share_tokens (token_hash, token_prefix, user_id, expires_at, created_at)
              VALUES (?, ?, ?, ?, NOW())",
             [$tokenHash, $tokenPrefix, $uid, $expiresAt]
         );
         $tokenId = (int)$app->db->lastInsertId();
         foreach ($characters as $characterId) {
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_memberaudit_share_token_characters (token_id, character_id)
                  VALUES (?, ?)",
                 [$tokenId, $characterId]
@@ -900,7 +626,7 @@ return function (ModuleRegistry $registry): void {
             return Response::text('Missing token', 400);
         }
         $tokenHash = hash('sha256', $tokenValue);
-        $token = $app->db->one(
+        $token = db_one($app->db, 
             "SELECT id, user_id, expires_at
              FROM module_memberaudit_share_tokens
              WHERE token_hash=? LIMIT 1",
@@ -915,7 +641,7 @@ return function (ModuleRegistry $registry): void {
         }
 
         $tokenId = (int)($token['id'] ?? 0);
-        $characterRows = $app->db->all(
+        $characterRows = db_all($app->db, 
             "SELECT character_id FROM module_memberaudit_share_token_characters WHERE token_id=?",
             [$tokenId]
         );
@@ -993,7 +719,7 @@ return function (ModuleRegistry $registry): void {
         }
         $where = $whereParts ? 'WHERE ' . implode(' AND ', $whereParts) : '';
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT u.id AS user_id, u.character_name, u.character_id,
                     co.corp_id AS corp_id, co.alliance_id AS alliance_id,
                     ms.audit_loaded, ms.last_login_at
@@ -1054,7 +780,7 @@ return function (ModuleRegistry $registry): void {
         if ($memberId <= 0) {
             return Response::redirect('/admin/memberaudit');
         }
-        $main = $app->db->one("SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$memberId]);
+        $main = db_one($app->db, "SELECT character_id, character_name FROM eve_users WHERE id=? LIMIT 1", [$memberId]);
         if (!$main) {
             return Response::html($renderPage('Member Audit', "<div class='alert alert-warning'>Member not found.</div>"), 404);
         }
@@ -1062,7 +788,7 @@ return function (ModuleRegistry $registry): void {
         $settings = $corpSettings->get();
         $corpIds = array_values(array_filter(array_map('intval', $settings['general']['corp_ids'] ?? [])));
         if (!empty($corpIds)) {
-            $memberCorp = $app->db->one(
+            $memberCorp = db_one($app->db, 
                 "SELECT co.corp_id
                  FROM core_character_identities ci
                  LEFT JOIN core_character_orgs co ON co.character_id=ci.character_id
@@ -1075,7 +801,7 @@ return function (ModuleRegistry $registry): void {
             }
         }
         $mainId = (int)($main['character_id'] ?? 0);
-        $characters = $app->db->all(
+        $characters = db_all($app->db, 
             "SELECT character_id, character_name FROM character_links WHERE user_id=? AND status='linked'
              UNION
              SELECT character_id, character_name FROM eve_users WHERE id=?",
@@ -1115,10 +841,10 @@ return function (ModuleRegistry $registry): void {
             $characterOptions .= "<option value='{$characterId}' {$selected}>{$characterName}</option>";
         }
 
-        $skillSets = $app->db->all(
+        $skillSets = db_all($app->db, 
             "SELECT id, name FROM module_memberaudit_skill_sets ORDER BY name ASC"
         );
-        $assignedRows = $app->db->all(
+        $assignedRows = db_all($app->db, 
             "SELECT skill_set_id FROM module_memberaudit_skill_set_assignments WHERE character_id=?",
             [$selectedId]
         );
@@ -1131,7 +857,7 @@ return function (ModuleRegistry $registry): void {
             $assignOptions .= "<option value='{$setId}' {$selected}>{$name}</option>";
         }
 
-        $skillsRows = $app->db->all(
+        $skillsRows = db_all($app->db, 
             "SELECT skill_id, trained_level FROM module_corptools_character_skills WHERE character_id=?",
             [$selectedId]
         );
@@ -1143,7 +869,7 @@ return function (ModuleRegistry $registry): void {
         foreach ($skillSets as $set) {
             $setId = (int)($set['id'] ?? 0);
             if (!in_array($setId, $assignedIds, true)) continue;
-            $reqRows = $app->db->all(
+            $reqRows = db_all($app->db, 
                 "SELECT skill_id, required_level FROM module_memberaudit_skill_set_skills WHERE skill_set_id=?",
                 [$setId]
             );
@@ -1218,9 +944,9 @@ return function (ModuleRegistry $registry): void {
         if (!is_array($skillSets)) $skillSets = [];
         $skillSets = array_values(array_unique(array_filter(array_map('intval', $skillSets))));
 
-        $app->db->run("DELETE FROM module_memberaudit_skill_set_assignments WHERE character_id=?", [$characterId]);
+        db_exec($app->db, "DELETE FROM module_memberaudit_skill_set_assignments WHERE character_id=?", [$characterId]);
         foreach ($skillSets as $setId) {
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_memberaudit_skill_set_assignments (skill_set_id, character_id, assigned_by, assigned_at)
                  VALUES (?, ?, ?, NOW())",
                 [$setId, $characterId, (int)($_SESSION['user_id'] ?? 0)]
@@ -1231,7 +957,7 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('GET', '/admin/memberaudit/skill-sets', function () use ($app, $renderPage, $logAccess): Response {
         $uid = (int)($_SESSION['user_id'] ?? 0);
-        $sets = $app->db->all(
+        $sets = db_all($app->db, 
             "SELECT id, name, description, source_type, source_id, created_at
              FROM module_memberaudit_skill_sets
              ORDER BY created_at DESC"
@@ -1258,7 +984,7 @@ return function (ModuleRegistry $registry): void {
             $rows = "<tr><td colspan='4' class='text-muted'>No skill sets created yet.</td></tr>";
         }
 
-        $fits = $app->db->all("SELECT id, name FROM module_fittings_fits ORDER BY updated_at DESC LIMIT 100");
+        $fits = db_all($app->db, "SELECT id, name FROM module_fittings_fits ORDER BY updated_at DESC LIMIT 100");
         $fitOptions = '';
         foreach ($fits as $fit) {
             $fitId = (int)($fit['id'] ?? 0);
@@ -1311,7 +1037,7 @@ return function (ModuleRegistry $registry): void {
             return Response::redirect('/admin/memberaudit/skill-sets');
         }
         $desc = trim((string)($req->post['description'] ?? ''));
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_memberaudit_skill_sets (name, description, source_type, source_id, created_by, created_at, updated_at)
              VALUES (?, ?, 'manual', 0, ?, NOW(), NOW())",
             [$name, $desc, $uid]
@@ -1322,9 +1048,9 @@ return function (ModuleRegistry $registry): void {
     $registry->route('POST', '/admin/memberaudit/skill-sets/delete', function (Request $req) use ($app): Response {
         $setId = (int)($req->post['id'] ?? 0);
         if ($setId > 0) {
-            $app->db->run("DELETE FROM module_memberaudit_skill_sets WHERE id=?", [$setId]);
-            $app->db->run("DELETE FROM module_memberaudit_skill_set_skills WHERE skill_set_id=?", [$setId]);
-            $app->db->run("DELETE FROM module_memberaudit_skill_set_assignments WHERE skill_set_id=?", [$setId]);
+            db_exec($app->db, "DELETE FROM module_memberaudit_skill_sets WHERE id=?", [$setId]);
+            db_exec($app->db, "DELETE FROM module_memberaudit_skill_set_skills WHERE skill_set_id=?", [$setId]);
+            db_exec($app->db, "DELETE FROM module_memberaudit_skill_set_assignments WHERE skill_set_id=?", [$setId]);
         }
         return Response::redirect('/admin/memberaudit/skill-sets');
     }, ['right' => 'memberaudit.skillsets.manage']);
@@ -1335,7 +1061,7 @@ return function (ModuleRegistry $registry): void {
         if ($uid <= 0 || $fitId <= 0) {
             return Response::redirect('/admin/memberaudit/skill-sets');
         }
-        $fit = $app->db->one("SELECT id, name, parsed_json FROM module_fittings_fits WHERE id=? LIMIT 1", [$fitId]);
+        $fit = db_one($app->db, "SELECT id, name, parsed_json FROM module_fittings_fits WHERE id=? LIMIT 1", [$fitId]);
         if (!$fit) {
             return Response::redirect('/admin/memberaudit/skill-sets');
         }
@@ -1344,7 +1070,7 @@ return function (ModuleRegistry $registry): void {
         $items = $parsed['items'] ?? [];
         if (!is_array($items)) $items = [];
 
-        $app->db->run(
+        db_exec($app->db, 
             "INSERT INTO module_memberaudit_skill_sets (name, description, source_type, source_id, created_by, created_at, updated_at)
              VALUES (?, ?, 'fitting', ?, ?, NOW(), NOW())",
             [(string)($fit['name'] ?? 'Fit Skill Set'), 'Generated from fittings module.', $fitId, $uid]
@@ -1380,7 +1106,7 @@ return function (ModuleRegistry $registry): void {
             }
         }
         foreach ($skills as $skillId => $level) {
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_memberaudit_skill_set_skills (skill_set_id, skill_id, required_level)
                  VALUES (?, ?, ?)",
                 [$setId, $skillId, $level]
@@ -1391,7 +1117,7 @@ return function (ModuleRegistry $registry): void {
 
     $registry->route('GET', '/admin/memberaudit/reports', function () use ($app, $renderPage, $logAccess): Response {
         $uid = (int)($_SESSION['user_id'] ?? 0);
-        $compliance = $app->db->one(
+        $compliance = db_one($app->db, 
             "SELECT COUNT(*) AS total, SUM(audit_loaded) AS loaded
              FROM module_corptools_member_summary"
         );
@@ -1399,7 +1125,7 @@ return function (ModuleRegistry $registry): void {
         $loaded = (int)($compliance['loaded'] ?? 0);
         $missing = max(0, $total - $loaded);
 
-        $skillSets = $app->db->all(
+        $skillSets = db_all($app->db, 
             "SELECT s.id, s.name, COUNT(a.character_id) AS assigned
              FROM module_memberaudit_skill_sets s
              LEFT JOIN module_memberaudit_skill_set_assignments a ON a.skill_set_id=s.id
@@ -1412,7 +1138,7 @@ return function (ModuleRegistry $registry): void {
             $assigned = (int)($set['assigned'] ?? 0);
             $compliant = 0;
             if ($assigned > 0) {
-                $required = $app->db->all(
+                $required = db_all($app->db, 
                     "SELECT skill_id, required_level FROM module_memberaudit_skill_set_skills WHERE skill_set_id=?",
                     [$setId]
                 );
@@ -1420,14 +1146,14 @@ return function (ModuleRegistry $registry): void {
                 foreach ($required as $req) {
                     $requiredMap[(int)($req['skill_id'] ?? 0)] = (int)($req['required_level'] ?? 0);
                 }
-                $assignments = $app->db->all(
+                $assignments = db_all($app->db, 
                     "SELECT character_id FROM module_memberaudit_skill_set_assignments WHERE skill_set_id=?",
                     [$setId]
                 );
                 foreach ($assignments as $assignment) {
                     $characterId = (int)($assignment['character_id'] ?? 0);
                     if ($characterId <= 0) continue;
-                    $skillsRows = $app->db->all(
+                    $skillsRows = db_all($app->db, 
                         "SELECT skill_id, trained_level FROM module_corptools_character_skills WHERE character_id=?",
                         [$characterId]
                     );
@@ -1491,7 +1217,7 @@ return function (ModuleRegistry $registry): void {
         $sso = new EveSso($app->db, $cfg);
         $esi = new EsiCache($app->db, new EsiClient(new HttpClient()));
 
-        $rows = $app->db->all(
+        $rows = db_all($app->db, 
             "SELECT b.user_id, b.character_id, u.character_name
              FROM eve_token_buckets b
              LEFT JOIN eve_users u ON u.id=b.user_id
@@ -1507,7 +1233,7 @@ return function (ModuleRegistry $registry): void {
             $characterId = (int)($row['character_id'] ?? 0);
             if ($userId <= 0 || $characterId <= 0) continue;
 
-            $mainRow = $app->db->one("SELECT character_id FROM eve_users WHERE id=? LIMIT 1", [$userId]);
+            $mainRow = db_one($app->db, "SELECT character_id FROM eve_users WHERE id=? LIMIT 1", [$userId]);
             $mainCharacterId = (int)($mainRow['character_id'] ?? 0);
             $identityResolver->upsertIdentity($characterId, $userId, $mainCharacterId > 0 && $mainCharacterId === $characterId);
 
@@ -1581,7 +1307,7 @@ return function (ModuleRegistry $registry): void {
                     $payload = $result['data'];
                     if (!is_array($payload)) $payload = [];
 
-                    $app->db->run(
+                    db_exec($app->db, 
                         "INSERT INTO module_corptools_character_audit\n"
                         . " (user_id, character_id, category, data_json, fetched_at)\n"
                         . " VALUES (?, ?, ?, ?, NOW())\n"
@@ -1593,7 +1319,7 @@ return function (ModuleRegistry $registry): void {
                             json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
                         ]
                     );
-                    $app->db->run(
+                    db_exec($app->db, 
                         "INSERT INTO module_corptools_character_audit_snapshots (user_id, character_id, category, data_json, fetched_at)
                          VALUES (?, ?, ?, ?, NOW())",
                         [
@@ -1605,9 +1331,9 @@ return function (ModuleRegistry $registry): void {
                     );
 
                     if ($key === 'assets') {
-                        $app->db->run("DELETE FROM module_corptools_character_assets WHERE character_id=?", [$characterId]);
+                        db_exec($app->db, "DELETE FROM module_corptools_character_assets WHERE character_id=?", [$characterId]);
                         foreach ($payload as $asset) {
-                            $app->db->run(
+                            db_exec($app->db, 
                                 "INSERT INTO module_corptools_character_assets
                                  (user_id, character_id, item_id, type_id, location_id, location_type, quantity, is_singleton, is_blueprint_copy)
                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1628,9 +1354,9 @@ return function (ModuleRegistry $registry): void {
                     if ($key === 'skills') {
                         $skills = $payload['skills'] ?? [];
                         if (is_array($skills)) {
-                            $app->db->run("DELETE FROM module_corptools_character_skills WHERE character_id=?", [$characterId]);
+                            db_exec($app->db, "DELETE FROM module_corptools_character_skills WHERE character_id=?", [$characterId]);
                             foreach ($skills as $skill) {
-                                $app->db->run(
+                                db_exec($app->db, 
                                     "INSERT INTO module_corptools_character_skills
                                      (user_id, character_id, skill_id, trained_level, active_level, skillpoints_in_skill)
                                      VALUES (?, ?, ?, ?, ?, ?)",
@@ -1656,7 +1382,7 @@ return function (ModuleRegistry $registry): void {
                 }
             }
 
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO module_corptools_character_summary (character_id, user_id, character_name, audit_loaded, last_audit_at, updated_at)
                  VALUES (?, ?, ?, 1, NOW(), NOW())
                  ON DUPLICATE KEY UPDATE audit_loaded=1, last_audit_at=NOW(), updated_at=NOW()",
@@ -1679,24 +1405,24 @@ return function (ModuleRegistry $registry): void {
         $categories = array_keys($memberAuditCategories);
         if (!empty($categories)) {
             $placeholders = implode(',', array_fill(0, count($categories), '?'));
-            $app->db->run(
+            db_exec($app->db, 
                 "DELETE FROM module_corptools_character_audit_snapshots
                  WHERE fetched_at < ? AND category IN ({$placeholders})",
                 array_merge([$cutoff], $categories)
             );
-            $app->db->run(
+            db_exec($app->db, 
                 "DELETE FROM module_corptools_character_audit
                  WHERE fetched_at < ? AND category IN ({$placeholders})",
                 array_merge([$cutoff], $categories)
             );
         }
 
-        $app->db->run("DELETE FROM module_memberaudit_share_tokens WHERE expires_at IS NOT NULL AND expires_at < NOW()");
-        $app->db->run(
+        db_exec($app->db, "DELETE FROM module_memberaudit_share_tokens WHERE expires_at IS NOT NULL AND expires_at < NOW()");
+        db_exec($app->db, 
             "DELETE FROM module_memberaudit_share_token_characters
              WHERE token_id NOT IN (SELECT id FROM module_memberaudit_share_tokens)"
         );
-        $app->db->run("DELETE FROM module_memberaudit_access_log WHERE accessed_at < ?", [$cutoff]);
+        db_exec($app->db, "DELETE FROM module_memberaudit_access_log WHERE accessed_at < ?", [$cutoff]);
 
         return ['message' => 'Member audit cleanup complete.'];
     };

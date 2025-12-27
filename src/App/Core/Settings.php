@@ -23,7 +23,7 @@ final class Settings
             return $this->cache[$key];
         }
 
-        $row = $this->db->one("SELECT `value` FROM settings WHERE `key`=? LIMIT 1", [$key]);
+        $row = db_one($this->db, "SELECT `value` FROM settings WHERE `key`=? LIMIT 1", [$key]);
         $val = $row ? (string)$row['value'] : $default;
         $this->cache[$key] = $val;
         return $val;
@@ -35,7 +35,7 @@ final class Settings
      */
     public function set(string $key, string $value): void
     {
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO settings (`key`, `value`) VALUES (?, ?)
              ON DUPLICATE KEY UPDATE `value`=VALUES(`value`)",
             [$key, $value]

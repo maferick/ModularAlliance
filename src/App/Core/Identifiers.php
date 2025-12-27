@@ -10,7 +10,7 @@ final class Identifiers
         $attempts = 0;
         do {
             $candidate = bin2hex(random_bytes($bytes));
-            $row = $db->one("SELECT 1 FROM {$table} WHERE {$column}=? LIMIT 1", [$candidate]);
+            $row = db_one($db, "SELECT 1 FROM {$table} WHERE {$column}=? LIMIT 1", [$candidate]);
             $attempts++;
         } while ($row && $attempts < 10);
 
@@ -32,7 +32,7 @@ final class Identifiers
         $attempts = 0;
 
         while ($attempts < 10) {
-            $row = $db->one("SELECT 1 FROM {$table} WHERE {$column}=? LIMIT 1", [$candidate]);
+            $row = db_one($db, "SELECT 1 FROM {$table} WHERE {$column}=? LIMIT 1", [$candidate]);
             if (!$row) {
                 return $candidate;
             }

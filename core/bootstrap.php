@@ -20,6 +20,9 @@ spl_autoload_register(function (string $class): void {
     }
 });
 
+require_once APP_ROOT . '/src/App/Core/functiondb.php';
+require_once APP_ROOT . '/src/App/Core/functions.php';
+
 function app_config(): array {
     $cfgFile = '/var/www/config.php';
     if (!is_file($cfgFile)) {

@@ -192,19 +192,19 @@ final class Dispatcher
 
     private function startRun(int $userId, int $characterId, array $scopes): int
     {
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_audit_runs (user_id, character_id, status, scopes_json, started_at)
              VALUES (?, ?, 'running', ?, NOW())",
             [$userId, $characterId, json_encode($scopes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
         );
-        $row = $this->db->one("SELECT LAST_INSERT_ID() AS id");
+        $row = db_one($this->db, "SELECT LAST_INSERT_ID() AS id");
         return (int)($row['id'] ?? 0);
     }
 
     private function finishRun(int $runId, string $status, string $message): void
     {
         if ($runId <= 0) return;
-        $this->db->run(
+        db_exec($this->db, 
             "UPDATE module_corptools_audit_runs SET status=?, message=?, finished_at=NOW() WHERE id=?",
             [$status, $message, $runId]
         );
@@ -213,13 +213,13 @@ final class Dispatcher
     private function storeAuditPayload(int $userId, int $characterId, string $key, array $payloads): void
     {
         $payload = json_encode($payloads, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_character_audit (user_id, character_id, category, data_json, fetched_at, updated_at)
              VALUES (?, ?, ?, ?, NOW(), NOW())
              ON DUPLICATE KEY UPDATE data_json=VALUES(data_json), updated_at=NOW()",
             [$userId, $characterId, $key, $payload]
         );
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_character_audit_snapshots
              (user_id, character_id, category, data_json, fetched_at)
              VALUES (?, ?, ?, ?, NOW())",
@@ -252,7 +252,7 @@ final class Dispatcher
             'audit_loaded' => (int)($summary['audit_loaded'] ?? 0),
         ];
 
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_character_summary
              (character_id, user_id, character_name, is_main, corp_id, alliance_id, home_station_id, death_clone_location_id,
               jump_clone_location_id, location_system_id, location_region_id, current_ship_type_id, current_ship_name,
@@ -317,7 +317,7 @@ final class Dispatcher
                 }
             }
 
-            $this->db->run(
+            db_exec($this->db, 
                 "INSERT INTO module_corptools_character_assets
                  (user_id, character_id, item_id, type_id, group_id, category_id, location_id, location_type, quantity, is_singleton, is_blueprint_copy)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -349,7 +349,7 @@ final class Dispatcher
             if (!is_array($skill)) continue;
             $skillId = (int)($skill['skill_id'] ?? 0);
             if ($skillId <= 0) continue;
-            $this->db->run(
+            db_exec($this->db, 
                 "INSERT INTO module_corptools_character_skills
                  (user_id, character_id, skill_id, trained_level, active_level, skillpoints_in_skill)
                  VALUES (?, ?, ?, ?, ?, ?)

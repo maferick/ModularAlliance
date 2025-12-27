@@ -13,7 +13,7 @@ final class Menu
     public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
         $registry->route('GET', '/admin/menu', function () use ($app, $render): Response {
-            $menuRows = $app->db->all(
+            $menuRows = db_all($app->db, 
                 "SELECT r.slug,
                         r.title AS r_title,
                         r.url AS r_url,
@@ -36,7 +36,7 @@ final class Menu
                           r.slug ASC"
             );
 
-            $rights = $app->db->all("SELECT slug FROM rights ORDER BY slug ASC");
+            $rights = db_all($app->db, "SELECT slug FROM rights ORDER BY slug ASC");
             $rightOptions = array_map(fn($r) => (string)$r['slug'], $rights);
 
             $allSlugs = array_map(fn($r) => (string)$r['slug'], $menuRows);
@@ -188,7 +188,7 @@ final class Menu
 
             $action = trim((string)($req->post['action'] ?? ''));
             if ($action === 'reset') {
-                $app->db->run("DELETE FROM menu_overrides WHERE slug=?", [$slug]);
+                db_exec($app->db, "DELETE FROM menu_overrides WHERE slug=?", [$slug]);
                 return Response::redirect('/admin/menu?msg=' . rawurlencode("Overrides reset for {$slug}."));
             }
 
@@ -222,11 +222,11 @@ final class Menu
             }
 
             if ($title === null && $url === null && $parent === null && $sort === null && $area === null && $right === null && $enabled === null) {
-                $app->db->run("DELETE FROM menu_overrides WHERE slug=?", [$slug]);
+                db_exec($app->db, "DELETE FROM menu_overrides WHERE slug=?", [$slug]);
                 return Response::redirect('/admin/menu?msg=' . rawurlencode("Overrides cleared for {$slug}."));
             }
 
-            $app->db->run(
+            db_exec($app->db, 
                 "INSERT INTO menu_overrides (slug, title, url, parent_slug, sort_order, area, right_slug, enabled)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                  ON DUPLICATE KEY UPDATE

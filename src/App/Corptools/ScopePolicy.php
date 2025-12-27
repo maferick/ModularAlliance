@@ -12,7 +12,7 @@ final class ScopePolicy
 
     public function listPolicies(): array
     {
-        return $this->db->all(
+        return db_all($this->db, 
             "SELECT id, public_id, name, description, is_active, applies_to, required_scopes_json, optional_scopes_json, updated_at
              FROM corp_scope_policies
              ORDER BY updated_at DESC, id DESC"
@@ -21,7 +21,7 @@ final class ScopePolicy
 
     public function getActivePolicyForContext(int $corpId, int $allianceId): ?array
     {
-        $policies = $this->db->all(
+        $policies = db_all($this->db, 
             "SELECT id, public_id, name, description, is_active, applies_to, required_scopes_json, optional_scopes_json
              FROM corp_scope_policies
              WHERE is_active=1
@@ -55,7 +55,7 @@ final class ScopePolicy
 
     public function getEffectiveScopesForUser(int $userId): array
     {
-        $user = $this->db->one("SELECT character_id FROM eve_users WHERE id=? LIMIT 1", [$userId]);
+        $user = db_one($this->db, "SELECT character_id FROM eve_users WHERE id=? LIMIT 1", [$userId]);
         $mainCharacterId = (int)($user['character_id'] ?? 0);
         $corpId = 0;
         $allianceId = 0;
@@ -130,7 +130,7 @@ final class ScopePolicy
     {
         if ($policyId <= 0 || $userId <= 0) return [];
 
-        $groupRows = $this->db->all(
+        $groupRows = db_all($this->db, 
             "SELECT group_id FROM eve_user_groups WHERE user_id=?",
             [$userId]
         );
@@ -140,7 +140,7 @@ final class ScopePolicy
             if ($gid > 0) $groupIds[] = $gid;
         }
 
-        $overrides = $this->db->all(
+        $overrides = db_all($this->db, 
             "SELECT target_type, target_id, required_scopes_json, optional_scopes_json
              FROM corp_scope_policy_overrides
              WHERE policy_id=?

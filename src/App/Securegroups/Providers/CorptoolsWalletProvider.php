@@ -56,7 +56,7 @@ final class CorptoolsWalletProvider implements ProviderInterface
         }
 
         if ($ruleKey === 'wallet_balance_main') {
-            $row = $this->db->one(
+            $row = db_one($this->db, 
                 "SELECT wallet_balance FROM module_corptools_character_summary WHERE character_id=? LIMIT 1",
                 [$mainId]
             );
@@ -72,7 +72,7 @@ final class CorptoolsWalletProvider implements ProviderInterface
                 return $this->unknown('No linked characters found.');
             }
             $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
-            $rows = $this->db->all(
+            $rows = db_all($this->db, 
                 "SELECT wallet_balance FROM module_corptools_character_summary WHERE character_id IN ({$placeholders})",
                 $characterIds
             );

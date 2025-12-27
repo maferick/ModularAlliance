@@ -23,7 +23,7 @@ final class JobRunner
             return [];
         }
 
-        $jobs = $this->db->all(
+        $jobs = db_all($this->db, 
             "SELECT job_key, schedule_seconds\n"
             . " FROM module_corptools_jobs\n"
             . " WHERE is_enabled=1 AND (next_run_at IS NULL OR next_run_at <= NOW())\n"
@@ -104,17 +104,17 @@ final class JobRunner
 
     private function startRun(string $jobKey): int
     {
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_job_runs (job_key, status, started_at) VALUES (?, 'running', NOW())",
             [$jobKey]
         );
-        $row = $this->db->one("SELECT LAST_INSERT_ID() AS id");
+        $row = db_one($this->db, "SELECT LAST_INSERT_ID() AS id");
         return (int)($row['id'] ?? 0);
     }
 
     private function logRun(string $jobKey, string $status, string $message, ?string $trace, ?int $durationMs, array $meta): void
     {
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_job_runs\n"
             . " (job_key, status, started_at, finished_at, duration_ms, message, error_trace, meta_json)\n"
             . " VALUES (?, ?, NOW(), NOW(), ?, ?, ?, ?)",
@@ -134,7 +134,7 @@ final class JobRunner
         if ($runId <= 0) {
             return;
         }
-        $this->db->run(
+        db_exec($this->db, 
             "UPDATE module_corptools_job_runs\n"
             . " SET status=?, finished_at=NOW(), duration_ms=?, message=?, error_trace=?, meta_json=?\n"
             . " WHERE id=?",
@@ -151,7 +151,7 @@ final class JobRunner
 
     private function updateJob(string $jobKey, string $status, int $durationMs, string $message, int $schedule): void
     {
-        $this->db->run(
+        db_exec($this->db, 
             "UPDATE module_corptools_jobs\n"
             . " SET last_run_at=NOW(), last_status=?, last_duration_ms=?, last_message=?,\n"
             . " next_run_at=DATE_ADD(NOW(), INTERVAL ? SECOND)\n"
@@ -163,7 +163,7 @@ final class JobRunner
     private function acquireLock(string $jobKey, int $ttlSeconds): ?string
     {
         $owner = bin2hex(random_bytes(8));
-        $this->db->run(
+        db_exec($this->db, 
             "INSERT INTO module_corptools_job_locks (job_key, owner, locked_at, expires_at)\n"
             . " VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? SECOND))\n"
             . " ON DUPLICATE KEY UPDATE\n"
@@ -173,7 +173,7 @@ final class JobRunner
             [$jobKey, $owner, $ttlSeconds]
         );
 
-        $row = $this->db->one(
+        $row = db_one($this->db, 
             "SELECT owner, expires_at FROM module_corptools_job_locks WHERE job_key=?",
             [$jobKey]
         );
@@ -188,7 +188,7 @@ final class JobRunner
 
     private function releaseLock(string $jobKey, string $owner): void
     {
-        $this->db->run(
+        db_exec($this->db, 
             "DELETE FROM module_corptools_job_locks WHERE job_key=? AND owner=?",
             [$jobKey, $owner]
         );
@@ -196,7 +196,7 @@ final class JobRunner
 
     private function tablesReady(): bool
     {
-        $row = $this->db->one("SHOW TABLES LIKE 'module_corptools_jobs'");
+        $row = db_one($this->db, "SHOW TABLES LIKE 'module_corptools_jobs'");
         return $row !== null;
     }
 }
