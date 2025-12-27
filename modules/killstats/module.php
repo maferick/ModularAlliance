@@ -12,6 +12,7 @@ use App\Core\EsiCache;
 use App\Core\EsiClient;
 use App\Core\HttpClient;
 use App\Core\Layout;
+use App\Core\IdentityResolver;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
 use App\Core\Settings;
@@ -20,6 +21,8 @@ use App\Http\Response;
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
+    $universeShared = new Universe($app->db);
+    $identityResolver = new IdentityResolver($app->db, $universeShared);
 
     $registry->right('killstats.view_all', 'View kill stats outside the configured identity scope.');
 
@@ -31,12 +34,9 @@ return function (ModuleRegistry $registry): void {
         'area' => 'left',
     ]);
 
-    $registry->route('GET', '/killstats', function () use ($app): Response {
+    $registry->route('GET', '/killstats', function () use ($app, $universeShared, $identityResolver): Response {
         $cid = (int)($_SESSION['character_id'] ?? 0);
         if ($cid <= 0) return Response::redirect('/auth/login');
-
-        $u = new Universe($app->db);
-        $profile = $u->characterProfile($cid);
 
         $settings = new Settings($app->db);
         $identityType = $settings->get('site.identity.type', 'corporation');
@@ -50,15 +50,16 @@ return function (ModuleRegistry $registry): void {
         }
         $identityId = (int)$identityIdValue;
 
+        $org = $identityResolver->resolveCharacter($cid);
         $memberId = $identityType === 'alliance'
-            ? (int)($profile['alliance']['id'] ?? 0)
-            : (int)($profile['corporation']['id'] ?? 0);
+            ? (int)($org['alliance_id'] ?? 0)
+            : (int)($org['corp_id'] ?? 0);
 
         $scopeId = $identityId > 0 ? $identityId : $memberId;
 
         $scopeName = $identityType === 'alliance'
-            ? (string)($profile['alliance']['name'] ?? 'Alliance')
-            : (string)($profile['corporation']['name'] ?? 'Corporation');
+            ? ($memberId > 0 ? $universeShared->name('alliance', $memberId) : 'Alliance')
+            : ($memberId > 0 ? $universeShared->name('corporation', $memberId) : 'Corporation');
 
         $renderPage = function (string $title, string $bodyHtml) use ($app): string {
             $rights = new Rights($app->db);

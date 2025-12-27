@@ -11,10 +11,13 @@ final class MemberQueryBuilder
         $sql = "SELECT ms.*, u.public_id AS user_public_id, cs.character_name, cs.assets_count, cs.assets_value, cs.location_system_id, cs.location_region_id,
                        cs.current_ship_type_id, cs.corp_roles_json, cs.corp_title, cs.home_station_id, cs.death_clone_location_id,
                        cs.jump_clone_location_id, cs.total_sp, cs.last_audit_at,
+                       co.corp_id AS corp_id, co.alliance_id AS alliance_id,
                        css.status AS scope_status, css.reason AS scope_reason, css.missing_scopes_json, css.token_expires_at, css.checked_at
                 FROM module_corptools_member_summary ms
                 JOIN eve_users u ON u.id = ms.user_id
                 JOIN module_corptools_character_summary cs ON cs.character_id = ms.main_character_id
+                LEFT JOIN core_character_identities ci ON ci.user_id = ms.user_id AND ci.is_main = 1
+                LEFT JOIN core_character_orgs co ON co.character_id = ci.character_id
                 LEFT JOIN module_corptools_character_scope_status css ON css.character_id = cs.character_id";
 
         $joins = [];
@@ -31,12 +34,12 @@ final class MemberQueryBuilder
         }
 
         if (!empty($filters['corp_id'])) {
-            $where[] = 'ms.corp_id = ?';
+            $where[] = 'co.corp_id = ?';
             $params[] = (int)$filters['corp_id'];
         }
 
         if (!empty($filters['alliance_id'])) {
-            $where[] = 'ms.alliance_id = ?';
+            $where[] = 'co.alliance_id = ?';
             $params[] = (int)$filters['alliance_id'];
         }
 

@@ -9,10 +9,12 @@ Module Slug: securegroups
 */
 
 use App\Core\App;
+use App\Core\IdentityResolver;
 use App\Core\Layout;
 use App\Core\ModuleRegistry;
 use App\Core\Rights;
 use App\Core\Identifiers;
+use App\Core\Universe;
 use App\Corptools\Cron\JobRegistry;
 use App\Corptools\Cron\JobRunner;
 use App\Http\Request;
@@ -20,6 +22,8 @@ use App\Http\Response;
 
 return function (ModuleRegistry $registry): void {
     $app = $registry->app();
+    $universeShared = new Universe($app->db);
+    $identityResolver = new IdentityResolver($app->db, $universeShared);
 
     $registry->right('securegroups.admin', 'Manage Secure Groups configuration and enforcement.');
 
@@ -219,10 +223,11 @@ return function (ModuleRegistry $registry): void {
     };
 
     $getLinkedCharacterIds = function (int $userId) use ($app): array {
-        $main = $app->db->one("SELECT character_id FROM eve_users WHERE id=? LIMIT 1", [$userId]);
-        $mainId = (int)($main['character_id'] ?? 0);
-        $rows = $app->db->all("SELECT character_id FROM module_charlink_links WHERE user_id=?", [$userId]);
-        $ids = $mainId > 0 ? [$mainId] : [];
+        $rows = $app->db->all(
+            "SELECT character_id FROM core_character_identities WHERE user_id=?",
+            [$userId]
+        );
+        $ids = [];
         foreach ($rows as $row) {
             $cid = (int)($row['character_id'] ?? 0);
             if ($cid > 0 && !in_array($cid, $ids, true)) {
@@ -232,7 +237,7 @@ return function (ModuleRegistry $registry): void {
         return $ids;
     };
 
-    $evaluateFilter = function (int $userId, array $filter, array $context = []) use ($app, $getLinkedCharacterIds): array {
+    $evaluateFilter = function (int $userId, array $filter, array $context = []) use ($app, $getLinkedCharacterIds, $identityResolver): array {
         $type = (string)($filter['type'] ?? '');
         $config = json_decode((string)($filter['config_json'] ?? '{}'), true);
         if (!is_array($config)) $config = [];
@@ -251,28 +256,30 @@ return function (ModuleRegistry $registry): void {
             } elseif (empty($charIds) || $corpId <= 0) {
                 $result = ['pass' => false, 'message' => 'Missing corp or character data', 'evidence' => ['corp_id' => $corpId]];
             } else {
-                $placeholders = implode(',', array_fill(0, count($charIds), '?'));
-                $rows = $app->db->all(
-                    "SELECT character_id, corp_id FROM module_corptools_character_summary WHERE character_id IN ({$placeholders})",
-                    $charIds
-                );
-                if (empty($rows)) {
-                    $result = ['pass' => false, 'message' => 'Missing corp summary data', 'evidence' => ['corp_id' => $corpId]];
+                $orgs = $identityResolver->resolveCharacters($charIds);
+                if (empty($orgs)) {
+                    $result = ['pass' => false, 'message' => 'Missing corp mapping data', 'evidence' => ['corp_id' => $corpId]];
                 } else {
                     $hit = false;
-                    foreach ($rows as $row) {
-                        $cid = (int)($row['character_id'] ?? 0);
+                    $hasFresh = false;
+                    foreach ($orgs as $cid => $org) {
                         if (in_array($cid, $exemptions, true)) continue;
-                        if ((int)($row['corp_id'] ?? 0) === $corpId) {
+                        if (($org['org_status'] ?? '') !== 'fresh') continue;
+                        $hasFresh = true;
+                        if ((int)($org['corp_id'] ?? 0) === $corpId) {
                             $hit = true;
                             break;
                         }
                     }
-                    $result = [
-                        'pass' => $hit,
-                        'message' => $hit ? 'Account has character in required corp.' : 'No character in required corp.',
-                        'evidence' => ['corp_id' => $corpId, 'exemptions' => $exemptions, 'exempt_user_ids' => $exemptUserIds],
-                    ];
+                    if (!$hasFresh) {
+                        $result = ['pass' => false, 'message' => 'Missing corp mapping data', 'evidence' => ['corp_id' => $corpId]];
+                    } else {
+                        $result = [
+                            'pass' => $hit,
+                            'message' => $hit ? 'Account has character in required corp.' : 'No character in required corp.',
+                            'evidence' => ['corp_id' => $corpId, 'exemptions' => $exemptions, 'exempt_user_ids' => $exemptUserIds],
+                        ];
+                    }
                 }
             }
         } elseif ($type === 'alt_alliance') {
@@ -287,28 +294,30 @@ return function (ModuleRegistry $registry): void {
             } elseif (empty($charIds) || $allianceId <= 0) {
                 $result = ['pass' => false, 'message' => 'Missing alliance or character data', 'evidence' => ['alliance_id' => $allianceId]];
             } else {
-                $placeholders = implode(',', array_fill(0, count($charIds), '?'));
-                $rows = $app->db->all(
-                    "SELECT character_id, alliance_id FROM module_corptools_character_summary WHERE character_id IN ({$placeholders})",
-                    $charIds
-                );
-                if (empty($rows)) {
-                    $result = ['pass' => false, 'message' => 'Missing alliance summary data', 'evidence' => ['alliance_id' => $allianceId]];
+                $orgs = $identityResolver->resolveCharacters($charIds);
+                if (empty($orgs)) {
+                    $result = ['pass' => false, 'message' => 'Missing alliance mapping data', 'evidence' => ['alliance_id' => $allianceId]];
                 } else {
                     $hit = false;
-                    foreach ($rows as $row) {
-                        $cid = (int)($row['character_id'] ?? 0);
+                    $hasFresh = false;
+                    foreach ($orgs as $cid => $org) {
                         if (in_array($cid, $exemptions, true)) continue;
-                        if ((int)($row['alliance_id'] ?? 0) === $allianceId) {
+                        if (($org['org_status'] ?? '') !== 'fresh') continue;
+                        $hasFresh = true;
+                        if ((int)($org['alliance_id'] ?? 0) === $allianceId) {
                             $hit = true;
                             break;
                         }
                     }
-                    $result = [
-                        'pass' => $hit,
-                        'message' => $hit ? 'Account has character in required alliance.' : 'No character in required alliance.',
-                        'evidence' => ['alliance_id' => $allianceId, 'exemptions' => $exemptions, 'exempt_user_ids' => $exemptUserIds],
-                    ];
+                    if (!$hasFresh) {
+                        $result = ['pass' => false, 'message' => 'Missing alliance mapping data', 'evidence' => ['alliance_id' => $allianceId]];
+                    } else {
+                        $result = [
+                            'pass' => $hit,
+                            'message' => $hit ? 'Account has character in required alliance.' : 'No character in required alliance.',
+                            'evidence' => ['alliance_id' => $allianceId, 'exemptions' => $exemptions, 'exempt_user_ids' => $exemptUserIds],
+                        ];
+                    }
                 }
             }
         } elseif ($type === 'user_in_group') {
