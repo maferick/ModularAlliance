@@ -51,6 +51,7 @@ return function (ModuleRegistry $registry): void {
         'url' => '/fittings',
         'sort_order' => 10,
         'area' => 'module_top',
+        'allowed_areas' => ['top_left', 'left'],
         'right_slug' => 'fittings.access_fittings',
     ]);
     $registry->menu([
@@ -60,6 +61,7 @@ return function (ModuleRegistry $registry): void {
         'sort_order' => 11,
         'area' => 'module_top',
         'parent_slug' => 'module.fittings',
+        'allowed_areas' => ['top_left', 'left'],
         'right_slug' => 'fittings.access_fittings',
     ]);
     $registry->menu([
@@ -69,6 +71,7 @@ return function (ModuleRegistry $registry): void {
         'sort_order' => 12,
         'area' => 'module_top',
         'parent_slug' => 'module.fittings',
+        'allowed_areas' => ['top_left', 'left'],
         'right_slug' => 'fittings.access_fittings',
     ]);
     $registry->menu([
@@ -78,6 +81,7 @@ return function (ModuleRegistry $registry): void {
         'sort_order' => 13,
         'area' => 'module_top',
         'parent_slug' => 'module.fittings',
+        'allowed_areas' => ['top_left', 'left'],
         'right_slug' => 'fittings.access_fittings',
     ]);
     $registry->menu([
@@ -87,6 +91,7 @@ return function (ModuleRegistry $registry): void {
         'sort_order' => 14,
         'area' => 'module_top',
         'parent_slug' => 'module.fittings',
+        'allowed_areas' => ['top_left', 'left'],
         'right_slug' => 'fittings.access_fittings',
     ]);
 

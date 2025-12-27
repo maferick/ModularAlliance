@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace App\Core\AdminRoutes;
 
 use App\Core\App;
+use App\Core\Identifiers;
 use App\Core\Menu;
 use App\Core\ModuleRegistry;
 use App\Http\Request;
@@ -13,7 +14,7 @@ final class MenuBuilder
 {
     public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
-        $protectedSlugs = ['admin.menu', 'user.login'];
+        $protectedSlugs = ['admin.menu', Menu::normalizeSlugForAudience('user.login', 'member')];
 
         $registry->route('GET', '/admin/menu', function (): Response {
             return Response::redirect('/admin/menu-builder');
@@ -25,6 +26,7 @@ final class MenuBuilder
                 "SELECT r.slug,
                         r.module_slug AS r_module_slug,
                         r.kind AS r_kind,
+                        r.node_type AS r_node_type,
                         r.allowed_areas AS r_allowed_areas,
                         r.title AS r_title,
                         r.url AS r_url,
@@ -36,6 +38,7 @@ final class MenuBuilder
                         0 AS r_is_custom,
                         o.title AS o_title,
                         o.url AS o_url,
+                        o.node_type AS o_node_type,
                         o.parent_slug AS o_parent_slug,
                         o.sort_order AS o_sort_order,
                         o.area AS o_area,
@@ -47,6 +50,7 @@ final class MenuBuilder
                  SELECT c.slug,
                         'custom' AS r_module_slug,
                         'action' AS r_kind,
+                        c.node_type AS r_node_type,
                         c.allowed_areas AS r_allowed_areas,
                         c.title AS r_title,
                         c.url AS r_url,
@@ -58,6 +62,7 @@ final class MenuBuilder
                         1 AS r_is_custom,
                         o.title AS o_title,
                         o.url AS o_url,
+                        o.node_type AS o_node_type,
                         o.parent_slug AS o_parent_slug,
                         o.sort_order AS o_sort_order,
                         o.area AS o_area,
@@ -73,6 +78,7 @@ final class MenuBuilder
                 "SELECT o.slug,
                         o.title AS o_title,
                         o.url AS o_url,
+                        o.node_type AS o_node_type,
                         o.parent_slug AS o_parent_slug,
                         o.sort_order AS o_sort_order,
                         o.area AS o_area,
@@ -135,17 +141,7 @@ final class MenuBuilder
 
             $moduleGroups = [];
             $customItems = [];
-            $seenCanonical = [];
             foreach ($items as $item) {
-                $canonicalKey = Menu::canonicalKey([
-                    'slug' => $item['slug'],
-                    'url' => $item['effective']['url'] ?? '',
-                    'area' => $item['effective']['area'] ?? Menu::AREA_LEFT,
-                ]);
-                if (isset($seenCanonical[$canonicalKey])) {
-                    continue;
-                }
-                $seenCanonical[$canonicalKey] = true;
                 if (($item['module_slug'] ?? '') === 'custom') {
                     $customItems[] = $item;
                 } else {
@@ -186,7 +182,6 @@ final class MenuBuilder
             <p class='text-muted'>Drag menu items into quadrants, nest them by dropping on another item, and click any item to edit its overrides. Leave fields blank to fall back to module defaults.</p>
             <div class='d-flex flex-wrap gap-2 align-items-center mb-3'>
               <button class='btn btn-success btn-sm' id='menu-save-layout'>Save layout</button>
-              <button class='btn btn-outline-warning btn-sm' id='menu-dedupe'>De-duplicate menu items</button>
               <div class='form-check form-switch ms-2'>
                 <input class='form-check-input' type='checkbox' id='menu-show-tech'>
                 <label class='form-check-label' for='menu-show-tech'>Show technical details</label>
@@ -365,7 +360,6 @@ final class MenuBuilder
                 const showTechToggle = document.getElementById('menu-show-tech');
                 const statusEl = document.getElementById('menu-status');
                 const saveLayoutBtn = document.getElementById('menu-save-layout');
-                const dedupeBtn = document.getElementById('menu-dedupe');
                 const availableAreaSelect = document.getElementById('menu-available-area');
                 const customForm = document.getElementById('menu-custom-form');
                 const customTitle = document.getElementById('menu-custom-title');
@@ -705,7 +699,8 @@ final class MenuBuilder
                     const area = dropZone ? dropZone.dataset.area : null;
                     if (area && !isAreaAllowed(slug, area)) {
                       const title = titleForItem(items[slug]);
-                      showStatus(`\${title} can only be placed in \${areaLabelFor(area)}.`, true);
+                      const allowed = allowedAreasFor(slug).map(areaLabelFor).join(', ');
+                      showStatus(`\${title} can only be placed in \${allowed || 'allowed areas'}.`, true);
                       return;
                     }
 
@@ -941,21 +936,6 @@ final class MenuBuilder
 
                 availableAreaSelect.addEventListener('change', filterAvailableItems);
 
-                dedupeBtn.addEventListener('click', async () => {
-                  if (!confirm('De-duplicate menu items with identical URLs?')) {
-                    return;
-                  }
-                  try {
-                    const data = await postJson({ action: 'dedupe' });
-                    showStatus(data.message || 'Menu items de-duplicated.');
-                    if (data.refresh) {
-                      setTimeout(() => location.reload(), 800);
-                    }
-                  } catch (err) {
-                    showStatus(err.message, true);
-                  }
-                });
-
                 if (customForm) {
                   customForm.addEventListener('submit', async event => {
                     event.preventDefault();
@@ -1046,6 +1026,51 @@ final class MenuBuilder
             return $render('Menu Builder', $h);
         }, ['right' => 'admin.menu']);
 
+        $registry->route('GET', '/admin/menu-repair-report', function () use ($app, $render): Response {
+            try {
+                $rows = db_all(
+                    $app->db,
+                    "SELECT id, change_type, message, details_json, created_at
+                     FROM menu_repair_report
+                     ORDER BY id DESC
+                     LIMIT 250"
+                );
+            } catch (\Throwable $e) {
+                $rows = [];
+            }
+
+            $h = "<h1>Menu Repair Report</h1>
+            <p class='text-muted'>Tracks one-time menu namespace repairs and any slug normalization updates.</p>";
+
+            if (empty($rows)) {
+                $h .= "<div class='alert alert-info'>No menu repair entries recorded yet.</div>";
+                return $render('Menu Repair Report', $h);
+            }
+
+            $h .= "<div class='table-responsive'><table class='table table-sm table-striped'>
+              <thead><tr>
+                <th>ID</th>
+                <th>When</th>
+                <th>Type</th>
+                <th>Message</th>
+                <th>Details</th>
+              </tr></thead><tbody>";
+            foreach ($rows as $row) {
+                $details = trim((string)($row['details_json'] ?? ''));
+                $detailsHtml = $details !== '' ? "<pre class='mb-0 small'>" . htmlspecialchars($details) . "</pre>" : '—';
+                $h .= "<tr>
+                  <td>" . htmlspecialchars((string)$row['id']) . "</td>
+                  <td>" . htmlspecialchars((string)$row['created_at']) . "</td>
+                  <td>" . htmlspecialchars((string)$row['change_type']) . "</td>
+                  <td>" . htmlspecialchars((string)$row['message']) . "</td>
+                  <td>{$detailsHtml}</td>
+                </tr>";
+            }
+            $h .= "</tbody></table></div>";
+
+            return $render('Menu Repair Report', $h);
+        }, ['right' => 'admin.menu']);
+
         $registry->route('POST', '/admin/menu-builder/save', function (Request $req) use ($app, $protectedSlugs): Response {
             $raw = file_get_contents('php://input');
             $data = [];
@@ -1067,7 +1092,7 @@ final class MenuBuilder
 
             $registryRows = db_all(
                 $app->db,
-                "SELECT slug, title, url, parent_slug, sort_order, area, right_slug, enabled, allowed_areas
+                "SELECT slug, title, url, node_type, parent_slug, sort_order, area, right_slug, enabled, allowed_areas
                  FROM menu_registry"
             );
             $registryMap = [];
@@ -1076,7 +1101,7 @@ final class MenuBuilder
             }
             $customRows = db_all(
                 $app->db,
-                "SELECT slug, title, url, parent_slug, sort_order, area, right_slug, enabled, allowed_areas
+                "SELECT slug, title, url, node_type, parent_slug, sort_order, area, right_slug, enabled, allowed_areas
                  FROM menu_custom_items"
             );
             $customMap = [];
@@ -1085,109 +1110,12 @@ final class MenuBuilder
             }
 
             $allowedAreas = [Menu::AREA_LEFT, Menu::AREA_ADMIN_TOP, Menu::AREA_USER_TOP, Menu::AREA_TOP_LEFT];
-
-            if ($action === 'dedupe') {
-                $rows = db_all(
-                    $app->db,
-                    "SELECT id, slug, url, area
-                     FROM menu_registry
-                     WHERE url <> ''
-                     ORDER BY id ASC"
-                );
-                if (empty($rows)) {
-                    return self::jsonResponse(['ok' => true, 'message' => 'No menu items to de-duplicate.', 'refresh' => false]);
-                }
-
-                $overrideRows = db_all(
-                    $app->db,
-                    "SELECT slug, title, url, parent_slug, sort_order, area, right_slug, enabled
-                     FROM menu_overrides"
-                );
-                $overrideMap = [];
-                foreach ($overrideRows as $row) {
-                    $overrideMap[(string)$row['slug']] = $row;
-                }
-
-                $byKey = [];
-                foreach ($rows as $row) {
-                    $key = Menu::canonicalKey([
-                        'slug' => (string)$row['slug'],
-                        'url' => (string)$row['url'],
-                        'area' => (string)($row['area'] ?? Menu::AREA_LEFT),
-                    ]);
-                    $byKey[$key][] = $row;
-                }
-
-                $removed = 0;
-                $merged = 0;
-
-                db_tx($app->db, function () use (&$byKey, &$overrideMap, &$removed, &$merged, $app): void {
-                    $fields = ['title', 'url', 'parent_slug', 'sort_order', 'area', 'right_slug', 'enabled'];
-
-                    foreach ($byKey as $group) {
-                        if (count($group) <= 1) {
-                            continue;
-                        }
-                        $canonical = $group[0];
-                        $canonicalSlug = (string)$canonical['slug'];
-
-                        foreach (array_slice($group, 1) as $dup) {
-                            $dupSlug = (string)$dup['slug'];
-
-                            db_exec($app->db, "UPDATE menu_registry SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $dupSlug]);
-                            db_exec($app->db, "UPDATE menu_overrides SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $dupSlug]);
-                            db_exec($app->db, "UPDATE menu_custom_items SET parent_slug=? WHERE parent_slug=?", [$canonicalSlug, $dupSlug]);
-
-                            $dupOverride = $overrideMap[$dupSlug] ?? null;
-                            if ($dupOverride) {
-                                $canonicalOverride = $overrideMap[$canonicalSlug] ?? array_fill_keys($fields, null);
-                                foreach ($fields as $field) {
-                                    if (($canonicalOverride[$field] ?? null) === null && $dupOverride[$field] !== null) {
-                                        $canonicalOverride[$field] = $dupOverride[$field];
-                                    }
-                                }
-
-                                db_exec(
-                                    $app->db,
-                                    "INSERT INTO menu_overrides (slug, title, url, parent_slug, sort_order, area, right_slug, enabled)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                     ON DUPLICATE KEY UPDATE
-                                       title=VALUES(title),
-                                       url=VALUES(url),
-                                       parent_slug=VALUES(parent_slug),
-                                       sort_order=VALUES(sort_order),
-                                       area=VALUES(area),
-                                       right_slug=VALUES(right_slug),
-                                       enabled=VALUES(enabled)",
-                                    [
-                                        $canonicalSlug,
-                                        $canonicalOverride['title'],
-                                        $canonicalOverride['url'],
-                                        $canonicalOverride['parent_slug'],
-                                        $canonicalOverride['sort_order'],
-                                        $canonicalOverride['area'],
-                                        $canonicalOverride['right_slug'],
-                                        $canonicalOverride['enabled'],
-                                    ]
-                                );
-
-                                $overrideMap[$canonicalSlug] = $canonicalOverride;
-                                $merged++;
-                            }
-
-                            db_exec($app->db, "DELETE FROM menu_overrides WHERE slug=?", [$dupSlug]);
-                            db_exec($app->db, "DELETE FROM menu_registry WHERE slug=?", [$dupSlug]);
-                            $removed++;
-                        }
-                    }
-                });
-
-                $message = $removed > 0
-                    ? "Removed {$removed} duplicate menu items and merged {$merged} overrides."
-                    : 'No duplicate menu items found.';
-
-                return self::jsonResponse(['ok' => true, 'message' => $message, 'refresh' => $removed > 0]);
-            }
+            $areaLabels = [
+                Menu::AREA_LEFT => 'Left',
+                Menu::AREA_ADMIN_TOP => 'Admin Top',
+                Menu::AREA_TOP_LEFT => 'Top Left',
+                Menu::AREA_USER_TOP => 'User Top',
+            ];
 
             if ($action === 'layout') {
                 $items = $data['items'] ?? [];
@@ -1223,7 +1151,9 @@ final class MenuBuilder
                         $allowedAreasList = [$area];
                     }
                     if (!in_array($area, $allowedAreasList, true)) {
-                        return self::jsonResponse(['ok' => false, 'message' => "Menu item {$slug} cannot be placed in {$area}."], 400);
+                        $labels = array_map(fn(string $a) => $areaLabels[$a] ?? $a, $allowedAreasList);
+                        $labelText = $labels !== [] ? implode(', ', $labels) : 'allowed areas';
+                        return self::jsonResponse(['ok' => false, 'message' => "Menu item {$slug} can only be placed in {$labelText}."], 400);
                     }
 
                     $parent = trim((string)($layout['parent_slug'] ?? ''));
@@ -1435,30 +1365,37 @@ final class MenuBuilder
                     $allowedAreas[] = $area;
                 }
 
-                $baseSlug = strtolower(preg_replace('/[^a-z0-9]+/i', '-', $title) ?? '');
-                $baseSlug = trim($baseSlug, '-');
-                if ($baseSlug === '') {
-                    $baseSlug = 'custom';
-                }
-
-                $slug = $baseSlug;
-                $suffix = 1;
+                $audience = Menu::audienceForArea($area);
+                $publicId = Identifiers::generatePublicId($app->db, 'menu_custom_items');
+                $slug = Menu::normalizeSlugForAudience('custom.' . $publicId, $audience);
                 while (isset($registryMap[$slug]) || isset($customMap[$slug])) {
-                    $suffix++;
-                    $slug = $baseSlug . '-' . $suffix;
+                    $publicId = Identifiers::generatePublicId($app->db, 'menu_custom_items');
+                    $slug = Menu::normalizeSlugForAudience('custom.' . $publicId, $audience);
                 }
+                $nodeType = 'link';
 
                 db_exec(
                     $app->db,
-                    "INSERT INTO menu_custom_items (slug, title, url, parent_slug, sort_order, area, right_slug, enabled, allowed_areas)
-                     VALUES (?, ?, ?, NULL, ?, ?, ?, 1, ?)",
-                    [$slug, $title, $url, 10, $area, $right, json_encode($allowedAreas, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]
+                    "INSERT INTO menu_custom_items (public_id, slug, title, url, node_type, parent_slug, sort_order, area, right_slug, enabled, allowed_areas)
+                     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?)",
+                    [
+                        $publicId,
+                        $slug,
+                        $title,
+                        $url,
+                        $nodeType,
+                        10,
+                        $area,
+                        $right,
+                        json_encode($allowedAreas, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                    ]
                 );
 
                 $itemRow = [
                     'slug' => $slug,
                     'r_module_slug' => 'custom',
                     'r_kind' => 'action',
+                    'r_node_type' => $nodeType,
                     'r_allowed_areas' => json_encode($allowedAreas),
                     'r_title' => $title,
                     'r_url' => $url,
@@ -1512,6 +1449,7 @@ final class MenuBuilder
         $defaults = [
             'module_slug' => $hasRegistry ? (string)($row['r_module_slug'] ?? 'system') : null,
             'kind' => $hasRegistry ? (string)($row['r_kind'] ?? 'action') : null,
+            'node_type' => $hasRegistry ? (string)($row['r_node_type'] ?? 'link') : null,
             'allowed_areas' => $hasRegistry ? $allowedAreas : null,
             'title' => $hasRegistry ? (string)($row['r_title'] ?? '') : null,
             'url' => $hasRegistry ? (string)($row['r_url'] ?? '') : null,
@@ -1525,6 +1463,7 @@ final class MenuBuilder
         $overrides = [
             'title' => $row['o_title'] ?? null,
             'url' => $row['o_url'] ?? null,
+            'node_type' => $row['o_node_type'] ?? null,
             'parent_slug' => $row['o_parent_slug'] ?? null,
             'sort_order' => $row['o_sort_order'] ?? null,
             'area' => isset($row['o_area']) ? Menu::normalizeArea((string)$row['o_area']) : null,
@@ -1535,6 +1474,7 @@ final class MenuBuilder
         $effective = [
             'title' => $overrides['title'] ?? $defaults['title'] ?? 'Untitled menu item',
             'url' => $overrides['url'] ?? $defaults['url'] ?? '',
+            'node_type' => $overrides['node_type'] ?? $defaults['node_type'] ?? 'link',
             'parent_slug' => $overrides['parent_slug'] ?? $defaults['parent_slug'],
             'sort_order' => $overrides['sort_order'] ?? $defaults['sort_order'] ?? 10,
             'area' => $overrides['area'] ?? $defaults['area'] ?? Menu::AREA_LEFT,
