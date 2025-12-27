@@ -13,11 +13,13 @@ final class MenuBuilder
 {
     public static function register(App $app, ModuleRegistry $registry, callable $render): void
     {
+        $protectedSlugs = ['admin.menu', 'user.login'];
+
         $registry->route('GET', '/admin/menu', function (): Response {
             return Response::redirect('/admin/menu-builder');
         }, ['right' => 'admin.menu']);
 
-        $registry->route('GET', '/admin/menu-builder', function () use ($app, $render): Response {
+        $registry->route('GET', '/admin/menu-builder', function () use ($app, $render, $protectedSlugs): Response {
             $menuRows = db_all(
                 $app->db,
                 "SELECT r.slug,
@@ -134,6 +136,7 @@ final class MenuBuilder
                     'description' => (string)($r['description'] ?? (string)$r['slug']),
                 ], $rightsRows),
                 'areas' => $areas,
+                'protected' => $protectedSlugs,
             ];
 
             $h = "<h1>Menu Builder</h1>
@@ -176,7 +179,7 @@ final class MenuBuilder
               <section class='menu-builder-quadrants'>";
 
             foreach ($areas as $area => $label) {
-                $treeHtml = self::renderTreeHtml($areaTrees[$area]);
+                $treeHtml = self::renderTreeHtml($areaTrees[$area], $protectedSlugs);
                 $h .= "<div class='menu-quadrant' data-area='" . htmlspecialchars($area) . "'>
                     <div class='menu-quadrant-header'>" . htmlspecialchars($label) . "</div>
                     <ul class='menu-dropzone' data-area='" . htmlspecialchars($area) . "'>{$treeHtml}</ul>
@@ -251,6 +254,8 @@ final class MenuBuilder
               .menu-item-card { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.35rem 0.6rem; background: rgba(255,255,255,0.05); border-radius: 6px; border: 1px solid rgba(255,255,255,0.12); cursor: pointer; }
               .menu-item-card:hover { background: rgba(255,255,255,0.1); }
               .menu-item-title { font-weight: 500; }
+              .menu-item-remove { flex-shrink: 0; }
+              .menu-item[data-source='library'] .menu-item-remove { display: none; }
               .menu-children { list-style: none; padding-left: 1rem; margin-top: 0.4rem; }
               .menu-draggable.dragging { opacity: 0.5; }
               .menu-dropzone.drag-over { outline: 2px dashed rgba(255,255,255,0.4); outline-offset: 4px; }
@@ -291,10 +296,15 @@ final class MenuBuilder
 
                 const items = menuData.items || {};
                 const rights = menuData.rights || [];
+                const protectedSlugs = menuData.protected || [];
                 const rightsMap = {};
                 rights.forEach(right => {
                   rightsMap[right.slug] = right.description || right.slug;
                 });
+
+                function isProtectedSlug(slug) {
+                  return protectedSlugs.includes(slug);
+                }
 
                 function showStatus(message, isError) {
                   statusEl.textContent = message;
@@ -386,6 +396,14 @@ final class MenuBuilder
                     card.appendChild(badge);
                   }
 
+                  const removeBtn = document.createElement('button');
+                  removeBtn.type = 'button';
+                  removeBtn.className = 'btn btn-sm btn-outline-danger menu-item-remove';
+                  removeBtn.textContent = 'Remove';
+                  removeBtn.disabled = isProtectedSlug(slug);
+                  removeBtn.title = isProtectedSlug(slug) ? 'Menu Builder and Login must stay in a quadrant.' : 'Remove from layout';
+                  card.appendChild(removeBtn);
+
                   const technical = document.createElement('div');
                   technical.className = 'technical-only small text-muted';
                   technical.textContent = 'Slug: ' + slug;
@@ -408,6 +426,42 @@ final class MenuBuilder
                   dropzones.forEach(zone => {
                     const area = zone.dataset.area;
                     updateList(zone, area, null);
+                  });
+                }
+
+                function buildEditPayload(slug, overrideData, enabledValue) {
+                  const overrides = overrideData || {};
+                  return {
+                    action: 'edit',
+                    slug,
+                    title: overrides.title ?? '',
+                    url: overrides.url ?? '',
+                    parent_slug: overrides.parent_slug ?? '',
+                    sort_order: overrides.sort_order ?? '',
+                    right_slug: overrides.right_slug ?? '',
+                    enabled: enabledValue ?? (overrides.enabled ?? ''),
+                  };
+                }
+
+                function applyItemUpdate(itemData) {
+                  if (!itemData || !items[itemData.slug]) return;
+                  items[itemData.slug].overrides = itemData.overrides;
+                  items[itemData.slug].effective = itemData.effective;
+                  const slug = itemData.slug;
+                  const titleNodes = document.querySelectorAll('.menu-item[data-slug=\"' + slug + '\"] .menu-item-title');
+                  titleNodes.forEach(node => { node.textContent = itemData.effective.title || 'Untitled menu item'; });
+
+                  const cards = document.querySelectorAll('.menu-item[data-slug=\"' + slug + '\"] .menu-item-card');
+                  cards.forEach(card => {
+                    const existingBadge = card.querySelector('.badge.text-bg-secondary');
+                    if (parseInt(itemData.effective.enabled, 10) === 1) {
+                      if (existingBadge) existingBadge.remove();
+                    } else if (!existingBadge) {
+                      const badge = document.createElement('span');
+                      badge.className = 'badge text-bg-secondary ms-2';
+                      badge.textContent = 'Disabled';
+                      card.appendChild(badge);
+                    }
                   });
                 }
 
@@ -528,6 +582,8 @@ final class MenuBuilder
                   document.addEventListener('click', event => {
                     const card = event.target.closest('.menu-item-card');
                     if (!card) return;
+                    const removeButton = event.target.closest('.menu-item-remove');
+                    if (removeButton) return;
                     const itemEl = card.closest('.menu-item');
                     if (!itemEl) return;
                     const slug = itemEl.dataset.slug;
@@ -595,6 +651,10 @@ final class MenuBuilder
 
                 editForm.addEventListener('submit', async (event) => {
                   event.preventDefault();
+                  if (isProtectedSlug(editSlug.value) && editEnabled.value === '0') {
+                    showStatus('Menu Builder and Login must stay in a quadrant.', true);
+                    return;
+                  }
                   const payload = {
                     action: 'edit',
                     slug: editSlug.value,
@@ -607,27 +667,34 @@ final class MenuBuilder
                   };
                   try {
                     const data = await postJson(payload);
-                    if (data.item && items[data.item.slug]) {
-                      items[data.item.slug].overrides = data.item.overrides;
-                      items[data.item.slug].effective = data.item.effective;
-                      const slug = data.item.slug;
-                      const titleNodes = document.querySelectorAll('.menu-item[data-slug=\"' + slug + '\"] .menu-item-title');
-                      titleNodes.forEach(node => { node.textContent = data.item.effective.title || 'Untitled menu item'; });
-
-                      const cards = document.querySelectorAll('.menu-item[data-slug=\"' + slug + '\"] .menu-item-card');
-                      cards.forEach(card => {
-                        const existingBadge = card.querySelector('.badge.text-bg-secondary');
-                        if (parseInt(data.item.effective.enabled, 10) === 1) {
-                          if (existingBadge) existingBadge.remove();
-                        } else if (!existingBadge) {
-                          const badge = document.createElement('span');
-                          badge.className = 'badge text-bg-secondary ms-2';
-                          badge.textContent = 'Disabled';
-                          card.appendChild(badge);
-                        }
-                      });
-                    }
+                    applyItemUpdate(data.item);
                     showStatus(data.message || 'Overrides saved.');
+                  } catch (err) {
+                    showStatus(err.message, true);
+                  }
+                });
+
+                document.addEventListener('click', async (event) => {
+                  const removeBtn = event.target.closest('.menu-item-remove');
+                  if (!removeBtn) return;
+                  event.stopPropagation();
+                  const itemEl = removeBtn.closest('.menu-item');
+                  if (!itemEl) return;
+                  const slug = itemEl.dataset.slug;
+                  if (isProtectedSlug(slug)) {
+                    showStatus('Menu Builder and Login must stay in a quadrant.', true);
+                    return;
+                  }
+                  const item = items[slug];
+                  if (!item) return;
+                  itemEl.remove();
+                  delete items[slug].layout;
+                  updateLayoutFromDom();
+                  try {
+                    const payload = buildEditPayload(slug, item.overrides, '0');
+                    const data = await postJson(payload);
+                    applyItemUpdate(data.item);
+                    showStatus(data.message || 'Menu item removed.');
                   } catch (err) {
                     showStatus(err.message, true);
                   }
@@ -650,7 +717,7 @@ final class MenuBuilder
             return $render('Menu Builder', $h);
         }, ['right' => 'admin.menu']);
 
-        $registry->route('POST', '/admin/menu-builder/save', function (Request $req) use ($app): Response {
+        $registry->route('POST', '/admin/menu-builder/save', function (Request $req) use ($app, $protectedSlugs): Response {
             $raw = file_get_contents('php://input');
             $data = [];
             if (is_string($raw) && $raw !== '') {
@@ -773,6 +840,10 @@ final class MenuBuilder
                     $enabled = (int)$enabledRaw;
                 }
 
+                if (in_array($slug, $protectedSlugs, true) && $enabled === 0) {
+                    return self::jsonResponse(['ok' => false, 'message' => 'Menu Builder and Login must stay enabled.'], 400);
+                }
+
                 db_exec(
                     $app->db,
                     "INSERT INTO menu_overrides (slug, title, url, parent_slug, sort_order, right_slug, enabled)
@@ -871,6 +942,9 @@ final class MenuBuilder
             if ($item['effective']['area'] !== $area) {
                 continue;
             }
+            if ((int)$item['effective']['enabled'] !== 1) {
+                continue;
+            }
             $nodes[$item['slug']] = [
                 'slug' => $item['slug'],
                 'title' => $item['effective']['title'],
@@ -905,19 +979,24 @@ final class MenuBuilder
         return $root;
     }
 
-    private static function renderTreeHtml(array $nodes): string
+    private static function renderTreeHtml(array $nodes, array $protectedSlugs): string
     {
         $html = '';
         foreach ($nodes as $node) {
             $title = htmlspecialchars((string)$node['title']);
             $slug = htmlspecialchars((string)$node['slug']);
             $disabledBadge = ((int)$node['enabled'] === 1) ? '' : "<span class='badge text-bg-secondary ms-2'>Disabled</span>";
-            $children = self::renderTreeHtml($node['children'] ?? []);
+            $removeDisabled = in_array((string)$node['slug'], $protectedSlugs, true) ? 'disabled' : '';
+            $removeTitle = in_array((string)$node['slug'], $protectedSlugs, true)
+                ? 'Menu Builder and Login must stay in a quadrant.'
+                : 'Remove from layout';
+            $children = self::renderTreeHtml($node['children'] ?? [], $protectedSlugs);
             $childrenHtml = $children !== '' ? "<ul class='menu-children'>{$children}</ul>" : "<ul class='menu-children'></ul>";
 
             $html .= "<li class='menu-item menu-draggable' draggable='true' data-slug='{$slug}'>
               <div class='menu-item-card'>
                 <span class='menu-item-title'>{$title}</span>{$disabledBadge}
+                <button type='button' class='btn btn-sm btn-outline-danger menu-item-remove' title='{$removeTitle}' {$removeDisabled}>Remove</button>
               </div>
               <div class='technical-only small text-muted'>Slug: {$slug}</div>
               {$childrenHtml}
