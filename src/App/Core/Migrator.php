@@ -22,6 +22,14 @@ CREATE TABLE IF NOT EXISTS migration_log (
   KEY idx_ran_at (ran_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 SQL);
+
+        if (db_driver($this->db) === 'mysql') {
+            db_exec(
+                $this->db,
+                "ALTER TABLE migration_log
+                  MODIFY status ENUM('applied','failed','mismatch') NOT NULL"
+            );
+        }
     }
 
     public function applyDir(string $moduleSlug, string $dir): void
