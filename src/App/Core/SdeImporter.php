@@ -367,7 +367,11 @@ final class SdeImporter
                 $setSql[] = "`{$col}` = NULL";
                 continue;
             }
-            $setSql[] = "`{$col}` = {$headerMap[$headerName]}";
+            $setSql[] = sprintf(
+                "`%s` = NULLIF(NULLIF(%s, 'None'), '')",
+                $col,
+                $headerMap[$headerName]
+            );
         }
 
         $userVars = implode(', ', array_values($headerMap));
@@ -432,7 +436,7 @@ final class SdeImporter
                         $entry[] = null;
                         continue;
                     }
-                    $entry[] = $row[$idx] !== '' ? $row[$idx] : null;
+                    $entry[] = $this->normalizeCsvValue($row[$idx]);
                 }
                 $values[] = $entry;
                 $rows++;
@@ -547,6 +551,20 @@ final class SdeImporter
             return null;
         }
         return strtolower($parts[0]);
+    }
+
+    private function normalizeCsvValue(mixed $value): mixed
+    {
+        if (!is_string($value)) {
+            return $value;
+        }
+
+        $normalized = trim($value);
+        if ($normalized === '' || strcasecmp($normalized, 'None') === 0) {
+            return null;
+        }
+
+        return $value;
     }
 
     private function fetchRemoteMtime(string $url): ?int
