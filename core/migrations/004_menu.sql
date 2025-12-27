@@ -1,6 +1,9 @@
 CREATE TABLE IF NOT EXISTS menu_registry (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   slug VARCHAR(128) NOT NULL UNIQUE,
+  module_slug VARCHAR(128) NOT NULL DEFAULT 'system',
+  kind ENUM('module_root','subnav','action') NOT NULL DEFAULT 'action',
+  allowed_areas TEXT NOT NULL,
   title VARCHAR(128) NOT NULL,
   url VARCHAR(255) NOT NULL,
   parent_slug VARCHAR(128) NULL,

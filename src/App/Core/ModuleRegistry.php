@@ -65,6 +65,9 @@ final class ModuleRegistry
     /** @param array<string, mixed> $item */
     public function menu(array $item): void
     {
+        if (!isset($item['module_slug'])) {
+            $item['module_slug'] = $this->slug;
+        }
         $this->menu[] = $item;
     }
 
