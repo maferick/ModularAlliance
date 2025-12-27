@@ -27,7 +27,7 @@ final class App
         $this->menu = new Menu($this->db);
     }
 
-    public static function boot(): self
+    public static function boot(bool $loadModules = true): self
     {
         $cfg = \app_config();
         $app = new self($cfg);
@@ -75,7 +75,9 @@ final class App
             return null;
         });
 
-        $app->modules->loadAll($app);
+        if ($loadModules) {
+            $app->modules->loadAll($app);
+        }
         return $app;
     }
 
